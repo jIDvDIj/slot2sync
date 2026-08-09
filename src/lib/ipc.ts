@@ -34,13 +34,35 @@ export function connectGoogleDrive(): Promise<AuthStatus> {
   return invoke<AuthStatus>("connect_google_drive");
 }
 
-/** Consulta o status sem disparar fluxo interativo. */
+/** Abre o navegador para o consentimento OAuth2 do Dropbox. */
+export function connectDropbox(): Promise<AuthStatus> {
+  return invoke<AuthStatus>("connect_dropbox");
+}
+
+/** Abre o navegador para o consentimento OAuth2 do OneDrive/Microsoft. */
+export function connectOneDrive(): Promise<AuthStatus> {
+  return invoke<AuthStatus>("connect_onedrive");
+}
+
+/**
+ * Conecta a uma pasta local ou de rede como provedor de storage — sem OAuth.
+ * Cria a pasta se ainda não existir; rejeita se não for gravável.
+ */
+export function connectLocalFolder(path: string): Promise<AuthStatus> {
+  return invoke<AuthStatus>("connect_local_folder", { path });
+}
+
+/** Consulta o status do provedor ativo sem disparar fluxo interativo. */
 export function getAuthStatus(): Promise<AuthStatus> {
   return invoke<AuthStatus>("get_auth_status");
 }
 
-export function disconnectGoogleDrive(): Promise<AuthStatus> {
-  return invoke<AuthStatus>("disconnect_google_drive");
+/**
+ * Desconecta do provedor ativo (qualquer que seja) e limpa a config
+ * persistida — a UI volta a mostrar o seletor de provedor, sem reiniciar.
+ */
+export function disconnectProvider(): Promise<AuthStatus> {
+  return invoke<AuthStatus>("disconnect_provider");
 }
 
 /** `null` = pasta válida, mas nenhum emulador suportado reconhecido nela. */
@@ -191,7 +213,7 @@ export function listConflicts(): Promise<Conflict[]> {
   return invoke<Conflict[]>("list_conflicts");
 }
 
-/** Resolve um conflito mantendo a versão `local` ou `drive`. */
+/** Resolve um conflito mantendo a versão `local` ou `remote`. */
 export function resolveConflict(
   emulator: string,
   category: Conflict["category"],
