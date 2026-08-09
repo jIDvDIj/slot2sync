@@ -410,9 +410,8 @@ mod tests {
 
     #[test]
     fn is_any_emulator_running_verdadeiro_com_emulador_no_conjunto() {
-        let running: RunningEmulators = Arc::new(std::sync::Mutex::new(HashSet::from([
-            "PPSSPP".to_string()
-        ])));
+        let running: RunningEmulators =
+            Arc::new(std::sync::Mutex::new(HashSet::from(["PPSSPP".to_string()])));
         assert!(is_any_emulator_running(&running));
     }
 

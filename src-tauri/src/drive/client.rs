@@ -1,51 +1,20 @@
 //! Camada de transporte: toda chamada à API do Drive passa por
-//! `send_with_retry` — backoff exponencial com jitter, no máximo
+//! `send_with_retry` (compartilhado com os demais provedores OAuth em
+//! `remote::http`) — backoff exponencial com jitter, no máximo
 //! `DRIVE_MAX_RETRIES` tentativas, renovação de token em 401 e tratamento
 //! de rate limit (429/403 *RateLimitExceeded*/5xx).
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 
-use rand::Rng;
 use tokio::sync::RwLock;
 
 use crate::auth::AuthManager;
 use crate::constants::DRIVE_MAX_RETRIES;
-use crate::error::{AppError, AppResult};
+use crate::error::AppResult;
+use crate::remote::http::{send_with_retry, RateLimiter};
 use crate::storage::db::Db;
 use crate::storage::drive_folders;
-
-/// Limitador global de banda: cada transferência reserva
-/// uma janela de tempo proporcional ao tamanho e à taxa configurada; as
-/// seguintes esperam a janela anterior vencer. Como os corpos são transferidos
-/// inteiros, o limite vale como média entre operações — suficiente para não
-/// saturar conexões lentas durante um sync grande.
-#[derive(Default)]
-pub(crate) struct RateLimiter {
-    /// Instante até o qual a banda já está comprometida por transferências
-    /// anteriores. `None` = ocioso.
-    committed_until: tokio::sync::Mutex<Option<tokio::time::Instant>>,
-}
-
-impl RateLimiter {
-    /// Reserva a janela para `bytes` a `kbps` e dorme até a vez desta
-    /// transferência. `kbps == 0` = ilimitado (retorna na hora).
-    pub(crate) async fn throttle(&self, bytes: usize, kbps: u32) {
-        if kbps == 0 || bytes == 0 {
-            return;
-        }
-        let window = Duration::from_secs_f64(bytes as f64 / (f64::from(kbps) * 1024.0));
-        let start = {
-            let mut guard = self.committed_until.lock().await;
-            let now = tokio::time::Instant::now();
-            let start = guard.map_or(now, |busy_until| busy_until.max(now));
-            *guard = Some(start + window);
-            start
-        };
-        tokio::time::sleep_until(start).await;
-    }
-}
 
 pub struct DriveClient {
     pub(crate) http: reqwest::Client,
@@ -155,8 +124,9 @@ impl DriveClient {
     }
 
     /// Envia a requisição construída por `build` (que recebe o access token),
-    /// aplicando a política de retry. `build` é chamada de novo a cada
-    /// tentativa para reconstruir o request do zero.
+    /// aplicando a política de retry compartilhada (`remote::http`), com a
+    /// regra extra de rate-limit específica do Drive: 403 cujo corpo contém
+    /// `RateLimitExceeded`.
     pub(crate) async fn send_with_retry<F>(
         &self,
         op_name: &str,
@@ -165,89 +135,24 @@ impl DriveClient {
     where
         F: Fn(&str) -> reqwest::RequestBuilder,
     {
-        let mut attempt: u32 = 0;
-        loop {
-            attempt += 1;
-            let token = self.auth.access_token().await?;
-
-            match build(&token).send().await {
-                Ok(response) => {
-                    let status = response.status();
-                    if status.is_success() {
-                        return Ok(response);
-                    }
-
-                    if status == reqwest::StatusCode::UNAUTHORIZED && attempt < DRIVE_MAX_RETRIES {
-                        tracing::debug!(op_name, "401 do Drive; renovando access token");
-                        self.auth.invalidate_cached_token().await;
-                        continue;
-                    }
-
-                    let body = response.text().await.unwrap_or_default();
-                    let rate_limited = status == reqwest::StatusCode::TOO_MANY_REQUESTS
-                        || (status == reqwest::StatusCode::FORBIDDEN
-                            && body.contains("ateLimitExceeded"));
-
-                    if (rate_limited || status.is_server_error()) && attempt < DRIVE_MAX_RETRIES {
-                        let delay = backoff_delay(attempt);
-                        tracing::warn!(op_name, %status, attempt, ?delay, "Drive instável; aguardando retry");
-                        tokio::time::sleep(delay).await;
-                        continue;
-                    }
-
-                    // 404: o objeto (arquivo/pasta) não existe mais. Erro tipado
-                    // para o engine invalidar o cache de pastas e re-resolver
-                    // quando um ID cacheado ficou obsoleto.
-                    if status == reqwest::StatusCode::NOT_FOUND {
-                        return Err(AppError::DriveObjectNotFound(format!("{op_name}: {body}")));
-                    }
-
-                    return Err(AppError::Other(format!(
-                        "Drive {op_name} falhou ({status}): {body}"
-                    )));
-                }
-                Err(err) => {
-                    if attempt < DRIVE_MAX_RETRIES {
-                        let delay = backoff_delay(attempt);
-                        tracing::warn!(op_name, error = %err, attempt, ?delay, "falha de rede; aguardando retry");
-                        tokio::time::sleep(delay).await;
-                        continue;
-                    }
-                    return Err(err.into());
-                }
-            }
-        }
-    }
-}
-
-/// 500ms, 1s, 2s... + jitter de até 250ms.
-fn backoff_delay(attempt: u32) -> Duration {
-    let base = 500u64.saturating_mul(2u64.saturating_pow(attempt.saturating_sub(1)));
-    let jitter = rand::rng().random_range(0..250);
-    Duration::from_millis(base + jitter)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::backoff_delay;
-
-    #[test]
-    fn backoff_cresce_exponencialmente_com_jitter_limitado() {
-        // base 500ms·2^(n-1) + jitter [0, 250).
-        for (attempt, base) in [(1u32, 500u64), (2, 1000), (3, 2000), (4, 4000)] {
-            let d = backoff_delay(attempt).as_millis() as u64;
-            assert!(
-                (base..base + 250).contains(&d),
-                "tentativa {attempt}: {d}ms fora de [{base}, {})",
-                base + 250
-            );
-        }
+        send_with_retry(
+            &self.auth,
+            op_name,
+            DRIVE_MAX_RETRIES,
+            |status, body| {
+                status == reqwest::StatusCode::FORBIDDEN && body.contains("ateLimitExceeded")
+            },
+            build,
+        )
+        .await
     }
 }
 
 #[cfg(test)]
 mod limiter_tests {
-    use super::*;
+    use std::time::Duration;
+
+    use crate::remote::http::RateLimiter;
 
     /// Duas transferências de 64 KB a 64 KB/s: a segunda só começa após a
     /// janela de 1s da primeira (tempo virtual do tokio, sem espera real).
@@ -261,15 +166,6 @@ mod limiter_tests {
 
         limiter.throttle(64 * 1024, 64).await; // 2ª: espera a janela de 1s
         assert!(start.elapsed() >= Duration::from_secs(1));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn throttle_zero_e_ilimitado() {
-        let limiter = RateLimiter::default();
-        let start = tokio::time::Instant::now();
-        limiter.throttle(10 * 1024 * 1024, 0).await;
-        limiter.throttle(10 * 1024 * 1024, 0).await;
-        assert_eq!(start.elapsed(), Duration::ZERO);
     }
 }
 
@@ -407,6 +303,6 @@ mod retry_tests {
             .await;
 
         let err = client.download("f1").await.unwrap_err();
-        assert!(matches!(err, AppError::DriveObjectNotFound(_)));
+        assert!(matches!(err, AppError::RemoteObjectNotFound(_)));
     }
 }

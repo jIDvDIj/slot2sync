@@ -16,6 +16,7 @@ use super::{
 };
 use crate::constants::{DRIVE_APP_PROP_DEVICE, DRIVE_APP_PROP_DEVICE_ID};
 use crate::error::{AppError, AppResult};
+use crate::remote::{BatchUploadOp, DeviceTag, RemoteFile};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -28,7 +29,6 @@ pub struct DriveFile {
     pub modified_time: Option<DateTime<Utc>>,
     /// A API devolve int64 como string.
     #[serde(default)]
-    #[allow(dead_code)]
     pub size: Option<String>,
     /// MD5 (hex) do conteúdo, calculado pelo próprio Drive. Usado na verificação
     /// de integridade pós-download e na detecção de renomeação por conteúdo.
@@ -55,15 +55,30 @@ impl DriveFile {
             .get(DRIVE_APP_PROP_DEVICE_ID)
             .map(String::as_str)
     }
-}
 
-/// Identidade do dispositivo estampada em `appProperties` no upload: `name`
-/// (amigável, para exibição) e `id` (UUID estável do keyring, para a detecção
-/// de conflito entre dispositivos). Ambos opcionais — degradam para ausência.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct DeviceTag<'a> {
-    pub name: Option<&'a str>,
-    pub id: Option<&'a str>,
+    pub fn is_folder(&self) -> bool {
+        self.mime_type == FOLDER_MIME_TYPE
+    }
+
+    pub fn modified_ms(&self) -> Option<i64> {
+        self.modified_time.map(|t| t.timestamp_millis())
+    }
+
+    /// Converte para o `RemoteFile` genérico consumido pelo `SyncEngine`
+    /// (trait `RemoteProvider`). `rel_path` não faz parte do shape do Drive —
+    /// o chamador informa o que faz sentido no contexto (nome do arquivo para
+    /// operações não-recursivas, caminho completo para listagem).
+    pub(crate) fn to_remote(&self, rel_path: String) -> RemoteFile {
+        RemoteFile {
+            id: self.id.clone(),
+            rel_path,
+            modified_ms: self.modified_ms(),
+            size_bytes: self.size.as_deref().and_then(|s| s.parse().ok()),
+            hash: self.md5_checksum.clone(),
+            device_name: self.device().map(str::to_string),
+            device_id: self.device_id().map(str::to_string),
+        }
+    }
 }
 
 /// Adiciona `appProperties` (`device` = nome, `deviceId` = id) ao metadata de
@@ -80,37 +95,6 @@ fn with_device(metadata: &mut serde_json::Value, tag: DeviceTag<'_>) {
     if !props.is_empty() {
         metadata["appProperties"] = serde_json::Value::Object(props);
     }
-}
-
-impl DriveFile {
-    pub fn is_folder(&self) -> bool {
-        self.mime_type == FOLDER_MIME_TYPE
-    }
-
-    pub fn modified_ms(&self) -> Option<i64> {
-        self.modified_time.map(|t| t.timestamp_millis())
-    }
-}
-
-/// Arquivo remoto com caminho relativo à pasta de categoria (separador `/`).
-#[derive(Debug, Clone)]
-pub struct RemoteFile {
-    pub rel_path: String,
-    pub file: DriveFile,
-}
-
-/// Um upload de arquivo **novo** agrupável em batch. Restrito a arquivos pequenos
-/// (≤ `SIMPLE_UPLOAD_MAX_BYTES`): a Batch API só aceita `multipart`, não sessões
-/// resumable. Possui os dados (sem lifetimes) para acumular numa `Vec` entre
-/// awaits no engine.
-#[derive(Debug, Clone)]
-pub struct BatchUploadOp {
-    pub parent_id: String,
-    pub name: String,
-    pub content: Vec<u8>,
-    pub mtime_ms: i64,
-    pub device_name: Option<String>,
-    pub device_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -166,10 +150,7 @@ impl DriveClient {
                 if child.is_folder() {
                     pending.push((child.id.clone(), format!("{rel_path}/")));
                 } else {
-                    out.push(RemoteFile {
-                        rel_path,
-                        file: child,
-                    });
+                    out.push(child.to_remote(rel_path));
                 }
             }
         }
@@ -207,8 +188,14 @@ impl DriveClient {
         Ok(page.files.into_iter().next())
     }
 
-    pub async fn find_child(&self, folder_id: &str, name: &str) -> AppResult<Option<DriveFile>> {
-        self.find_child_filtered(folder_id, name, None).await
+    pub async fn find_child(&self, folder_id: &str, name: &str) -> AppResult<Option<RemoteFile>> {
+        Ok(self
+            .find_child_filtered(folder_id, name, None)
+            .await?
+            .map(|file| {
+                let rel_path = file.name.clone();
+                file.to_remote(rel_path)
+            }))
     }
 
     pub async fn download(&self, file_id: &str) -> AppResult<Vec<u8>> {
@@ -236,22 +223,23 @@ impl DriveClient {
         content: Vec<u8>,
         mtime_ms: i64,
         device: DeviceTag<'_>,
-    ) -> AppResult<DriveFile> {
+    ) -> AppResult<RemoteFile> {
         let mut metadata = json!({
             "name": name,
             "parents": [parent_id],
             "modifiedTime": ms_to_rfc3339(mtime_ms),
         });
         with_device(&mut metadata, device);
-        if content.len() > SIMPLE_UPLOAD_MAX_BYTES {
+        let file = if content.len() > SIMPLE_UPLOAD_MAX_BYTES {
             let url = format!("{}/files", self.upload_base);
             self.upload_resumable(reqwest::Method::POST, &url, &metadata, content)
-                .await
+                .await?
         } else {
             let url = format!("{}/files", self.upload_base);
             self.upload_multipart(reqwest::Method::POST, &url, &metadata, content)
-                .await
-        }
+                .await?
+        };
+        Ok(file.to_remote(name.to_string()))
     }
 
     /// Atualiza o conteúdo de um arquivo existente preservando o mtime e
@@ -262,17 +250,18 @@ impl DriveClient {
         content: Vec<u8>,
         mtime_ms: i64,
         device: DeviceTag<'_>,
-    ) -> AppResult<DriveFile> {
+    ) -> AppResult<RemoteFile> {
         let mut metadata = json!({ "modifiedTime": ms_to_rfc3339(mtime_ms) });
         with_device(&mut metadata, device);
         let url = format!("{}/files/{file_id}", self.upload_base);
-        if content.len() > SIMPLE_UPLOAD_MAX_BYTES {
+        let file = if content.len() > SIMPLE_UPLOAD_MAX_BYTES {
             self.upload_resumable(reqwest::Method::PATCH, &url, &metadata, content)
-                .await
+                .await?
         } else {
             self.upload_multipart(reqwest::Method::PATCH, &url, &metadata, content)
-                .await
-        }
+                .await?
+        };
+        Ok(file.to_remote(String::new()))
     }
 
     /// Renomeia (e opcionalmente move de pasta) um arquivo existente via
@@ -284,7 +273,7 @@ impl DriveClient {
         new_name: &str,
         add_parent: Option<&str>,
         remove_parent: Option<&str>,
-    ) -> AppResult<DriveFile> {
+    ) -> AppResult<RemoteFile> {
         let url = format!("{}/files/{file_id}", self.api_base);
         let body = json!({ "name": new_name });
         let response = self
@@ -304,21 +293,23 @@ impl DriveClient {
                 request
             })
             .await?;
-        Ok(response.json::<DriveFile>().await?)
+        let file: DriveFile = response.json().await?;
+        Ok(file.to_remote(new_name.to_string()))
     }
 
     /// Envia até `DRIVE_BATCH_MAX_OPS` arquivos novos e pequenos em um único
     /// request `multipart/mixed`, reduzindo ~100× o número de chamadas HTTP no
-    /// primeiro sync de coleções grandes. Retorna os `DriveFile` na
+    /// primeiro sync de coleções grandes. Retorna os `RemoteFile` na
     /// MESMA ordem das operações. Erro se o batch — ou qualquer sub-request —
     /// falhar; o chamador então cai no caminho per-file.
-    pub async fn upload_batch(&self, ops: Vec<BatchUploadOp>) -> AppResult<Vec<DriveFile>> {
+    pub async fn upload_batch(&self, ops: Vec<BatchUploadOp>) -> AppResult<Vec<RemoteFile>> {
         if ops.is_empty() {
             return Ok(Vec::new());
         }
         // Limite de banda: o batch inteiro conta como uma transferência única.
         let total_bytes: usize = ops.iter().map(|op| op.content.len()).sum();
         self.throttle_upload(total_bytes).await;
+        let names: Vec<String> = ops.iter().map(|op| op.name.clone()).collect();
         let (boundary, body) = build_batch_body(&ops)?;
         let content_type = format!("multipart/mixed; boundary={boundary}");
 
@@ -350,7 +341,11 @@ impl DriveClient {
         }
         // A ordem das partes na resposta não é garantida; reordena pelo Content-ID.
         items.sort_by_key(|(idx, _)| *idx);
-        Ok(items.into_iter().map(|(_, file)| file).collect())
+        Ok(items
+            .into_iter()
+            .zip(names)
+            .map(|((_, file), name)| file.to_remote(name))
+            .collect())
     }
 
     async fn upload_multipart(
@@ -674,8 +669,9 @@ mod http_tests {
     use wiremock::matchers::{method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    use super::{DeviceTag, SIMPLE_UPLOAD_MAX_BYTES};
+    use super::SIMPLE_UPLOAD_MAX_BYTES;
     use crate::drive::test_support::client_against as test_client;
+    use crate::remote::DeviceTag;
 
     #[tokio::test]
     async fn list_tree_percorre_subpastas_recursivamente() {
@@ -773,7 +769,7 @@ mod http_tests {
             .rename_file("file-1", "novo.bin", None, None)
             .await
             .unwrap();
-        assert_eq!(renamed.name, "novo.bin");
+        assert_eq!(renamed.rel_path, "novo.bin");
 
         // O corpo enviado carrega só o nome novo — nada de conteúdo.
         let requests = server.received_requests().await.unwrap();

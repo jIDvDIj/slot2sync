@@ -11,10 +11,10 @@ use tauri::test::MockRuntime;
 
 use super::engine::ConflictResolution;
 use super::{DesktopStorage, LastSyncStore, SyncCategory, SyncDirection, SyncEngine, SyncSummary};
-use crate::auth::AuthManager;
-use crate::constants::{DRIVE_BATCH_MIN_OPS, DRIVE_MANIFEST_FILE, KEYRING_REFRESH_TOKEN_KEY};
+use crate::constants::{DRIVE_BATCH_MIN_OPS, DRIVE_MANIFEST_FILE};
 use crate::drive::mock::MockDrive;
 use crate::emulator::EmulatorProfile;
+use crate::remote::RemoteProvider;
 use crate::secrets::{MemSecrets, SecretStore};
 use crate::storage::db::Db;
 use crate::storage::settings::NotificationLevel;
@@ -62,27 +62,19 @@ impl Harness {
             .await
             .unwrap();
 
-        // "Conectado": o status() só exige um refresh token no SecretStore.
         let secrets: Arc<dyn SecretStore> = Arc::new(MemSecrets::default());
-        secrets
-            .set(
-                KEYRING_REFRESH_TOKEN_KEY,
-                r#"{"refresh_token":"tok-teste","email":"teste@slot2sync"}"#,
-            )
-            .unwrap();
         let device_id = crate::device::get_or_create(&*secrets).unwrap();
 
-        let auth = Arc::new(AuthManager::new(reqwest::Client::new(), secrets.clone()));
         let drive = Arc::new(MockDrive::new());
 
         let app = tauri::test::mock_builder()
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
 
+        let remote_provider = drive.clone() as Arc<dyn RemoteProvider>;
         let engine = SyncEngine::new(
             db.clone(),
-            drive.clone(),
-            auth,
+            Some(remote_provider),
             app.handle().clone(),
             LastSyncStore::default(),
             backups_dir.clone(),
@@ -399,7 +391,7 @@ async fn resolucao_mantendo_drive_baixa_com_backup() {
             EMU,
             SyncCategory::Saves,
             "save.bin",
-            ConflictResolution::Drive,
+            ConflictResolution::Remote,
         )
         .await
         .unwrap();

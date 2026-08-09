@@ -139,6 +139,17 @@ CREATE TABLE IF NOT EXISTS emulator_stats (
 );
 ";
 
+/// v11 — generaliza as colunas antes específicas do Drive para o suporte a
+/// múltiplos provedores de storage remoto (ver `remote::RemoteProvider`).
+const SCHEMA_V11: &str = "
+ALTER TABLE sync_manifest RENAME COLUMN drive_file_id TO remote_file_id;
+ALTER TABLE sync_manifest RENAME COLUMN drive_mtime_ms TO remote_mtime_ms;
+ALTER TABLE sync_conflicts RENAME COLUMN drive_mtime_ms TO remote_mtime_ms;
+ALTER TABLE sync_conflicts RENAME COLUMN drive_size TO remote_size;
+ALTER TABLE sync_conflicts RENAME COLUMN drive_device TO remote_device;
+ALTER TABLE sync_conflicts RENAME COLUMN drive_file_id TO remote_file_id;
+";
+
 #[derive(Clone)]
 pub struct Db {
     conn: Arc<Mutex<Connection>>,
@@ -244,6 +255,10 @@ fn migrate(conn: &Connection) -> AppResult<()> {
     if version < 10 {
         conn.execute_batch(SCHEMA_V10)?;
         version = 10;
+    }
+    if version < 11 {
+        conn.execute_batch(SCHEMA_V11)?;
+        version = 11;
     }
     conn.pragma_update(None, "user_version", version)?;
     Ok(())
