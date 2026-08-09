@@ -27,7 +27,7 @@ Exemplos de comportamento que contribuem para um ambiente positivo:
 Exemplos de comportamento inaceitável:
 
 - Uso de linguagem ou imagens sexualizadas, e atenção ou investidas sexuais de qualquer tipo.
-- Comentários provocativos, ofensivos ou depreciativos (*trolling*), e ataques pessoais ou
+- Comentários provocativos, ofensivos ou depreciativos (_trolling_), e ataques pessoais ou
   políticos.
 - Assédio público ou privado.
 - Publicar informações privadas de terceiros, como endereço físico ou de e-mail, sem
