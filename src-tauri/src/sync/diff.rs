@@ -39,7 +39,7 @@ pub struct PlannedOp {
 
 /// Varre as pastas-base de uma categoria (relativas a `root`). Em `rel_path`
 /// duplicado entre bases, a primeira base vence. Ignora symlinks e arquivos
-/// temporários do RetroSync. Pastas inexistentes são puladas sem erro.
+/// temporários do Slot2Sync. Pastas inexistentes são puladas sem erro.
 /// Consumida pela `DesktopStorage`; no mobile o scan é feito pelo plugin nativo.
 #[cfg_attr(not(desktop), allow(dead_code))]
 pub fn scan_local_bases(root: &Path, bases: &[PathBuf]) -> AppResult<Vec<LocalFile>> {

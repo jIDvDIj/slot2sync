@@ -12,10 +12,6 @@ pub struct AppState {
     pub auth: Arc<AuthManager>,
     pub db: Db,
     pub engine: Arc<SyncEngine>,
-    /// Mesma célula que o engine atualiza; lida por `get_last_sync`.
     pub last_sync: LastSyncStore,
-    /// Acesso ao armazenamento local (filesystem no desktop; plugin SAF no
-    /// mobile). Os comandos validam raiz/subpastas de emulador por aqui, sem
-    /// tocar `std::fs` diretamente (BUG-005).
     pub storage: Arc<dyn LocalStorage>,
 }

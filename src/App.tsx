@@ -24,7 +24,7 @@ function App() {
   const { settings, reload: reloadSettings } = useSettings();
   const theme = useTheme();
 
-  // Enquanto o status de auth não chega, não decidimos qual tela mostrar.
+  // Enquanto o status de auth não chega, não decide qual tela mostrar.
   if (auth.loading) {
     return (
       <main className="login-screen">
@@ -76,7 +76,7 @@ function MainScreen({ auth, settings, reloadSettings, theme }: MainScreenProps) 
   return (
     <main className="app">
       <header className="app-header">
-        <h1>RetroSync</h1>
+        <h1>Slot2Sync</h1>
         <div className="header-actions">
           <AccountStatus
             email={auth.status?.email ?? null}

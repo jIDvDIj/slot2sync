@@ -43,8 +43,7 @@ impl OpDirection {
     }
 }
 
-/// Pendência exposta à UI (fila offline visível). Espelhada em
-/// `src/types/ipc.ts` (`PendingOp`).
+/// Pendência exposta à UI (fila offline visível). (→ ipc.ts)
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PendingOp {

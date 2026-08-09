@@ -101,7 +101,7 @@ export interface SyncCategories {
   config: boolean;
 }
 
-/** `games::SyncedGame` — jogo sincronizado, agregado do manifest (FEATURE-001) */
+/** `games::SyncedGame` — jogo sincronizado, agregado do manifest */
 export interface SyncedGame {
   /** Serial técnico extraído do caminho (`ULUS12345`) ou nome de arquivo. */
   serial: string;
@@ -184,7 +184,7 @@ export interface Conflict {
   driveFileId: string;
   localAbsPath: string;
   detectedAtMs: number;
-  /** Cópia padronizada do lado local (`…retrosync-conflict-<carimbo>-<device>…`),
+  /** Cópia padronizada do lado local (`…slot2sync-conflict-<carimbo>-<device>…`),
    * para inspeção manual. `null` quando a cópia não pôde ser criada. */
   backupPath: string | null;
 }

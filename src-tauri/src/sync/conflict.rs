@@ -1,5 +1,5 @@
 //! Resolução de conflito por timestamp: o lado mais recente vence; nunca há
-//! deleção (regra da v1.0). Tolerância de ±2s absorve granularidade de
+//! deleção. Tolerância de ±2s absorve granularidade de
 //! filesystem e pequenos desvios de relógio; o par de mtimes registrado no
 //! manifest no último sync permite reconhecer "nada mudou" mesmo quando os
 //! relógios local e remoto divergem além da tolerância.
@@ -13,11 +13,10 @@ pub enum SyncAction {
     Download,
     /// Download em que o arquivo local existente é copiado para uma pasta de
     /// backup antes de ser sobrescrito. Usado no primeiro sync de um arquivo
-    /// que existe nos dois lados (Drive vence — BUG-001).
+    /// que existe nos dois lados (Drive vence).
     DownloadWithBackup,
     /// Ambos os lados mudaram desde o último sync: nenhum vence
-    /// automaticamente. O sync do emulador pausa até o usuário escolher
-    /// (BUG-002).
+    /// automaticamente. O sync do emulador pausa até o usuário escolher.
     Conflict,
     NoOp,
 }
@@ -69,7 +68,7 @@ pub fn decide(
             // ambíguo que vira conflito (o usuário decide), em vez de o Drive
             // vencer cegamente. Caso contrário (mesma origem, ex.: reinstalação;
             // ou origem desconhecida), o Drive vence com backup local antes de
-            // sobrescrever (BUG-001).
+            // sobrescrever.
             None => {
                 if eq_within_tolerance(local, drive) {
                     SyncAction::NoOp
@@ -145,7 +144,7 @@ mod tests {
     #[test]
     fn primeiro_sync_drive_vence_mesmo_com_local_mais_recente() {
         // Sem manifest e ambos existem, origem desconhecida: Drive vence (com
-        // backup), mesmo que o mtime local seja mais novo — BUG-001.
+        // backup), mesmo que o mtime local seja mais novo.
         assert_eq!(
             decide_t(Some(T + 60_000), Some(T), None),
             SyncAction::DownloadWithBackup

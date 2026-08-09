@@ -17,7 +17,7 @@ interface Props {
   state: SyncState;
 }
 
-/** Gatilhos automáticos do watcher — ganham indicador visual próprio (#13). */
+/** Gatilhos automáticos do watcher — ganham indicador visual próprio. */
 export function autoTriggerLabelKey(
   trigger: string | null,
 ): "sync.autoPreGame" | "sync.autoPostGame" | null {

@@ -1,6 +1,6 @@
 //! Tabela `sync_conflicts`: arquivos em que ambos os lados (local e Drive)
 //! mudaram desde o último sync. Enquanto houver conflito para um emulador, o
-//! sync dele fica bloqueado (BUG-002) até o usuário escolher qual versão manter.
+//! sync dele fica bloqueado até o usuário escolher qual versão manter.
 
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::Serialize;
@@ -8,8 +8,7 @@ use serde::Serialize;
 use crate::error::AppResult;
 use crate::sync::SyncCategory;
 
-/// Um conflito pendente, com os metadados dos dois lados para a UI decidir.
-/// Espelhado em `src/types/ipc.ts` (`Conflict`).
+/// Um conflito pendente, com os metadados dos dois lados para a UI decidir. (→ ipc.ts)
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Conflict {
@@ -31,7 +30,7 @@ pub struct Conflict {
     pub local_abs_path: String,
     pub detected_at_ms: i64,
     /// Cópia padronizada do lado local
-    /// (`<nome>.retrosync-conflict-<carimbo>-<device><ext>`) para inspeção
+    /// (`<nome>.slot2sync-conflict-<carimbo>-<device><ext>`) para inspeção
     /// manual. `None` quando a cópia não pôde ser criada.
     pub backup_path: Option<String>,
 }
@@ -172,7 +171,7 @@ mod tests {
             local_abs_path: "/tmp/ppsspp/SAVEDATA/GAME01/SAVE.bin".into(),
             detected_at_ms: 1_700_000_300_000,
             backup_path: Some(
-                "/backups/PPSSPP/conflicts/saves/GAME01/SAVE.retrosync-conflict-x.bin".into(),
+                "/backups/PPSSPP/conflicts/saves/GAME01/SAVE.slot2sync-conflict-x.bin".into(),
             ),
         }
     }
@@ -233,6 +232,6 @@ mod tests {
         assert!(json["backupPath"]
             .as_str()
             .unwrap()
-            .contains("retrosync-conflict"));
+            .contains("slot2sync-conflict"));
     }
 }

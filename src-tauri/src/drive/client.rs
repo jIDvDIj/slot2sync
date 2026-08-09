@@ -16,7 +16,7 @@ use crate::error::{AppError, AppResult};
 use crate::storage::db::Db;
 use crate::storage::drive_folders;
 
-/// Limitador global de banda (fase 1 do throttle): cada transferência reserva
+/// Limitador global de banda: cada transferência reserva
 /// uma janela de tempo proporcional ao tamanho e à taxa configurada; as
 /// seguintes esperam a janela anterior vencer. Como os corpos são transferidos
 /// inteiros, o limite vale como média entre operações — suficiente para não
@@ -51,9 +51,9 @@ pub struct DriveClient {
     pub(crate) http: reqwest::Client,
     pub(crate) auth: Arc<AuthManager>,
     /// Banco local — espelha o `folder_cache` na tabela `drive_folders` para que
-    /// os IDs sobrevivam a reinícios (FEATURE-006).
+    /// os IDs sobrevivam a reinícios.
     pub(crate) db: Db,
-    /// Cache de IDs de pastas por caminho lógico (ex.: "RetroSync/PPSSPP/saves").
+    /// Cache de IDs de pastas por caminho lógico (ex.: "Slot2Sync/PPSSPP/saves").
     /// Semente carregada do SQLite no boot; escrito a cada ID novo resolvido.
     pub(crate) folder_cache: RwLock<HashMap<String, String>>,
     /// Bases da API — sempre o Google real em produção; sobrescritas por
@@ -68,7 +68,7 @@ pub struct DriveClient {
 impl DriveClient {
     pub fn new(http: reqwest::Client, auth: Arc<AuthManager>, db: Db) -> Self {
         // Popula o cache com os IDs persistidos: o primeiro sync após o boot pula
-        // a re-resolução das pastas já conhecidas (FEATURE-006).
+        // a re-resolução das pastas já conhecidas.
         let seed = db
             .with_conn_blocking(drive_folders::load_all)
             .unwrap_or_else(|err| {
@@ -197,7 +197,7 @@ impl DriveClient {
 
                     // 404: o objeto (arquivo/pasta) não existe mais. Erro tipado
                     // para o engine invalidar o cache de pastas e re-resolver
-                    // quando um ID cacheado ficou obsoleto (FEATURE-006).
+                    // quando um ID cacheado ficou obsoleto.
                     if status == reqwest::StatusCode::NOT_FOUND {
                         return Err(AppError::DriveObjectNotFound(format!("{op_name}: {body}")));
                     }

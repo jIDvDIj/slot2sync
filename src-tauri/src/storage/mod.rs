@@ -6,7 +6,7 @@
 //! - `emulators`: perfis configurados pelo usuário;
 //! - `settings`: configurações globais (nome do dispositivo, gatilhos, etc.);
 //! - `conflicts`: conflitos pendentes que bloqueiam o sync de um emulador;
-//! - `drive_folders`: cache persistente de IDs de pasta do Drive (FEATURE-006);
+//! - `drive_folders`: cache persistente de IDs de pasta do Drive;
 //! - `stats`: contadores acumulados por emulador (uploads, downloads, bytes).
 
 pub mod conflicts;

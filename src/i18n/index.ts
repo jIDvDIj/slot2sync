@@ -15,7 +15,7 @@ export type LanguageCode = (typeof SUPPORTED_LANGUAGES)[number]["code"];
 /** Idioma padrão quando não há preferência salva. */
 const DEFAULT_LANGUAGE: LanguageCode = "en";
 
-const STORAGE_KEY = "retrosync.language";
+const STORAGE_KEY = "slot2sync.language";
 
 function isSupported(code: string): code is LanguageCode {
   return SUPPORTED_LANGUAGES.some((l) => l.code === code);

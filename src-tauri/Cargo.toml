@@ -1,5 +1,5 @@
 [package]
-name = "retro-sync"
+name = "slot2sync"
 version = "0.1.0"
 description = "Sincronização automática de saves e configurações de emuladores com o Google Drive"
 authors = ["David"]
@@ -12,7 +12,7 @@ publish = false
 # The `_lib` suffix may seem redundant but it is necessary
 # to make the lib name unique and wouldn't conflict with the bin name.
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
-name = "retro_sync_lib"
+name = "slot2sync_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
@@ -77,7 +77,7 @@ notify = "8"
 keyring = { version = "3", features = ["windows-native", "apple-native", "sync-secret-service"] }
 
 # Dependências exclusivas do mobile.
-# - deep-link: captura o redirect URI `retrosync://oauth` de volta ao app (OAuth).
+# - deep-link: captura o redirect URI `slot2sync://oauth` de volta ao app (OAuth).
 # - opener: abre o browser no Android (o crate `open` não funciona em processo sandboxado).
 [target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
 tauri-plugin-deep-link = "2"

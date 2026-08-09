@@ -23,9 +23,9 @@ interface Props {
   pendingOps: PendingOp[];
   /** Progresso do sync em curso (qualquer emulador); o card filtra pelo nome. */
   progress: SyncProgress | null;
-  /** Gatilho do sync em curso — tooltip do badge nos syncs automáticos (#13). */
+  /** Gatilho do sync em curso — tooltip do badge nos syncs automáticos. */
   trigger: string | null;
-  /** Jogos sincronizados deste emulador (FEATURE-001). */
+  /** Jogos sincronizados deste emulador. */
   games: SyncedGame[];
   onRemove: (name: string) => Promise<void>;
   /** Recarrega a lista de conflitos após uma resolução. */

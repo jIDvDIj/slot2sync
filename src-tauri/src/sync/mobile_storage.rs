@@ -1,4 +1,4 @@
-//! Interface Rust↔plugin do armazenamento de saves no mobile (Fase 4).
+//! Interface Rust↔plugin do armazenamento de saves no mobile.
 //!
 //! No mobile não há caminho de filesystem para os saves de **outro** app: o
 //! acesso passa por uma concessão de pasta do usuário — Storage Access Framework
@@ -11,8 +11,7 @@
 //!   numa chamada de comando ao plugin.
 //!
 //! O lado nativo (Kotlin/Swift) deve implementar os comandos `listFiles`, `stat`,
-//! `exists`, `read`, `write` e `copy` — contrato detalhado em
-//! `docs/multiplataforma-checklist.md` (Fase 4).
+//! `exists`, `read`, `write` e `copy`.
 //!
 //! ## Locadores no mobile
 //!
@@ -359,7 +358,7 @@ impl<B: PluginBridge> LocalStorage for MobileStorage<B> {
 
     async fn is_valid_root(&self, loc: &FileLoc) -> bool {
         // A raiz mobile é a árvore concedida (URI SAF): existe = concedida e
-        // acessível. O plugin resolve `DocumentFile` a partir da URI (BUG-005).
+        // acessível. O plugin resolve `DocumentFile` a partir da URI.
         self.exists(loc).await
     }
 
@@ -405,12 +404,12 @@ impl<R: Runtime> PluginBridge for TauriBridge<R> {
 /// Plugin Tauri que registra o lado nativo (Kotlin/Swift) e guarda a ponte no
 /// estado do app. Registrar no `Builder` (`.plugin(mobile_storage::init())`).
 pub fn init<R: Runtime>() -> TauriPlugin<R> {
-    Builder::new("retrosync-storage")
+    Builder::new("slot2sync-storage")
         .setup(|app, _api| {
             #[cfg(target_os = "android")]
-            let handle = _api.register_android_plugin("com.retrosync.app", "StoragePlugin")?;
+            let handle = _api.register_android_plugin("com.slot2sync.app", "StoragePlugin")?;
             // iOS: ligar ao Swift package via `register_ios_plugin` — implementar
-            // e validar no macOS/Xcode (Fase 4).
+            // e validar no macOS/Xcode.
             #[cfg(target_os = "ios")]
             let handle: PluginHandle<R> =
                 todo!("registro do plugin de storage no iOS (macOS/Xcode)");

@@ -242,7 +242,7 @@ button.secondary:hover:not(:disabled) {
   gap: var(--rs-space-1);
 }
 
-/* Barra de progresso do sync dentro do card (#5) */
+/* Barra de progresso do sync dentro do card */
 .emulator-progress {
   display: flex;
   align-items: center;
@@ -262,7 +262,7 @@ button.secondary:hover:not(:disabled) {
   text-align: right;
 }
 
-/* Jogos sincronizados por emulador (FEATURE-001) */
+/* Jogos sincronizados por emulador */
 .emulator-games {
   margin: 0 0 0.7rem;
 }
@@ -425,7 +425,7 @@ progress.sync-bar::-moz-progress-bar {
   background-color: var(--rs-color-brand);
 }
 
-/* Indicador de sync automático do watcher (pré/pós-jogo) — pulsa (#13) */
+/* Indicador de sync automático do watcher (pré/pós-jogo) — pulsa */
 .sync-auto-indicator {
   display: inline-flex;
   align-items: center;
@@ -649,7 +649,7 @@ progress.sync-bar::-moz-progress-bar {
   white-space: nowrap;
 }
 
-/* Abas do modal de configurações (#12) */
+/* Abas do modal de configurações */
 .modal-tabs {
   display: flex;
   gap: var(--rs-space-1);
@@ -681,7 +681,7 @@ progress.sync-bar::-moz-progress-bar {
   border-bottom-color: var(--rs-color-brand);
 }
 
-/* Lista de arquivos pendentes na fila offline (#4) */
+/* Lista de arquivos pendentes na fila offline */
 .pending-list {
   display: flex;
   flex-direction: column;

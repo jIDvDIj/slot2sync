@@ -1,4 +1,4 @@
-package com.retrosync.app
+package com.slot2sync.app
 
 import android.app.Activity
 import android.content.Intent
@@ -15,15 +15,12 @@ import app.tauri.plugin.JSArray
 import app.tauri.plugin.JSObject
 import app.tauri.plugin.Plugin
 
-// Lado Android do storage de saves do RetroSync (Fase 4).
+// Lado Android do storage de saves do Slot2Sync.
 //
 // Implementa o contrato consumido pela MobileStorage em Rust
 // (src-tauri/src/sync/mobile_storage.rs): comandos listFiles/stat/exists/read/
 // write/copy sobre uma "árvore" concedida pelo Storage Access Framework (SAF).
 // `tree` é a URI da árvore (content://...); `rel` é o caminho relativo a ela.
-//
-// ⚠️ ESQUELETO NÃO COMPILADO/TESTADO — escrito fora do toolchain Android. Validar
-// com `tauri android dev`/device. Ver src-tauri/mobile/README.md.
 
 @InvokeArg
 class ListArgs {

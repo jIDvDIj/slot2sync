@@ -6,7 +6,7 @@ import { listSyncedGames } from "../lib/ipc";
 import { EVT, type SyncedGame } from "../types/ipc";
 
 /**
- * Jogos sincronizados, agregados do manifest no backend (FEATURE-001).
+ * Jogos sincronizados, agregados do manifest no backend.
  * Carrega ao montar e recarrega a cada `sync:completed`, para refletir arquivos
  * novos sem exigir refresh manual.
  */

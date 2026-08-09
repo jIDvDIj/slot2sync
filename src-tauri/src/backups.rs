@@ -13,7 +13,7 @@ use serde::Serialize;
 
 use crate::error::AppResult;
 
-/// Uma cópia de backup em disco. Espelhada em `src/types/ipc.ts` (`BackupEntry`).
+/// Uma cópia de backup em disco. (→ ipc.ts)
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BackupEntry {

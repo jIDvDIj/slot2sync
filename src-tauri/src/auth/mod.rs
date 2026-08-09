@@ -51,8 +51,7 @@ impl AuthorizeFlow for RealAuthorizeFlow {
     }
 }
 
-/// Estado da conexão com o Google Drive exposto ao frontend.
-/// Espelhado em `src/types/ipc.ts` (`AuthStatus`).
+/// Estado da conexão com o Google Drive exposto ao frontend. (→ ipc.ts)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AuthStatus {
@@ -95,7 +94,7 @@ impl AuthManager {
         let config = OAuthConfig::from_env();
         if config.is_none() {
             tracing::warn!(
-                "RETROSYNC_GOOGLE_CLIENT_ID não configurado; conexão ao Drive indisponível"
+                "SLOT2SYNC_GOOGLE_CLIENT_ID não configurado; conexão ao Drive indisponível"
             );
         }
         Self {
@@ -112,7 +111,7 @@ impl AuthManager {
     fn config(&self) -> AppResult<&OAuthConfig> {
         self.config.as_ref().ok_or_else(|| {
             AppError::Auth(
-                "Client ID do Google não configurado — defina RETROSYNC_GOOGLE_CLIENT_ID (veja o README)"
+                "Client ID do Google não configurado — defina SLOT2SYNC_GOOGLE_CLIENT_ID (veja o README)"
                     .into(),
             )
         })
@@ -142,7 +141,7 @@ impl AuthManager {
     ) -> AppResult<AuthStatus> {
         let refresh_token = tokens.refresh_token.clone().ok_or_else(|| {
             AppError::Auth(
-                "o Google não retornou um refresh token; revogue o acesso do RetroSync em \
+                "o Google não retornou um refresh token; revogue o acesso do Slot2Sync em \
                  myaccount.google.com/permissions e conecte novamente"
                     .into(),
             )
@@ -378,7 +377,7 @@ mod tests {
         TokenStore::save(
             &StoredAuth {
                 refresh_token: "tok".into(),
-                email: Some("dev@retrosync".into()),
+                email: Some("dev@slot2sync".into()),
             },
             &*secrets,
         )
@@ -386,7 +385,7 @@ mod tests {
 
         let status = manager(&secrets).status().await.unwrap();
         assert!(status.connected);
-        assert_eq!(status.email.as_deref(), Some("dev@retrosync"));
+        assert_eq!(status.email.as_deref(), Some("dev@slot2sync"));
     }
 
     #[tokio::test]
@@ -632,14 +631,14 @@ mod tests {
                 expires_in: 3600,
                 refresh_token: Some("refresh-novo".into()),
             },
-            Some("dev@retrosync".into()),
+            Some("dev@slot2sync".into()),
         )));
         let m = manager_with_flow(&secrets, Some(proxy_config("http://127.0.0.1:1")), flow);
 
         let status = m.connect().await.unwrap();
 
         assert!(status.connected);
-        assert_eq!(status.email.as_deref(), Some("dev@retrosync"));
+        assert_eq!(status.email.as_deref(), Some("dev@slot2sync"));
         let stored = TokenStore::load(&*secrets as &dyn SecretStore)
             .unwrap()
             .unwrap();
@@ -694,7 +693,7 @@ mod tests {
         let m = manager_with_config(&secrets, None);
 
         let err = m
-            .finish_connect(tokens(None), Some("dev@retrosync".into()))
+            .finish_connect(tokens(None), Some("dev@slot2sync".into()))
             .await
             .unwrap_err();
         assert!(matches!(err, AppError::Auth(msg) if msg.contains("refresh token")));
@@ -709,12 +708,12 @@ mod tests {
         let m = manager_with_config(&secrets, None);
 
         let status = m
-            .finish_connect(tokens(Some("refresh-novo")), Some("dev@retrosync".into()))
+            .finish_connect(tokens(Some("refresh-novo")), Some("dev@slot2sync".into()))
             .await
             .unwrap();
 
         assert!(status.connected);
-        assert_eq!(status.email.as_deref(), Some("dev@retrosync"));
+        assert_eq!(status.email.as_deref(), Some("dev@slot2sync"));
 
         let stored = TokenStore::load(&*secrets as &dyn SecretStore)
             .unwrap()

@@ -5,8 +5,6 @@
 //! usa o filesystem nativo. No mobile (futuro), uma implementação sobre o SAF
 //! (Android) / security-scoped bookmarks (iOS) plugará o **mesmo** trait — por
 //! isso os arquivos são endereçados por [`FileLoc`] opaco, e não por `PathBuf`.
-//!
-//! Ver o plano em `docs/multiplataforma-checklist.md` (Fase 2).
 
 use std::path::{Path, PathBuf};
 
@@ -37,7 +35,7 @@ enum Loc {
     Path(PathBuf),
     /// Documento no armazenamento concedido do mobile — encoding opaco
     /// interpretado por [`super::mobile_storage`] e pelo plugin nativo (SAF /
-    /// bookmark). Ver `docs/multiplataforma-checklist.md` (Fase 4).
+    /// bookmark).
     #[cfg(mobile)]
     Doc(String),
 }
@@ -145,7 +143,7 @@ pub trait LocalStorage: Send + Sync {
     /// a raiz de um emulador antes de registrá-lo, sem que o comando manipule
     /// caminhos diretamente. No desktop é `Path::is_dir`; no mobile a raiz é uma
     /// URI SAF (não um caminho de filesystem), então a checagem passa pelo plugin
-    /// nativo — ver BUG-005.
+    /// nativo.
     async fn is_valid_root(&self, loc: &FileLoc) -> bool;
 
     /// Existe a subpasta `rel` (separador `/`) sob `root`? Valida os caminhos de
@@ -345,7 +343,7 @@ mod tests {
         assert_eq!(s.read(&dest).await.unwrap(), b"conteudo");
         assert_eq!(s.mtime_ms(&dest).await.unwrap(), 1_700_000_000_000);
         // Não deixa o temporário para trás.
-        assert!(!tmp.path().join("sub/dir/save.bin.retrosync-tmp").exists());
+        assert!(!tmp.path().join("sub/dir/save.bin.slot2sync-tmp").exists());
     }
 
     #[tokio::test]

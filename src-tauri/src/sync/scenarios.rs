@@ -67,7 +67,7 @@ impl Harness {
         secrets
             .set(
                 KEYRING_REFRESH_TOKEN_KEY,
-                r#"{"refresh_token":"tok-teste","email":"teste@retrosync"}"#,
+                r#"{"refresh_token":"tok-teste","email":"teste@slot2sync"}"#,
             )
             .unwrap();
         let device_id = crate::device::get_or_create(&*secrets).unwrap();
@@ -177,9 +177,9 @@ impl Harness {
     }
 }
 
-/// Primeiro sync com arquivos dos dois lados (issue #82, cenário 3): o só-local
-/// sobe, o só-remoto desce e o que existe nos dois lados com mtimes divergentes
-/// é baixado COM backup do local (Drive vence — BUG-001).
+/// Primeiro sync com arquivos dos dois lados: o só-local sobe, o só-remoto
+/// desce e o que existe nos dois lados com mtimes divergentes é baixado COM
+/// backup do local (Drive vence).
 #[tokio::test]
 async fn primeiro_sync_mescla_local_e_drive_com_backup() {
     let h = Harness::new().await;
@@ -206,12 +206,12 @@ async fn primeiro_sync_mescla_local_e_drive_com_backup() {
     assert_eq!(h.backup_of("c.bin").unwrap(), b"local-c");
 
     assert_eq!(h.manifest_len().await, 3);
-    // Snapshot de auditoria publicado na raiz RetroSync/.
+    // Snapshot de auditoria publicado na raiz Slot2Sync/.
     assert!(h.drive.root_file(DRIVE_MANIFEST_FILE).is_some());
 }
 
 /// Primeiro sync de um arquivo divergente publicado por OUTRO dispositivo:
-/// ninguém vence sozinho — vira conflito (issue #82, cenário 2).
+/// ninguém vence sozinho — vira conflito.
 #[tokio::test]
 async fn primeiro_sync_divergente_de_outro_dispositivo_vira_conflito() {
     let h = Harness::new().await;
@@ -282,8 +282,8 @@ async fn conflito_bloqueia_emulador_e_resolucao_desbloqueia() {
     assert_eq!(after.uploaded + after.downloaded + after.conflicts, 0);
 }
 
-/// Mesmo mtime com conteúdo diferente passa despercebido (issue #82, cenário 1):
-/// o diff é por timestamp — detectar isso exige hash, pendente na issue #4.
+/// Mesmo mtime com conteúdo diferente passa despercebido: o diff é por
+/// timestamp — detectar isso exige hash, ainda não implementado.
 /// Este teste DOCUMENTA a limitação atual; quando o hash entrar, ele deve
 /// passar a falhar e ser invertido.
 #[tokio::test]
@@ -307,7 +307,7 @@ async fn mtime_igual_com_conteudo_diferente_passa_despercebido() {
     assert_eq!(h.remote_content("save.bin").unwrap(), b"conteudo-B");
 }
 
-/// Coleção grande de arquivos novos sobe em UM batch (FEATURE-004); o caminho
+/// Coleção grande de arquivos novos sobe em UM batch; o caminho
 /// per-file fica só para o snapshot do manifest.
 #[tokio::test]
 async fn batch_upload_agrupa_arquivos_novos() {
@@ -454,7 +454,7 @@ async fn falha_de_download_vira_pendencia_e_proximo_sync_recupera() {
 }
 
 /// Download comum (arquivo já sincronizado, Drive mudou) arquiva a versão
-/// local vigente em `history/` antes de sobrescrever (issue #22).
+/// local vigente em `history/` antes de sobrescrever.
 #[tokio::test]
 async fn download_arquiva_versao_anterior_no_historico() {
     let h = Harness::new().await;
@@ -504,7 +504,7 @@ async fn download_arquiva_versao_anterior_no_historico() {
 }
 
 /// Arquivos que casam com os padrões de exclusão do emulador ficam fora do
-/// sync nas duas direções (issue #9). O Harness configura `*.tmp` no perfil.
+/// sync nas duas direções. O Harness configura `*.tmp` no perfil.
 #[tokio::test]
 async fn padroes_de_exclusao_ignoram_arquivos_nas_duas_direcoes() {
     let h = Harness::new().await;
@@ -520,7 +520,7 @@ async fn padroes_de_exclusao_ignoram_arquivos_nas_duas_direcoes() {
     assert!(!h.saves_dir.join("outro.tmp").exists());
 }
 
-/// Renomear um arquivo local vira um rename no Drive (issue #12): sem novo
+/// Renomear um arquivo local vira um rename no Drive: sem novo
 /// upload, sem zumbi do nome antigo, manifest reancorado no nome novo.
 #[tokio::test]
 async fn renomeacao_local_vira_rename_no_drive_sem_retransferir() {
@@ -562,8 +562,8 @@ async fn renomeacao_local_vira_rename_no_drive_sem_retransferir() {
 }
 
 /// Conflito gera a cópia padronizada do lado local em `conflicts/`
-/// (`nome.retrosync-conflict-<carimbo>-<device>.ext`) e grava o caminho no
-/// registro do conflito (issue #10).
+/// (`nome.slot2sync-conflict-<carimbo>-<device>.ext`) e grava o caminho no
+/// registro do conflito.
 #[tokio::test]
 async fn conflito_gera_copia_padronizada_do_lado_local() {
     let h = Harness::new().await;
@@ -589,7 +589,7 @@ async fn conflito_gera_copia_padronizada_do_lado_local() {
         .backup_path
         .clone()
         .expect("cópia de conflito registrada");
-    assert!(backup_path.contains(".retrosync-conflict-"));
+    assert!(backup_path.contains(".slot2sync-conflict-"));
     assert!(backup_path.contains(&h.device_id), "device id no nome");
     assert_eq!(
         std::fs::read(&backup_path).unwrap(),
@@ -599,7 +599,7 @@ async fn conflito_gera_copia_padronizada_do_lado_local() {
 }
 
 /// Renomeação que também muda de subpasta move o arquivo no Drive
-/// (addParents/removeParents), sem retransferir (issue #12).
+/// (addParents/removeParents), sem retransferir.
 #[tokio::test]
 async fn renomeacao_entre_subpastas_move_no_drive() {
     let h = Harness::new().await;

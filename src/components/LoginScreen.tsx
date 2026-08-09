@@ -63,7 +63,7 @@ export function LoginScreen({ initialDeviceName, onConnected, theme, onToggleThe
         {theme === "dark" ? t("app.switchToLightTheme") : t("app.switchToDarkTheme")}
       </Button>
       <Card as="div" padding="lg" className="login-card">
-        <h1>RetroSync</h1>
+        <h1>Slot2Sync</h1>
         <p className="login-tagline">{t("login.tagline")}</p>
 
         <p className="permission-note">

@@ -153,7 +153,7 @@ export function setBandwidthLimits(uploadKbps: number, downloadKbps: number): Pr
   return invoke<void>("set_bandwidth_limits", { uploadKbps, downloadKbps });
 }
 
-/** Liga/desliga o início automático do RetroSync junto com o sistema. */
+/** Liga/desliga o início automático do Slot2Sync junto com o sistema. */
 export function setAutostart(enabled: boolean): Promise<void> {
   return invoke<void>("set_autostart", { enabled });
 }

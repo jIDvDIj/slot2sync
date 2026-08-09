@@ -102,7 +102,7 @@ pub struct RemoteFile {
 /// Um upload de arquivo **novo** agrupável em batch. Restrito a arquivos pequenos
 /// (≤ `SIMPLE_UPLOAD_MAX_BYTES`): a Batch API só aceita `multipart`, não sessões
 /// resumable. Possui os dados (sem lifetimes) para acumular numa `Vec` entre
-/// awaits no engine (FEATURE-004).
+/// awaits no engine.
 #[derive(Debug, Clone)]
 pub struct BatchUploadOp {
     pub parent_id: String,
@@ -222,7 +222,7 @@ impl DriveClient {
             })
             .await?;
         let content = response.bytes().await?.to_vec();
-        // Compromete a janela de banda para os próximos downloads (fase 1).
+        // Compromete a janela de banda para os próximos downloads.
         self.throttle_download(content.len()).await;
         Ok(content)
     }
@@ -309,7 +309,7 @@ impl DriveClient {
 
     /// Envia até `DRIVE_BATCH_MAX_OPS` arquivos novos e pequenos em um único
     /// request `multipart/mixed`, reduzindo ~100× o número de chamadas HTTP no
-    /// primeiro sync de coleções grandes (FEATURE-004). Retorna os `DriveFile` na
+    /// primeiro sync de coleções grandes. Retorna os `DriveFile` na
     /// MESMA ordem das operações. Erro se o batch — ou qualquer sub-request —
     /// falhar; o chamador então cai no caminho per-file.
     pub async fn upload_batch(&self, ops: Vec<BatchUploadOp>) -> AppResult<Vec<DriveFile>> {
@@ -360,7 +360,7 @@ impl DriveClient {
         metadata: &serde_json::Value,
         content: Vec<u8>,
     ) -> AppResult<DriveFile> {
-        // Limite de banda de upload (fase 1): reserva a janela antes de enviar.
+        // Limite de banda de upload: reserva a janela antes de enviar.
         self.throttle_upload(content.len()).await;
         let (boundary, body) = build_multipart_related(metadata, &content)?;
         let content_type = format!("multipart/related; boundary={boundary}");
@@ -388,7 +388,7 @@ impl DriveClient {
         metadata: &serde_json::Value,
         content: Vec<u8>,
     ) -> AppResult<DriveFile> {
-        // Limite de banda de upload (fase 1): reserva a janela antes de enviar.
+        // Limite de banda de upload: reserva a janela antes de enviar.
         self.throttle_upload(content.len()).await;
         let initiate = self
             .send_with_retry("files.upload.initiate", |token| {
@@ -436,7 +436,7 @@ fn build_multipart_related(
     metadata: &serde_json::Value,
     content: &[u8],
 ) -> AppResult<(String, Vec<u8>)> {
-    let boundary = format!("retrosync-{:016x}", rand::random::<u64>());
+    let boundary = format!("slot2sync-{:016x}", rand::random::<u64>());
     let metadata_json = serde_json::to_vec(metadata)?;
 
     let mut body = Vec::with_capacity(content.len() + metadata_json.len() + 256);
@@ -457,7 +457,7 @@ fn build_multipart_related(
 fn build_batch_body(ops: &[BatchUploadOp]) -> AppResult<(String, Vec<u8>)> {
     // `fields` precisa ir percent-encoded (vírgulas) no path literal do sub-request.
     let fields = FILE_FIELDS.replace(',', "%2C");
-    let boundary = format!("retrosync-batch-{:016x}", rand::random::<u64>());
+    let boundary = format!("slot2sync-batch-{:016x}", rand::random::<u64>());
     let mut body = Vec::new();
     for (i, op) in ops.iter().enumerate() {
         let mut metadata = json!({

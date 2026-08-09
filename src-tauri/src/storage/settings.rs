@@ -2,8 +2,8 @@
 //!
 //! Um único `Settings` agrega as configurações expostas ao frontend; cada
 //! campo é persistido como uma linha chave→valor, com defaults aplicados na
-//! leitura. Começa com o nome do dispositivo (Passo 1); cresce com gatilhos e
-//! nível de notificação nos passos seguintes.
+//! leitura. Inclui nome do dispositivo, gatilhos de sync e nível de
+//! notificação, entre outras configurações.
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -20,7 +20,7 @@ use crate::constants::{
 use crate::constants::SETTING_AUTOSTART_INITIALIZED;
 use crate::error::AppResult;
 
-/// Configurações globais. Espelhado em `src/types/ipc.ts` (`Settings`).
+/// Configurações globais. (→ ipc.ts)
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
@@ -86,7 +86,7 @@ impl Default for Settings {
     }
 }
 
-/// Nível de notificações nativas. Espelhado em `src/types/ipc.ts`.
+/// Nível de notificações nativas. (→ ipc.ts)
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NotificationLevel {
@@ -128,12 +128,12 @@ impl NotificationLevel {
     }
 }
 
-/// Gatilhos de sync automático. Espelhado em `src/types/ipc.ts`.
-/// Default: todos ligados. O sync manual nunca é afetado por estes flags.
+/// Gatilhos de sync automático. (→ ipc.ts) Default: todos ligados. O sync
+/// manual nunca é afetado por estes flags.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TriggerSettings {
-    /// Sync ao abrir o RetroSync.
+    /// Sync ao abrir o Slot2Sync.
     pub startup: bool,
     /// Download antes de o emulador abrir.
     pub emulator_start: bool,

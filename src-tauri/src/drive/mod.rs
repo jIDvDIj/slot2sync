@@ -2,12 +2,12 @@
 //!
 //! - `client`: requisições autenticadas com retry exponencial + jitter;
 //! - `folders`: criação idempotente (com cache) da estrutura
-//!   `RetroSync/<Emulador>/{saves,savestates,config}`;
+//!   `Slot2Sync/<Emulador>/{saves,savestates,config}`;
 //! - `files`: listagem recursiva, download, upload multipart (≤5 MB) e
 //!   resumable (>5 MB), sempre preservando o mtime original em `modifiedTime`.
 //!
 //! Escopo OAuth: `drive.file` — o app só enxerga o que ele mesmo criou.
-//! Nunca deleta nada no Drive (regra da v1.0).
+//! Nunca deleta nada no Drive.
 
 mod api;
 mod client;

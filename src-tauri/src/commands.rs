@@ -94,7 +94,7 @@ pub async fn detect_emulator_mobile(_tree: String) -> AppResult<Option<EmulatorP
 }
 
 /// Abre o navegador para o consentimento OAuth2 e aguarda a autorização.
-/// Desktop: TCP loopback (RFC 8252). Mobile: deep link `retrosync://oauth`.
+/// Desktop: TCP loopback (RFC 8252). Mobile: deep link `slot2sync://oauth`.
 #[cfg(desktop)]
 #[tauri::command]
 pub async fn connect_google_drive(
@@ -127,7 +127,7 @@ pub async fn connect_google_drive(
             let urls: Vec<String> = serde_json::from_str(event.payload()).unwrap_or_default();
             if let Some(url) = urls
                 .into_iter()
-                .find(|u| u.starts_with("com.retrosync.app:/oauth2redirect"))
+                .find(|u| u.starts_with("com.slot2sync.app:/oauth2redirect"))
             {
                 if let Some(sender) = tx.lock().unwrap().take() {
                     let _ = sender.send(url);
@@ -163,7 +163,7 @@ pub async fn disconnect_google_drive(
 ) -> AppResult<AuthStatus> {
     let status = state.auth.disconnect().await?;
     // Os IDs de pasta cacheados são por conta Google — zera para não reaproveitá-los
-    // ao conectar com outra conta (FEATURE-006).
+    // ao conectar com outra conta.
     state.engine.clear_folder_cache().await;
     let _ = app.emit(EVT_AUTH_STATUS, &status);
     Ok(status)
@@ -172,7 +172,7 @@ pub async fn disconnect_google_drive(
 /// Valida via `LocalStorage` que `path` aponta para uma pasta acessível. No
 /// desktop é `Path::is_dir`; no mobile a raiz é uma URI SAF conferida pelo
 /// plugin nativo. Centraliza a checagem que antes vazava `std::fs` e era pulada
-/// no mobile (BUG-005).
+/// no mobile.
 async fn ensure_valid_root(state: &State<'_, AppState>, path: &str) -> AppResult<()> {
     let loc = FileLoc::from_path(PathBuf::from(path));
     if state.storage.is_valid_root(&loc).await {
@@ -274,7 +274,7 @@ pub async fn add_emulator_manual(
     let root = PathBuf::from(&path);
     let root_loc = FileLoc::from_path(root.clone());
     // No mobile o path é uma URI SAF (content://...); a checagem de existência
-    // passa pelo plugin nativo via LocalStorage, não por std::fs (BUG-005).
+    // passa pelo plugin nativo via LocalStorage, não por std::fs.
     ensure_valid_root(&state, &path).await?;
 
     let profile =
@@ -332,7 +332,7 @@ pub async fn list_emulators(state: State<'_, AppState>) -> AppResult<Vec<Emulato
 }
 
 /// Jogos cujos arquivos foram sincronizados, agregados a partir do manifest e
-/// com o serial traduzido para nome legível quando conhecido (FEATURE-001). A
+/// com o serial traduzido para nome legível quando conhecido. A
 /// UI lista por emulador; sem nome, exibe o próprio serial.
 #[tauri::command]
 pub async fn list_synced_games(state: State<'_, AppState>) -> AppResult<Vec<SyncedGame>> {
@@ -478,7 +478,7 @@ pub async fn get_settings(app: AppHandle, state: State<'_, AppState>) -> AppResu
     Ok(settings)
 }
 
-/// Liga/desliga o início automático do RetroSync junto com o sistema. O estado
+/// Liga/desliga o início automático do Slot2Sync junto com o sistema. O estado
 /// é persistido pelo SO (registro do Windows / LaunchAgent), não no banco local.
 /// Ao subir pelo SO, o app é lançado com `--minimized` e fica só na bandeja.
 #[cfg(desktop)]
@@ -502,7 +502,7 @@ pub async fn set_autostart(app: AppHandle, enabled: bool) -> AppResult<()> {
     Ok(())
 }
 
-/// Lê do SO se o RetroSync está registrado para iniciar com o sistema.
+/// Lê do SO se o Slot2Sync está registrado para iniciar com o sistema.
 #[cfg(desktop)]
 fn autostart_enabled(app: &AppHandle) -> AppResult<bool> {
     app.autolaunch()
@@ -517,7 +517,7 @@ fn autostart_enabled(_app: &AppHandle) -> AppResult<bool> {
 }
 
 /// Abre a pasta de backups locais no gerenciador de arquivos do SO. A pasta é
-/// criada se ainda não existir (BUG-001 — backups do primeiro sync).
+/// criada se ainda não existir (recebe os backups do primeiro sync).
 #[cfg(desktop)]
 #[tauri::command]
 pub async fn open_backup_folder(app: AppHandle) -> AppResult<()> {
@@ -549,7 +549,7 @@ pub async fn reveal_backup_path(app: AppHandle, path: String) -> AppResult<()> {
     let root_canonical = tokio::fs::canonicalize(&backups_root).await?;
     if !canonical.starts_with(&root_canonical) {
         return Err(AppError::Other(
-            "caminho fora da pasta de backups do RetroSync".into(),
+            "caminho fora da pasta de backups do Slot2Sync".into(),
         ));
     }
     let dir = canonical
@@ -819,7 +819,7 @@ pub async fn restore_version(
     Ok(())
 }
 
-/// Histórico dos backups locais que o RetroSync criou antes de sobrescrever
+/// Histórico dos backups locais que o Slot2Sync criou antes de sobrescrever
 /// arquivos (primeiro sync e resolução de conflito). Só leitura — restauração
 /// continua manual, pela pasta.
 #[tauri::command]

@@ -117,7 +117,6 @@ export function AddEmulatorModal({ existingNames, onClose, onAdded }: Props) {
       onAdded();
     });
 
-  // Desktop: abre o seletor nativo de pasta do SO.
   const pickRootDesktop = async () => {
     const selected = await openDialog({
       directory: true,

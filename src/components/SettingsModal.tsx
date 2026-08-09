@@ -45,7 +45,7 @@ interface Props {
 }
 
 /**
- * Modal de configurações, organizado em abas (#12): Geral (idioma,
+ * Modal de configurações, organizado em abas: Geral (idioma,
  * dispositivo, inicialização), Sincronização (gatilhos, categorias),
  * Notificações e Backups (pasta + histórico).
  */

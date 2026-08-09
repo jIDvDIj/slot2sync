@@ -8,8 +8,7 @@ use serde::Serialize;
 
 use crate::error::AppResult;
 
-/// Estatísticas acumuladas de um emulador. Espelhada em `src/types/ipc.ts`
-/// (`EmulatorStats`).
+/// Estatísticas acumuladas de um emulador. (→ ipc.ts)
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EmulatorStats {
@@ -54,7 +53,6 @@ fn ensure_row(conn: &Connection, emulator: &str) -> AppResult<()> {
     Ok(())
 }
 
-/// Upload concluído: incrementa contadores e registra o arquivo.
 pub fn record_upload(conn: &Connection, emulator: &str, bytes: i64, file: &str) -> AppResult<()> {
     ensure_row(conn, emulator)?;
     conn.execute(
@@ -65,7 +63,6 @@ pub fn record_upload(conn: &Connection, emulator: &str, bytes: i64, file: &str) 
     Ok(())
 }
 
-/// Download concluído: incrementa contadores e registra o arquivo.
 pub fn record_download(conn: &Connection, emulator: &str, bytes: i64, file: &str) -> AppResult<()> {
     ensure_row(conn, emulator)?;
     conn.execute(
@@ -76,7 +73,6 @@ pub fn record_download(conn: &Connection, emulator: &str, bytes: i64, file: &str
     Ok(())
 }
 
-/// Conflito detectado.
 pub fn record_conflict(conn: &Connection, emulator: &str) -> AppResult<()> {
     ensure_row(conn, emulator)?;
     conn.execute(

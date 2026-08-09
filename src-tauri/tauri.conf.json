@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "RetroSync",
+  "productName": "Slot2Sync",
   "version": "0.1.0",
-  "identifier": "com.retrosync.app",
+  "identifier": "com.slot2sync.app",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -13,7 +13,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "RetroSync",
+        "title": "Slot2Sync",
         "width": 900,
         "height": 650,
         "minWidth": 720,
@@ -27,7 +27,7 @@
   },
   "plugins": {
     "deep-link": {
-      "mobile": [{ "scheme": ["com.retrosync.app"], "path_prefix": ["/oauth2redirect"] }]
+      "mobile": [{ "scheme": ["com.slot2sync.app"], "path_prefix": ["/oauth2redirect"] }]
     }
   },
   "bundle": {

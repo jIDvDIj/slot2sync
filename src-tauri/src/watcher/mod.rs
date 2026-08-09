@@ -7,7 +7,7 @@
 //! - **consumidor**: para cada transição, dispara o sync direcionado e emite
 //!   o status ao frontend.
 //!
-//! Gatilhos (Passo 6 da especificação):
+//! Gatilhos:
 //! - emulador **abriu** → sync Drive → Local (saves frescos antes do jogo carregar);
 //! - emulador **fechou** → sync Local → Drive (sobe os saves da sessão).
 
@@ -44,7 +44,7 @@ pub enum WatcherEvent {
     EmulatorStopped(String),
 }
 
-/// Payload do evento `emulator:status`. Espelhado em `src/types/ipc.ts`.
+/// Payload do evento `emulator:status`. (→ ipc.ts)
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct EmulatorStatusEvent {
@@ -183,7 +183,7 @@ fn spawn_consumer(
                 if let Err(err) = app
                     .notification()
                     .builder()
-                    .title("RetroSync")
+                    .title("Slot2Sync")
                     .body(format!("Emulador detectado: {name}"))
                     .show()
                 {

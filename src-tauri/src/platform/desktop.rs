@@ -67,9 +67,9 @@ fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         .cloned()
         .ok_or("ícone padrão da janela ausente")?;
 
-    TrayIconBuilder::with_id("retrosync-tray")
+    TrayIconBuilder::with_id("slot2sync-tray")
         .icon(icon)
-        .tooltip("RetroSync")
+        .tooltip("Slot2Sync")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(on_tray_menu_event)
@@ -124,7 +124,7 @@ fn spawn_sync(app: AppHandle, trigger: &'static str, then_exit: bool) {
 }
 
 /// A janela nasce oculta (`visible: false` no tauri.conf.json). Em abertura
-/// normal nós a mostramos; quando o SO lança o app com `--minimized`
+/// normal ela é exibida; quando o SO lança o app com `--minimized`
 /// (autostart junto com o sistema), fica só na bandeja.
 fn maybe_show_window(app: &AppHandle) {
     let launched_minimized = std::env::args().any(|a| a == constants::STARTUP_MINIMIZED_FLAG);

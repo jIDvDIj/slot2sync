@@ -13,7 +13,7 @@ const CATEGORY_LABEL = {
 
 /**
  * Lista de jogos sincronizados de um emulador: nome legível (ou serial), as
- * categorias em que tem arquivos e o tamanho total (FEATURE-001).
+ * categorias em que tem arquivos e o tamanho total.
  */
 export function GameList({ games }: { games: SyncedGame[] }) {
   const { t } = useTranslation();

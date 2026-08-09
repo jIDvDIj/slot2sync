@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 use crate::emulator::EmulatorProfile;
 use crate::error::AppResult;
 
-/// Categorias de sync habilitadas para um emulador. Espelhado em
-/// `src/types/ipc.ts` (`SyncCategories`). Default: saves/savestates ativas.
+/// Categorias de sync habilitadas para um emulador. (→ ipc.ts) Default:
+/// saves/savestates ativas.
 ///
 /// `config` (versionamento das pastas de configuração do emulador) está
 /// permanentemente desativado — `get_categories` sempre devolve `false` e

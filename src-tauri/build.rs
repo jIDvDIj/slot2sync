@@ -4,7 +4,7 @@ use std::path::Path;
 const DOTENV_PATH: &str = "../.env";
 
 /// Prefixo das variáveis que podem ser embutidas no binário.
-const ENV_PREFIX: &str = "RETROSYNC_";
+const ENV_PREFIX: &str = "SLOT2SYNC_";
 
 /// Variáveis lidas por `option_env!` no código (`auth/oauth.rs`). Precisam ser
 /// declaradas como dependências de build **sempre** — inclusive no CI, onde não
@@ -12,10 +12,10 @@ const ENV_PREFIX: &str = "RETROSYNC_";
 /// o cache do cargo (`rust-cache`) pode servir um binário com credenciais antigas
 /// quando uma delas é rotacionada, pois nada invalida a recompilação do crate.
 const EMBEDDED_KEYS: &[&str] = &[
-    "RETROSYNC_GOOGLE_CLIENT_ID",
-    "RETROSYNC_GOOGLE_CLIENT_SECRET",
-    "RETROSYNC_TOKEN_PROXY_URL",
-    "RETROSYNC_PROXY_SECRET",
+    "SLOT2SYNC_GOOGLE_CLIENT_ID",
+    "SLOT2SYNC_GOOGLE_CLIENT_SECRET",
+    "SLOT2SYNC_TOKEN_PROXY_URL",
+    "SLOT2SYNC_PROXY_SECRET",
 ];
 
 fn main() {
@@ -26,7 +26,7 @@ fn main() {
     tauri_build::build()
 }
 
-/// Lê o `.env` da raiz do repositório e reexporta as variáveis `RETROSYNC_*`
+/// Lê o `.env` da raiz do repositório e reexporta as variáveis `SLOT2SYNC_*`
 /// via `cargo:rustc-env`, tornando-as visíveis ao `option_env!` do código.
 /// Variáveis já definidas no ambiente do shell têm precedência sobre o arquivo.
 fn load_dotenv() {
