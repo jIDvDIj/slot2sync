@@ -13,6 +13,7 @@ import {
   setNotificationLevel,
   setScanIntervalMinutes,
 } from "../lib/ipc";
+import { providerLabel } from "../lib/providerLabels";
 import type { EmulatorProfile, NotificationLevel, Settings } from "../types/ipc";
 import { usePlatform } from "../hooks/usePlatform";
 import { BackupHistoryModal } from "./BackupHistoryModal";
@@ -42,6 +43,8 @@ interface Props {
   onClose: () => void;
   /** Recarrega as settings no App após qualquer alteração. */
   onSaved: () => void;
+  /** Desconecta do provedor ativo — o App volta a mostrar o seletor de provedor. */
+  onDisconnectProvider: () => void;
 }
 
 /**
@@ -49,7 +52,13 @@ interface Props {
  * dispositivo, inicialização), Sincronização (gatilhos, categorias),
  * Notificações e Backups (pasta + histórico).
  */
-export function SettingsModal({ settings, emulators, onClose, onSaved }: Props) {
+export function SettingsModal({
+  settings,
+  emulators,
+  onClose,
+  onSaved,
+  onDisconnectProvider,
+}: Props) {
   const { t, i18n } = useTranslation();
   const errorMessage = useErrorMessage();
   const { isMobile } = usePlatform();
@@ -255,6 +264,23 @@ export function SettingsModal({ settings, emulators, onClose, onSaved }: Props) 
               ) : null}
             </div>
             {error ? <p className="error">{error}</p> : null}
+          </section>
+
+          <section className="settings-section">
+            <h3>{t("settings.provider.heading")}</h3>
+            <p className="muted">
+              {settings.storageProvider
+                ? t("settings.provider.active", {
+                    provider: providerLabel(settings.storageProvider, t),
+                  })
+                : t("settings.provider.none")}
+              {settings.storageProvider === "local_folder" && settings.folderProviderPath
+                ? ` — ${settings.folderProviderPath}`
+                : ""}
+            </p>
+            <button className="secondary" onClick={onDisconnectProvider}>
+              {t("settings.provider.change")}
+            </button>
           </section>
 
           {!isMobile ? (

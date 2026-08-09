@@ -133,6 +133,10 @@ function MainScreen({ auth, settings, reloadSettings, theme }: MainScreenProps) 
           emulators={emulators}
           onClose={() => setShowSettings(false)}
           onSaved={reloadSettings}
+          onDisconnectProvider={() => {
+            setShowSettings(false);
+            void auth.disconnect();
+          }}
         />
       ) : null}
     </main>

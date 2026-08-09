@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { useErrorMessage } from "../lib/errors";
-import { disconnectGoogleDrive, getAuthStatus } from "../lib/ipc";
+import { disconnectProvider, getAuthStatus } from "../lib/ipc";
 import type { AuthStatus } from "../types/ipc";
 
 /**
@@ -25,7 +25,7 @@ export function useAuth() {
   const disconnect = useCallback(async () => {
     setError(null);
     try {
-      setStatus(await disconnectGoogleDrive());
+      setStatus(await disconnectProvider());
     } catch (err) {
       setError(errorMessage(err));
     }

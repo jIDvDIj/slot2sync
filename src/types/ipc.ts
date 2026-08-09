@@ -18,6 +18,9 @@ export interface AuthStatus {
   email: string | null;
 }
 
+/** `remote::ProviderKind` — qual provedor de storage está ativo */
+export type ProviderKind = "google_drive" | "dropbox" | "one_drive" | "local_folder";
+
 /** `storage::settings::TriggerSettings` — gatilhos de sync automático */
 export interface TriggerSettings {
   startup: boolean;
@@ -45,6 +48,12 @@ export interface Settings {
   uploadKbps: number;
   /** Limite de download em KB/s (0 = ilimitado). */
   downloadKbps: number;
+  /** Provedor de storage remoto ativo. `null` = nenhum escolhido ainda
+   * (primeiro uso) — a UI mostra o seletor de provedor. */
+  storageProvider: ProviderKind | null;
+  /** Caminho absoluto da pasta local/de rede, quando `storageProvider` é
+   * `"local_folder"`. Irrelevante para os demais provedores. */
+  folderProviderPath: string | null;
 }
 
 /** `storage::stats::EmulatorStats` — contadores acumulados por emulador */
@@ -178,10 +187,10 @@ export interface Conflict {
   localMtimeMs: number;
   localSize: number;
   localDevice: string | null;
-  driveMtimeMs: number;
-  driveSize: number;
-  driveDevice: string | null;
-  driveFileId: string;
+  remoteMtimeMs: number;
+  remoteSize: number;
+  remoteDevice: string | null;
+  remoteFileId: string;
   localAbsPath: string;
   detectedAtMs: number;
   /** Cópia padronizada do lado local (`…slot2sync-conflict-<carimbo>-<device>…`),
@@ -190,7 +199,7 @@ export interface Conflict {
 }
 
 /** `sync::ConflictResolution` — qual versão manter ao resolver um conflito */
-export type ConflictResolution = "local" | "drive";
+export type ConflictResolution = "local" | "remote";
 
 /** `sync::engine::SyncStarted` — payload do evento `sync:started` */
 export interface SyncStarted {
@@ -229,7 +238,7 @@ export interface AppErrorPayload {
     | "emulator_not_detected"
     | "emulator_exists"
     | "file_busy"
-    | "drive_not_found"
+    | "remote_not_found"
     | "insufficient_disk_space"
     | "integrity"
     | "other";
