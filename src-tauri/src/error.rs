@@ -40,8 +40,8 @@ pub enum AppError {
     #[error("arquivo em uso (modificado durante a leitura): {0}")]
     FileBusy(String),
 
-    #[error("objeto não encontrado no Drive: {0}")]
-    DriveObjectNotFound(String),
+    #[error("objeto não encontrado no provedor remoto: {0}")]
+    RemoteObjectNotFound(String),
 
     #[error(
         "espaço em disco insuficiente: necessário {needed_mb} MB, disponível {available_mb} MB"
@@ -68,7 +68,7 @@ impl AppError {
             AppError::EmulatorNotDetected(_) => "emulator_not_detected",
             AppError::EmulatorExists(_) => "emulator_exists",
             AppError::FileBusy(_) => "file_busy",
-            AppError::DriveObjectNotFound(_) => "drive_not_found",
+            AppError::RemoteObjectNotFound(_) => "remote_not_found",
             AppError::InsufficientDiskSpace { .. } => "insufficient_disk_space",
             AppError::Integrity(_) => "integrity",
             AppError::Other(_) => "other",
@@ -94,7 +94,7 @@ impl AppError {
             | AppError::EmulatorNotDetected(s)
             | AppError::EmulatorExists(s)
             | AppError::FileBusy(s)
-            | AppError::DriveObjectNotFound(s)
+            | AppError::RemoteObjectNotFound(s)
             | AppError::Integrity(s)
             | AppError::Other(s) => s.clone(),
         }
@@ -134,8 +134,8 @@ mod tests {
         // O union AppErrorPayload["code"] em src/types/ipc.ts depende destes valores.
         assert_eq!(payload(AppError::Auth("x".into()))["code"], "auth");
         assert_eq!(
-            payload(AppError::DriveObjectNotFound("x".into()))["code"],
-            "drive_not_found"
+            payload(AppError::RemoteObjectNotFound("x".into()))["code"],
+            "remote_not_found"
         );
         assert_eq!(
             payload(AppError::EmulatorNotDetected("x".into()))["code"],
@@ -180,7 +180,9 @@ mod tests {
     #[test]
     fn database_serializa_code_e_detalhe_da_lib_subjacente() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
-        let db_err = conn.execute("SELECT * FROM tabela_inexistente", []).unwrap_err();
+        let db_err = conn
+            .execute("SELECT * FROM tabela_inexistente", [])
+            .unwrap_err();
         let v = payload(AppError::from(db_err));
         assert_eq!(v["code"], "database");
         assert!(!v["detail"].as_str().unwrap().is_empty());

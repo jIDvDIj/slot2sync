@@ -5,6 +5,7 @@
 #[cfg(desktop)]
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use serde::Serialize;
 #[cfg(mobile)]
@@ -13,14 +14,16 @@ use tauri::{AppHandle, Emitter, Manager, State};
 #[cfg(desktop)]
 use tauri_plugin_autostart::ManagerExt;
 
-use crate::auth::AuthStatus;
+use crate::auth::{AuthManager, AuthStatus};
 use crate::constants::{LOCAL_BACKUP_DIR, TRIGGER_MANUAL};
 use crate::emulator::{self, EmulatorProfile};
 use crate::error::{AppError, AppResult};
 use crate::events::EVT_AUTH_STATUS;
 use crate::games::{self, SyncedGame};
+use crate::remote::{ProviderKind, RemoteProvider};
 use crate::state::AppState;
 use crate::storage::conflicts::{self, Conflict};
+use crate::storage::db::Db;
 use crate::storage::emulators::SyncCategories;
 use crate::storage::settings::{NotificationLevel, Settings, TriggerSettings};
 use crate::storage::{emulators, manifest, queue, settings};
@@ -93,29 +96,130 @@ pub async fn detect_emulator_mobile(_tree: String) -> AppResult<Option<EmulatorP
     ))
 }
 
+/// Monta o cliente remoto concreto de `kind` a partir de um `AuthManager` já
+/// conectado — o único lugar que sabe qual implementação de
+/// `RemoteProvider` corresponde a cada provedor OAuth. `LocalFolder` não usa
+/// OAuth e nunca chega aqui (ver `connect_local_folder`).
+fn build_oauth_remote(
+    kind: ProviderKind,
+    http: reqwest::Client,
+    auth: Arc<AuthManager>,
+    db: Db,
+) -> Arc<dyn RemoteProvider> {
+    match kind {
+        ProviderKind::GoogleDrive => Arc::new(crate::drive::DriveClient::new(http, auth, db)),
+        ProviderKind::Dropbox => Arc::new(crate::dropbox::DropboxClient::new(http, auth)),
+        ProviderKind::OneDrive => Arc::new(crate::onedrive::OneDriveClient::new(http, auth)),
+        ProviderKind::LocalFolder => {
+            unreachable!("LocalFolder não usa AuthManager/build_oauth_remote")
+        }
+    }
+}
+
+/// Troca o `AuthManager`/provedor remoto ativos no `AppState`/`SyncEngine` —
+/// efetivo imediatamente, sem reiniciar o app — e persiste qual provedor
+/// ficou ativo. Chamado depois que a conexão (OAuth ou validação de pasta)
+/// já deu certo.
+async fn activate_provider(
+    state: &State<'_, AppState>,
+    kind: ProviderKind,
+    auth: Option<Arc<AuthManager>>,
+    remote: Arc<dyn RemoteProvider>,
+) -> AppResult<()> {
+    {
+        let mut guard = state
+            .auth
+            .write()
+            .map_err(|_| AppError::Other("lock de autenticação envenenado".into()))?;
+        *guard = auth;
+    }
+    state.engine.set_remote_provider(Some(remote));
+    state
+        .db
+        .with(move |conn| settings::set_storage_provider(conn, kind))
+        .await
+}
+
 /// Abre o navegador para o consentimento OAuth2 e aguarda a autorização.
-/// Desktop: TCP loopback (RFC 8252). Mobile: deep link `slot2sync://oauth`.
+/// Desktop: TCP loopback (RFC 8252). Mobile: deep link `slot2sync://oauth`
+/// (ver `connect_oauth_mobile`, compartilhado pelos três provedores OAuth).
 #[cfg(desktop)]
 #[tauri::command]
 pub async fn connect_google_drive(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> AppResult<AuthStatus> {
-    let status = state.auth.connect().await?;
+    connect_oauth_desktop(ProviderKind::GoogleDrive, &app, &state).await
+}
+
+#[cfg(desktop)]
+#[tauri::command]
+pub async fn connect_dropbox(app: AppHandle, state: State<'_, AppState>) -> AppResult<AuthStatus> {
+    connect_oauth_desktop(ProviderKind::Dropbox, &app, &state).await
+}
+
+#[cfg(desktop)]
+#[tauri::command]
+pub async fn connect_onedrive(app: AppHandle, state: State<'_, AppState>) -> AppResult<AuthStatus> {
+    connect_oauth_desktop(ProviderKind::OneDrive, &app, &state).await
+}
+
+#[cfg(desktop)]
+async fn connect_oauth_desktop(
+    kind: ProviderKind,
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+) -> AppResult<AuthStatus> {
+    let auth = Arc::new(AuthManager::new_for(
+        kind,
+        state.http.clone(),
+        state.secrets.clone(),
+    ));
+    let status = auth.connect().await?;
+    let remote = build_oauth_remote(kind, state.http.clone(), auth.clone(), state.db.clone());
+    activate_provider(state, kind, Some(auth), remote).await?;
     let _ = app.emit(EVT_AUTH_STATUS, &status);
     Ok(status)
 }
 
-/// Variante mobile: registra o listener de deep link antes de abrir o browser,
-/// para não perder o redirect caso o app já esteja rodando em background.
+/// Variante mobile, compartilhada pelos três provedores OAuth: registra o
+/// listener de deep link antes de abrir o browser, para não perder o
+/// redirect caso o app já esteja rodando em background.
 #[cfg(mobile)]
 #[tauri::command]
 pub async fn connect_google_drive(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> AppResult<AuthStatus> {
-    use std::sync::{Arc, Mutex};
+    connect_oauth_mobile(ProviderKind::GoogleDrive, app, state).await
+}
+
+#[cfg(mobile)]
+#[tauri::command]
+pub async fn connect_dropbox(app: AppHandle, state: State<'_, AppState>) -> AppResult<AuthStatus> {
+    connect_oauth_mobile(ProviderKind::Dropbox, app, state).await
+}
+
+#[cfg(mobile)]
+#[tauri::command]
+pub async fn connect_onedrive(app: AppHandle, state: State<'_, AppState>) -> AppResult<AuthStatus> {
+    connect_oauth_mobile(ProviderKind::OneDrive, app, state).await
+}
+
+#[cfg(mobile)]
+async fn connect_oauth_mobile(
+    kind: ProviderKind,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> AppResult<AuthStatus> {
+    use std::sync::Mutex;
     use tokio::sync::oneshot;
+
+    let auth = Arc::new(AuthManager::new_for(
+        kind,
+        state.http.clone(),
+        state.secrets.clone(),
+    ));
 
     let (tx, rx) = oneshot::channel::<String>();
     let tx = Arc::new(Mutex::new(Some(tx)));
@@ -136,35 +240,118 @@ pub async fn connect_google_drive(
         })
     };
 
-    let result = state.auth.connect_mobile(&app, rx).await;
-
-    // Se o fluxo falhou antes do deep link chegar, cancela o listener.
+    let result = auth.connect_mobile(&app, rx).await;
     if result.is_err() {
         app.unlisten(listener_id);
+        return result;
     }
-
-    if let Ok(ref status) = result {
-        let _ = app.emit(EVT_AUTH_STATUS, status);
-    }
-    result
+    let status = result?;
+    let remote = build_oauth_remote(kind, state.http.clone(), auth.clone(), state.db.clone());
+    activate_provider(&state, kind, Some(auth), remote).await?;
+    let _ = app.emit(EVT_AUTH_STATUS, &status);
+    Ok(status)
 }
 
-/// Status atual sem disparar fluxo interativo (consulta apenas o keyring).
+/// Conecta a uma pasta local ou de rede como provedor de storage — sem
+/// OAuth: só valida que o caminho existe e é gravável. Cria a pasta se ainda
+/// não existir (comportamento útil para um caminho de rede recém-mapeado).
+#[tauri::command]
+pub async fn connect_local_folder(
+    state: State<'_, AppState>,
+    path: String,
+) -> AppResult<AuthStatus> {
+    let root = PathBuf::from(&path);
+    tokio::fs::create_dir_all(&root).await.map_err(|e| {
+        AppError::Other(format!(
+            "não foi possível criar/acessar a pasta \"{path}\": {e}"
+        ))
+    })?;
+    let probe = root.join(".slot2sync-write-test");
+    tokio::fs::write(&probe, b"ok")
+        .await
+        .map_err(|e| AppError::Other(format!("pasta não é gravável \"{path}\": {e}")))?;
+    let _ = tokio::fs::remove_file(&probe).await;
+
+    let remote: Arc<dyn RemoteProvider> = Arc::new(crate::folder::FolderProvider::new(root));
+    activate_provider(&state, ProviderKind::LocalFolder, None, remote).await?;
+    let path_to_store = path.clone();
+    state
+        .db
+        .with(move |conn| settings::set_folder_provider_path(conn, &path_to_store))
+        .await?;
+
+    let status = AuthStatus {
+        connected: true,
+        email: None,
+    };
+    Ok(status)
+}
+
+/// Status atual do provedor configurado, sem disparar fluxo interativo.
+/// Provedores OAuth: consulta só o keyring (não exige rede). `LocalFolder`:
+/// confere se o caminho salvo ainda existe. Nenhum provedor escolhido ainda
+/// (primeiro uso): desconectado — a UI mostra o seletor de provedor.
 #[tauri::command]
 pub async fn get_auth_status(state: State<'_, AppState>) -> AppResult<AuthStatus> {
-    state.auth.status().await
+    let stored = state.db.with(settings::storage_provider).await?;
+    match stored {
+        None => Ok(AuthStatus::disconnected()),
+        Some(ProviderKind::LocalFolder) => {
+            let path = state.db.with(settings::folder_provider_path).await?;
+            let connected = path.as_deref().is_some_and(|p| PathBuf::from(p).is_dir());
+            Ok(AuthStatus {
+                connected,
+                email: None,
+            })
+        }
+        Some(_oauth_provider) => {
+            let auth = {
+                state
+                    .auth
+                    .read()
+                    .map_err(|_| AppError::Other("lock de autenticação envenenado".into()))?
+                    .clone()
+            };
+            match auth {
+                Some(auth) => auth.status().await,
+                None => Ok(AuthStatus::disconnected()),
+            }
+        }
+    }
 }
 
-/// Remove o refresh token do keyring e limpa o token em memória.
+/// Desconecta do provedor ativo (qualquer que seja) e limpa a config
+/// persistida — a UI volta a mostrar o seletor de provedor, sem reiniciar o
+/// app. Para provedores OAuth, também remove o refresh token do keyring.
 #[tauri::command]
-pub async fn disconnect_google_drive(
+pub async fn disconnect_provider(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> AppResult<AuthStatus> {
-    let status = state.auth.disconnect().await?;
-    // Os IDs de pasta cacheados são por conta Google — zera para não reaproveitá-los
-    // ao conectar com outra conta.
+    let auth = {
+        state
+            .auth
+            .read()
+            .map_err(|_| AppError::Other("lock de autenticação envenenado".into()))?
+            .clone()
+    };
+    if let Some(auth) = auth {
+        auth.disconnect().await?;
+    }
+    {
+        let mut guard = state
+            .auth
+            .write()
+            .map_err(|_| AppError::Other("lock de autenticação envenenado".into()))?;
+        *guard = None;
+    }
+    // Os IDs/paths de pasta cacheados são por provedor — zera para não
+    // reaproveitá-los ao conectar com outro provedor/conta.
     state.engine.clear_folder_cache().await;
+    state.engine.set_remote_provider(None);
+    state.db.with(settings::clear_storage_provider).await?;
+
+    let status = AuthStatus::disconnected();
     let _ = app.emit(EVT_AUTH_STATUS, &status);
     Ok(status)
 }
@@ -386,7 +573,7 @@ pub async fn list_conflicts(state: State<'_, AppState>) -> AppResult<Vec<Conflic
     state.db.with(conflicts::list_all).await
 }
 
-/// Resolve um conflito mantendo a versão escolhida (`local` ou `drive`) e
+/// Resolve um conflito mantendo a versão escolhida (`local` ou `remote`) e
 /// desbloqueia o sync do emulador.
 #[tauri::command]
 pub async fn resolve_conflict(

@@ -1,7 +1,7 @@
 [package]
 name = "slot2sync"
 version = "0.1.0"
-description = "Sincronização automática de saves e configurações de emuladores com o Google Drive"
+description = "Sincronização automática de saves e configurações de emuladores com a nuvem"
 authors = ["David"]
 edition = "2021"
 license = "GPL-3.0-or-later"

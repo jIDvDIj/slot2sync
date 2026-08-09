@@ -1,10 +1,12 @@
-//! Cliente da API do Google Drive v3 via `reqwest`.
+//! Cliente da API do Google Drive v3 via `reqwest` — uma das implementações
+//! concretas de `remote::RemoteProvider`.
 //!
 //! - `client`: requisições autenticadas com retry exponencial + jitter;
 //! - `folders`: criação idempotente (com cache) da estrutura
 //!   `Slot2Sync/<Emulador>/{saves,savestates,config}`;
 //! - `files`: listagem recursiva, download, upload multipart (≤5 MB) e
-//!   resumable (>5 MB), sempre preservando o mtime original em `modifiedTime`.
+//!   resumable (>5 MB), sempre preservando o mtime original em `modifiedTime`;
+//! - `api`: `impl remote::RemoteProvider for DriveClient`.
 //!
 //! Escopo OAuth: `drive.file` — o app só enxerga o que ele mesmo criou.
 //! Nunca deleta nada no Drive.
@@ -22,9 +24,8 @@ pub(crate) mod mock;
 #[cfg(test)]
 pub(crate) mod test_support;
 
-pub use api::DriveApi;
 pub use client::DriveClient;
-pub use files::{BatchUploadOp, DeviceTag, DriveFile, RemoteFile};
+pub use files::DriveFile;
 
 pub(crate) const DRIVE_API_BASE: &str = "https://www.googleapis.com/drive/v3";
 pub(crate) const DRIVE_UPLOAD_BASE: &str = "https://www.googleapis.com/upload/drive/v3";

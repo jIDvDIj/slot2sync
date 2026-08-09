@@ -1,4 +1,4 @@
-//! Tabela `sync_conflicts`: arquivos em que ambos os lados (local e Drive)
+//! Tabela `sync_conflicts`: arquivos em que ambos os lados (local e remoto)
 //! mudaram desde o último sync. Enquanto houver conflito para um emulador, o
 //! sync dele fica bloqueado até o usuário escolher qual versão manter.
 
@@ -21,11 +21,11 @@ pub struct Conflict {
     /// Dispositivo de origem da versão local (este dispositivo, no momento da
     /// detecção). `None` se o nome ainda não foi definido.
     pub local_device: Option<String>,
-    pub drive_mtime_ms: i64,
-    pub drive_size: i64,
-    /// Dispositivo que publicou a versão no Drive (via `appProperties`).
-    pub drive_device: Option<String>,
-    pub drive_file_id: String,
+    pub remote_mtime_ms: i64,
+    pub remote_size: i64,
+    /// Dispositivo que publicou a versão remota (via metadata do provedor).
+    pub remote_device: Option<String>,
+    pub remote_file_id: String,
     /// Caminho absoluto local — interno, usado pela resolução.
     pub local_abs_path: String,
     pub detected_at_ms: i64,
@@ -36,7 +36,7 @@ pub struct Conflict {
 }
 
 const COLS: &str = "emulator, category, rel_path, local_mtime_ms, local_size, local_device, \
-                    drive_mtime_ms, drive_size, drive_device, drive_file_id, local_abs_path, \
+                    remote_mtime_ms, remote_size, remote_device, remote_file_id, local_abs_path, \
                     detected_at_ms, backup_path";
 
 fn from_row(row: &Row) -> rusqlite::Result<Conflict> {
@@ -55,10 +55,10 @@ fn from_row(row: &Row) -> rusqlite::Result<Conflict> {
         local_mtime_ms: row.get(3)?,
         local_size: row.get(4)?,
         local_device: row.get(5)?,
-        drive_mtime_ms: row.get(6)?,
-        drive_size: row.get(7)?,
-        drive_device: row.get(8)?,
-        drive_file_id: row.get(9)?,
+        remote_mtime_ms: row.get(6)?,
+        remote_size: row.get(7)?,
+        remote_device: row.get(8)?,
+        remote_file_id: row.get(9)?,
         local_abs_path: row.get(10)?,
         detected_at_ms: row.get(11)?,
         backup_path: row.get(12)?,
@@ -69,7 +69,7 @@ pub fn upsert(conn: &Connection, c: &Conflict) -> AppResult<()> {
     conn.execute(
         "INSERT OR REPLACE INTO sync_conflicts \
          (emulator, category, rel_path, local_mtime_ms, local_size, local_device, \
-          drive_mtime_ms, drive_size, drive_device, drive_file_id, local_abs_path, \
+          remote_mtime_ms, remote_size, remote_device, remote_file_id, local_abs_path, \
           detected_at_ms, backup_path) \
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         params![
@@ -79,10 +79,10 @@ pub fn upsert(conn: &Connection, c: &Conflict) -> AppResult<()> {
             c.local_mtime_ms,
             c.local_size,
             c.local_device,
-            c.drive_mtime_ms,
-            c.drive_size,
-            c.drive_device,
-            c.drive_file_id,
+            c.remote_mtime_ms,
+            c.remote_size,
+            c.remote_device,
+            c.remote_file_id,
             c.local_abs_path,
             c.detected_at_ms,
             c.backup_path,
@@ -164,10 +164,10 @@ mod tests {
             local_mtime_ms: 1_700_000_100_000,
             local_size: 2048,
             local_device: Some("PC Gamer".into()),
-            drive_mtime_ms: 1_700_000_200_000,
-            drive_size: 4096,
-            drive_device: Some("Notebook".into()),
-            drive_file_id: "drive-id-1".into(),
+            remote_mtime_ms: 1_700_000_200_000,
+            remote_size: 4096,
+            remote_device: Some("Notebook".into()),
+            remote_file_id: "drive-id-1".into(),
             local_abs_path: "/tmp/ppsspp/SAVEDATA/GAME01/SAVE.bin".into(),
             detected_at_ms: 1_700_000_300_000,
             backup_path: Some(
@@ -227,8 +227,8 @@ mod tests {
         assert_eq!(json["relPath"], "GAME01/SAVE.bin");
         assert_eq!(json["category"], "saves");
         assert_eq!(json["localDevice"], "PC Gamer");
-        assert_eq!(json["driveDevice"], "Notebook");
-        assert_eq!(json["driveFileId"], "drive-id-1");
+        assert_eq!(json["remoteDevice"], "Notebook");
+        assert_eq!(json["remoteFileId"], "drive-id-1");
         assert!(json["backupPath"]
             .as_str()
             .unwrap()
