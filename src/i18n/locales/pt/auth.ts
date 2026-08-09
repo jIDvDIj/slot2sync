@@ -5,7 +5,7 @@ export const auth: Localized<typeof AuthEn> = {
   login: {
     tagline: "Sincronize saves, savestates e configs dos seus emuladores com o Google Drive.",
     permissionNote:
-      "O RetroSync <strong>não acessa seus dados pessoais</strong>. Ele só consegue ver e modificar os arquivos que ele mesmo cria no seu Google Drive.",
+      "O Slot2Sync <strong>não acessa seus dados pessoais</strong>. Ele só consegue ver e modificar os arquivos que ele mesmo cria no seu Google Drive.",
     connecting: "Aguardando autorização no navegador…",
     connect: "Conectar ao Google Drive",
   },

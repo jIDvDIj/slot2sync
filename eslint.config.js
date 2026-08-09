@@ -30,7 +30,7 @@ export default tseslint.config(
         "error",
         {
           mode: "jsx-text-only",
-          words: { exclude: [...i18nextDefaults.words.exclude, "RetroSync"] },
+          words: { exclude: [...i18nextDefaults.words.exclude, "Slot2Sync"] },
         },
       ],
     },

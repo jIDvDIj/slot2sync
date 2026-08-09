@@ -76,7 +76,7 @@ function MainScreen({ auth, settings, reloadSettings, theme }: MainScreenProps) 
   return (
     <main className="app">
       <header className="app-header">
-        <h1>RetroSync</h1>
+        <h1>Slot2Sync</h1>
         <div className="header-actions">
           <AccountStatus
             email={auth.status?.email ?? null}

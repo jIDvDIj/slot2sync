@@ -73,7 +73,7 @@ impl MockDrive {
         format!("folder:{cache_key}")
     }
 
-    /// Garante a cadeia de pastas de `cache_key` (`"RetroSync/PPSSPP/saves"`),
+    /// Garante a cadeia de pastas de `cache_key` (`"Slot2Sync/PPSSPP/saves"`),
     /// devolvendo o ID da última.
     fn ensure_chain(&self, cache_key: &str) -> String {
         let mut state = self.state.lock().unwrap();
@@ -201,7 +201,7 @@ impl MockDrive {
         (Self::folder_id(dir), name.to_string())
     }
 
-    /// Arquivo direto na raiz `RetroSync/` (ex.: `sync_manifest.json`).
+    /// Arquivo direto na raiz `Slot2Sync/` (ex.: `sync_manifest.json`).
     pub fn root_file(&self, name: &str) -> Option<MockFile> {
         let parent = Self::folder_id(DRIVE_ROOT_FOLDER);
         let state = self.state.lock().unwrap();

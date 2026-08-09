@@ -262,10 +262,10 @@ pub fn resolve_restore(
 }
 
 /// Marcador no nome das cópias padronizadas de conflito.
-const CONFLICT_MARKER: &str = ".retrosync-conflict-";
+const CONFLICT_MARKER: &str = ".slot2sync-conflict-";
 
 /// `("SAVE.bin", "20250717-103000", "dev-a")` →
-/// `"SAVE.retrosync-conflict-20250717-103000-dev-a.bin"`.
+/// `"SAVE.slot2sync-conflict-20250717-103000-dev-a.bin"`.
 pub fn conflict_copy_name(file_name: &str, stamp: &str, device_id: &str) -> String {
     match file_name.rsplit_once('.') {
         Some((stem, ext)) => format!("{stem}{CONFLICT_MARKER}{stamp}-{device_id}.{ext}"),
@@ -365,11 +365,11 @@ mod tests {
     fn conflict_copy_name_embute_carimbo_e_dispositivo() {
         assert_eq!(
             conflict_copy_name("SAVE.bin", "20250717-103000", "dev-a"),
-            "SAVE.retrosync-conflict-20250717-103000-dev-a.bin"
+            "SAVE.slot2sync-conflict-20250717-103000-dev-a.bin"
         );
         assert_eq!(
             conflict_copy_name("SAVE", "20250717-103000", "dev-a"),
-            "SAVE.retrosync-conflict-20250717-103000-dev-a"
+            "SAVE.slot2sync-conflict-20250717-103000-dev-a"
         );
     }
 

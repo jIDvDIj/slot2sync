@@ -183,7 +183,7 @@ fn spawn_consumer(
                 if let Err(err) = app
                     .notification()
                     .builder()
-                    .title("RetroSync")
+                    .title("Slot2Sync")
                     .body(format!("Emulador detectado: {name}"))
                     .show()
                 {

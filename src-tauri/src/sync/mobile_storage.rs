@@ -404,10 +404,10 @@ impl<R: Runtime> PluginBridge for TauriBridge<R> {
 /// Plugin Tauri que registra o lado nativo (Kotlin/Swift) e guarda a ponte no
 /// estado do app. Registrar no `Builder` (`.plugin(mobile_storage::init())`).
 pub fn init<R: Runtime>() -> TauriPlugin<R> {
-    Builder::new("retrosync-storage")
+    Builder::new("slot2sync-storage")
         .setup(|app, _api| {
             #[cfg(target_os = "android")]
-            let handle = _api.register_android_plugin("com.retrosync.app", "StoragePlugin")?;
+            let handle = _api.register_android_plugin("com.slot2sync.app", "StoragePlugin")?;
             // iOS: ligar ao Swift package via `register_ios_plugin` — implementar
             // e validar no macOS/Xcode.
             #[cfg(target_os = "ios")]

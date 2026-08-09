@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    retro_sync_lib::run()
+    slot2sync_lib::run()
 }

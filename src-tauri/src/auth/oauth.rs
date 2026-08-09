@@ -18,7 +18,7 @@ use tokio::net::{TcpListener, TcpStream};
 use crate::error::{AppError, AppResult};
 
 /// Sufixo do redirect URI mobile: o Worker recebe o code do Google e faz um 302
-/// para o deep link `com.retrosync.app:/oauth2redirect`. O redirect URI completo
+/// para o deep link `com.slot2sync.app:/oauth2redirect`. O redirect URI completo
 /// é `{token_proxy_url}/oauth/callback` e deve estar registrado no Google Console.
 #[cfg(mobile)]
 pub const MOBILE_REDIRECT_SUFFIX: &str = "/oauth/callback";
@@ -35,12 +35,12 @@ const LOOPBACK_HOST: &str = "127.0.0.1";
 const AUTH_FLOW_TIMEOUT: Duration = Duration::from_secs(300);
 
 const SUCCESS_PAGE: &str = "<!doctype html><html lang=\"pt-BR\"><meta charset=\"utf-8\">\
-<title>RetroSync</title><body style=\"font-family:sans-serif;text-align:center;padding-top:4rem\">\
-<h2>RetroSync autorizado ✔</h2><p>Pode fechar esta aba e voltar ao aplicativo.</p></body></html>";
+<title>Slot2Sync</title><body style=\"font-family:sans-serif;text-align:center;padding-top:4rem\">\
+<h2>Slot2Sync autorizado ✔</h2><p>Pode fechar esta aba e voltar ao aplicativo.</p></body></html>";
 
 const ERROR_PAGE: &str = "<!doctype html><html lang=\"pt-BR\"><meta charset=\"utf-8\">\
-<title>RetroSync</title><body style=\"font-family:sans-serif;text-align:center;padding-top:4rem\">\
-<h2>Autorização não concluída ✘</h2><p>Volte ao RetroSync e tente novamente.</p></body></html>";
+<title>Slot2Sync</title><body style=\"font-family:sans-serif;text-align:center;padding-top:4rem\">\
+<h2>Autorização não concluída ✘</h2><p>Volte ao Slot2Sync e tente novamente.</p></body></html>";
 
 #[derive(Clone)]
 pub struct OAuthConfig {
@@ -58,18 +58,18 @@ pub struct OAuthConfig {
 
 impl OAuthConfig {
     pub fn from_env() -> Option<Self> {
-        let client_id = option_env!("RETROSYNC_GOOGLE_CLIENT_ID")
+        let client_id = option_env!("SLOT2SYNC_GOOGLE_CLIENT_ID")
             .map(str::to_owned)
-            .or_else(|| std::env::var("RETROSYNC_GOOGLE_CLIENT_ID").ok())?;
-        let token_proxy_url = option_env!("RETROSYNC_TOKEN_PROXY_URL")
+            .or_else(|| std::env::var("SLOT2SYNC_GOOGLE_CLIENT_ID").ok())?;
+        let token_proxy_url = option_env!("SLOT2SYNC_TOKEN_PROXY_URL")
             .map(str::to_owned)
-            .or_else(|| std::env::var("RETROSYNC_TOKEN_PROXY_URL").ok());
-        let proxy_secret = option_env!("RETROSYNC_PROXY_SECRET")
+            .or_else(|| std::env::var("SLOT2SYNC_TOKEN_PROXY_URL").ok());
+        let proxy_secret = option_env!("SLOT2SYNC_PROXY_SECRET")
             .map(str::to_owned)
-            .or_else(|| std::env::var("RETROSYNC_PROXY_SECRET").ok());
-        let client_secret = option_env!("RETROSYNC_GOOGLE_CLIENT_SECRET")
+            .or_else(|| std::env::var("SLOT2SYNC_PROXY_SECRET").ok());
+        let client_secret = option_env!("SLOT2SYNC_GOOGLE_CLIENT_SECRET")
             .map(str::to_owned)
-            .or_else(|| std::env::var("RETROSYNC_GOOGLE_CLIENT_SECRET").ok());
+            .or_else(|| std::env::var("SLOT2SYNC_GOOGLE_CLIENT_SECRET").ok());
         Some(Self {
             client_id,
             token_proxy_url,
@@ -172,7 +172,7 @@ pub async fn authorize_interactive_mobile<R: tauri::Runtime>(
         .map(|base| format!("{base}{MOBILE_REDIRECT_SUFFIX}"))
         .ok_or_else(|| {
             AppError::Auth(
-                "RETROSYNC_TOKEN_PROXY_URL não configurado — necessário para OAuth mobile".into(),
+                "SLOT2SYNC_TOKEN_PROXY_URL não configurado — necessário para OAuth mobile".into(),
             )
         })?;
 

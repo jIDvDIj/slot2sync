@@ -20,7 +20,7 @@ tmp=$(mktemp)
   | sed -E 's/^ *[0-9]+ //' > "$tmp"
 
 {
-  echo "# Contribuidores do RetroSync, ordenados por número de commits."
+  echo "# Contribuidores do Slot2Sync, ordenados por número de commits."
   echo "# Gerado por scripts/update-authors.sh — não edite manualmente."
   cat "$tmp"
 } > AUTHORS

@@ -343,7 +343,7 @@ mod tests {
         assert_eq!(s.read(&dest).await.unwrap(), b"conteudo");
         assert_eq!(s.mtime_ms(&dest).await.unwrap(), 1_700_000_000_000);
         // Não deixa o temporário para trás.
-        assert!(!tmp.path().join("sub/dir/save.bin.retrosync-tmp").exists());
+        assert!(!tmp.path().join("sub/dir/save.bin.slot2sync-tmp").exists());
     }
 
     #[tokio::test]

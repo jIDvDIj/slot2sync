@@ -4,7 +4,7 @@ Scripts de apoio ao desenvolvimento e ao CI. Nenhum deles participa do build do 
 são ferramentas de qualidade, release e manutenção do repositório.
 
 > Setup completo (o que rodar após clonar, secrets do CI, etc.):
-> [Configurar o tooling pendente](https://jidvdij.github.io/retrosync-site/docs/dev/guias/setup-tooling-pendente/).
+> [Configurar o tooling pendente](https://jidvdij.github.io/slot2sync-site/docs/dev/guias/setup-tooling-pendente/).
 
 | Script                                           | O que faz                                                                                                                                                            | Quando rodar                                                                     |
 | ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |

@@ -17,10 +17,10 @@ use crate::sync::SyncCategory;
 /// novas necessidades entram aqui primeiro, mantendo o mock em sincronia.
 #[async_trait]
 pub trait DriveApi: Send + Sync {
-    /// Garante `RetroSync/` na raiz do Drive e retorna seu ID.
+    /// Garante `Slot2Sync/` na raiz do Drive e retorna seu ID.
     async fn ensure_root(&self) -> AppResult<String>;
 
-    /// Garante `RetroSync/<emulator>/<categoria>` e retorna o ID da categoria.
+    /// Garante `Slot2Sync/<emulator>/<categoria>` e retorna o ID da categoria.
     async fn ensure_category_folder(
         &self,
         emulator: &str,
@@ -220,10 +220,10 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         db.with_sync(|conn| {
             for (key, id) in [
-                ("RetroSync", "id-root"),
-                ("RetroSync/PPSSPP", "id-emu"),
-                ("RetroSync/PPSSPP/saves", "id-saves"),
-                ("RetroSync/PPSSPP/saves/jogo", "id-jogo"),
+                ("Slot2Sync", "id-root"),
+                ("Slot2Sync/PPSSPP", "id-emu"),
+                ("Slot2Sync/PPSSPP/saves", "id-saves"),
+                ("Slot2Sync/PPSSPP/saves/jogo", "id-jogo"),
             ] {
                 drive_folders::upsert(conn, key, id)?;
             }
@@ -244,14 +244,14 @@ mod tests {
             "id-saves"
         );
         assert_eq!(
-            api.ensure_subpath("id-saves", "RetroSync/PPSSPP/saves", "jogo")
+            api.ensure_subpath("id-saves", "Slot2Sync/PPSSPP/saves", "jogo")
                 .await
                 .unwrap(),
             "id-jogo"
         );
         assert!(api.upload_batch(Vec::new()).await.unwrap().is_empty());
 
-        api.invalidate_folder_path("RetroSync/PPSSPP").await;
+        api.invalidate_folder_path("Slot2Sync/PPSSPP").await;
         api.clear_folder_cache().await;
         assert!(client.folder_cache.read().await.is_empty());
     }

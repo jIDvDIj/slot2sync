@@ -38,7 +38,7 @@ export const settings = {
     },
     startup: {
       heading: "Startup",
-      hint: "Launches RetroSync with the system, straight to the tray, to sync in the background without you opening the app.",
+      hint: "Launches Slot2Sync with the system, straight to the tray, to sync in the background without you opening the app.",
       label: "Launch on system startup",
       sublabel: "runs in the background when the computer starts",
     },
@@ -63,7 +63,7 @@ export const settings = {
       excludeSaved: "Saved",
     },
     triggers: {
-      startupLabel: "When RetroSync opens",
+      startupLabel: "When Slot2Sync opens",
       startupHint: "syncs when the app starts",
       emulatorStartLabel: "Before opening the emulator",
       emulatorStartHint: "downloads fresh saves from Drive",
@@ -72,7 +72,7 @@ export const settings = {
     },
     backups: {
       heading: "Backups",
-      hint: "Copies RetroSync keeps before overwriting a local file — on the first sync of a file that already exists on Drive, or when resolving a conflict by keeping Drive's version. Nothing is deleted.",
+      hint: "Copies Slot2Sync keeps before overwriting a local file — on the first sync of a file that already exists on Drive, or when resolving a conflict by keeping Drive's version. Nothing is deleted.",
       open: "Open backups folder",
       history: "View history",
       retentionLabel: "Keep backups for (days)",
@@ -86,7 +86,7 @@ export const settings = {
   backupHistory: {
     title: "Backup history",
     intro:
-      "Copies RetroSync saved before overwriting local files. Versioned entries (history) can be restored right here — the current file is backed up first.",
+      "Copies Slot2Sync saved before overwriting local files. Versioned entries (history) can be restored right here — the current file is backed up first.",
     restore: "Restore",
     restoring: "Restoring…",
     restored: "Restored",

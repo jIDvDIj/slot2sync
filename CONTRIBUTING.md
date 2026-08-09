@@ -1,4 +1,4 @@
-# Contribuindo com o RetroSync
+# Contribuindo com o Slot2Sync
 
 Obrigado pelo interesse em contribuir. Antes de abrir um PR, leia isto.
 
@@ -16,7 +16,7 @@ Obrigado pelo interesse em contribuir. Antes de abrir um PR, leia isto.
 
 ## Credenciais do Google OAuth — use as suas, não peça as de produção
 
-O RetroSync se autentica no Google Drive via OAuth2 + PKCE. Para rodar e
+O Slot2Sync se autentica no Google Drive via OAuth2 + PKCE. Para rodar e
 testar o fluxo de login **localmente**, você precisa do seu **próprio**
 OAuth Client ID do Google Cloud Console — nunca peça ou compartilhe o
 `client_id`/`client_secret` de produção do projeto.
@@ -27,11 +27,16 @@ Passos:
 2. Configure a tela de consentimento OAuth (tipo "Externo" está OK para
    testes — o escopo usado, `drive.file`, é não-sensível e não exige
    verificação do Google).
-3. Crie uma credencial OAuth do tipo **Desktop app**.
+3. Crie uma credencial OAuth do tipo **Aplicativo da Web** (Web application) —
+   é o mesmo tipo usado em produção, tanto para o fluxo desktop (redirect
+   loopback em `127.0.0.1`) quanto para o mobile (redirect via Worker).
+   Em "URIs de redirecionamento autorizados", adicione `http://localhost` (ou
+   `http://127.0.0.1`) — o Google não exige a porta exata para esse host, o
+   que permite a porta efêmera que o app abre a cada login.
 4. Copie `.env.example` para `.env` na raiz do repositório e preencha
-   `RETROSYNC_GOOGLE_CLIENT_ID` e `RETROSYNC_GOOGLE_CLIENT_SECRET` com os
-   valores do seu client de teste. Não configure `RETROSYNC_TOKEN_PROXY_URL`
-   nem `RETROSYNC_PROXY_SECRET` localmente — essas variáveis apontam para o
+   `SLOT2SYNC_GOOGLE_CLIENT_ID` e `SLOT2SYNC_GOOGLE_CLIENT_SECRET` com os
+   valores do seu client de teste. Não configure `SLOT2SYNC_TOKEN_PROXY_URL`
+   nem `SLOT2SYNC_PROXY_SECRET` localmente — essas variáveis apontam para o
    Worker de produção e não são necessárias fora dele.
 5. **Nunca** faça commit do seu `.env` — ele já está no `.gitignore`.
 

@@ -136,7 +136,7 @@ jobs:
   # ANDROID_KEY_PASSWORD serem configurados no GitHub (a validação de secrets
   # abortava este job e derrubava o workflow inteiro a cada push na main).
   # Para reativar: remover o `if: false` (ver
-  # https://jidvdij.github.io/retrosync-site/docs/dev/guias/setup-tooling-pendente/).
+  # https://jidvdij.github.io/slot2sync-site/docs/dev/guias/setup-tooling-pendente/).
   android:
     if: false
     needs: version
@@ -177,15 +177,15 @@ jobs:
 
       - name: Validar secrets
         env:
-          RETROSYNC_GOOGLE_CLIENT_ID: ${{ secrets.RETROSYNC_GOOGLE_CLIENT_ID }}
-          RETROSYNC_TOKEN_PROXY_URL: ${{ secrets.RETROSYNC_TOKEN_PROXY_URL }}
-          RETROSYNC_PROXY_SECRET: ${{ secrets.RETROSYNC_PROXY_SECRET }}
+          SLOT2SYNC_GOOGLE_CLIENT_ID: ${{ secrets.SLOT2SYNC_GOOGLE_CLIENT_ID }}
+          SLOT2SYNC_TOKEN_PROXY_URL: ${{ secrets.SLOT2SYNC_TOKEN_PROXY_URL }}
+          SLOT2SYNC_PROXY_SECRET: ${{ secrets.SLOT2SYNC_PROXY_SECRET }}
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           missing=()
-          for v in RETROSYNC_GOOGLE_CLIENT_ID RETROSYNC_TOKEN_PROXY_URL RETROSYNC_PROXY_SECRET \
+          for v in SLOT2SYNC_GOOGLE_CLIENT_ID SLOT2SYNC_TOKEN_PROXY_URL SLOT2SYNC_PROXY_SECRET \
                     ANDROID_KEYSTORE_BASE64 ANDROID_STORE_PASSWORD ANDROID_KEY_PASSWORD; do
             [ -z "${!v}" ] && missing+=($v)
           done
@@ -201,23 +201,23 @@ jobs:
           mv tauri.conf.tmp src-tauri/tauri.conf.json
 
       - name: Decodificar keystore
-        run: echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > retrosync.jks
+        run: echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > slot2sync.jks
 
       - name: Build APK Android (aarch64)
         env:
-          ANDROID_KEYSTORE_PATH: ${{ github.workspace }}/retrosync.jks
+          ANDROID_KEYSTORE_PATH: ${{ github.workspace }}/slot2sync.jks
           ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
           ANDROID_KEY_ALIAS: retrosync
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
           NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/26.3.11579264
-          RETROSYNC_GOOGLE_CLIENT_ID: ${{ secrets.RETROSYNC_GOOGLE_CLIENT_ID }}
-          RETROSYNC_TOKEN_PROXY_URL: ${{ secrets.RETROSYNC_TOKEN_PROXY_URL }}
-          RETROSYNC_PROXY_SECRET: ${{ secrets.RETROSYNC_PROXY_SECRET }}
+          SLOT2SYNC_GOOGLE_CLIENT_ID: ${{ secrets.SLOT2SYNC_GOOGLE_CLIENT_ID }}
+          SLOT2SYNC_TOKEN_PROXY_URL: ${{ secrets.SLOT2SYNC_TOKEN_PROXY_URL }}
+          SLOT2SYNC_PROXY_SECRET: ${{ secrets.SLOT2SYNC_PROXY_SECRET }}
         run: npm run tauri android build -- --target aarch64
 
       - name: Remover keystore
         if: always()
-        run: rm -f retrosync.jks
+        run: rm -f slot2sync.jks
 
       - name: Upload APK e AAB para a release
         uses: softprops/action-gh-release@v3
@@ -257,14 +257,14 @@ jobs:
       - name: Validar secrets de credenciais
         shell: bash
         env:
-          RETROSYNC_GOOGLE_CLIENT_ID: ${{ secrets.RETROSYNC_GOOGLE_CLIENT_ID }}
-          RETROSYNC_TOKEN_PROXY_URL: ${{ secrets.RETROSYNC_TOKEN_PROXY_URL }}
-          RETROSYNC_PROXY_SECRET: ${{ secrets.RETROSYNC_PROXY_SECRET }}
+          SLOT2SYNC_GOOGLE_CLIENT_ID: ${{ secrets.SLOT2SYNC_GOOGLE_CLIENT_ID }}
+          SLOT2SYNC_TOKEN_PROXY_URL: ${{ secrets.SLOT2SYNC_TOKEN_PROXY_URL }}
+          SLOT2SYNC_PROXY_SECRET: ${{ secrets.SLOT2SYNC_PROXY_SECRET }}
         run: |
           missing=()
-          if [ -z "$RETROSYNC_GOOGLE_CLIENT_ID" ]; then missing+=(RETROSYNC_GOOGLE_CLIENT_ID); fi
-          if [ -z "$RETROSYNC_TOKEN_PROXY_URL" ]; then missing+=(RETROSYNC_TOKEN_PROXY_URL); fi
-          if [ -z "$RETROSYNC_PROXY_SECRET" ]; then missing+=(RETROSYNC_PROXY_SECRET); fi
+          if [ -z "$SLOT2SYNC_GOOGLE_CLIENT_ID" ]; then missing+=(SLOT2SYNC_GOOGLE_CLIENT_ID); fi
+          if [ -z "$SLOT2SYNC_TOKEN_PROXY_URL" ]; then missing+=(SLOT2SYNC_TOKEN_PROXY_URL); fi
+          if [ -z "$SLOT2SYNC_PROXY_SECRET" ]; then missing+=(SLOT2SYNC_PROXY_SECRET); fi
           if [ ${#missing[@]} -ne 0 ]; then
             echo "::error::Secrets de credenciais ausentes: ${missing[*]} — release abortada para não publicar um binário sem credenciais."
             exit 1
@@ -334,12 +334,12 @@ jobs:
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RETROSYNC_GOOGLE_CLIENT_ID: ${{ secrets.RETROSYNC_GOOGLE_CLIENT_ID }}
-          RETROSYNC_TOKEN_PROXY_URL: ${{ secrets.RETROSYNC_TOKEN_PROXY_URL }}
-          RETROSYNC_PROXY_SECRET: ${{ secrets.RETROSYNC_PROXY_SECRET }}
+          SLOT2SYNC_GOOGLE_CLIENT_ID: ${{ secrets.SLOT2SYNC_GOOGLE_CLIENT_ID }}
+          SLOT2SYNC_TOKEN_PROXY_URL: ${{ secrets.SLOT2SYNC_TOKEN_PROXY_URL }}
+          SLOT2SYNC_PROXY_SECRET: ${{ secrets.SLOT2SYNC_PROXY_SECRET }}
         with:
           tagName: ${{ needs.version.outputs.tag }}
-          releaseName: RetroSync v${{ needs.version.outputs.version }}
+          releaseName: Slot2Sync v${{ needs.version.outputs.version }}
           releaseBody: ${{ needs.version.outputs.release_body }}
           releaseDraft: false
           prerelease: false

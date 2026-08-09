@@ -133,7 +133,7 @@ impl NotificationLevel {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TriggerSettings {
-    /// Sync ao abrir o RetroSync.
+    /// Sync ao abrir o Slot2Sync.
     pub startup: bool,
     /// Download antes de o emulador abrir.
     pub emulator_start: bool,

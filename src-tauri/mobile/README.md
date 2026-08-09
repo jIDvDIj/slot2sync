@@ -2,10 +2,7 @@
 
 Lado nativo do plugin de armazenamento de saves, consumido pela `MobileStorage`
 em Rust (`src-tauri/src/sync/mobile_storage.rs`). Ver o contrato dos comandos e o
-panorama em [Status multiplataforma](https://jidvdij.github.io/retrosync-site/docs/referencia/status-multiplataforma/).
-
-> ⚠️ **Esqueleto não compilado/testado.** Escrito fora do toolchain Android/iOS —
-> serve de ponto de partida. Validar com `tauri android dev` num device/emulador.
+panorama em [Status multiplataforma](https://jidvdij.github.io/slot2sync-site/docs/referencia/status-multiplataforma/).
 
 ## Android — `android/StoragePlugin.kt`
 
@@ -16,12 +13,12 @@ Implementa `pickFolder` (concessão via `ACTION_OPEN_DOCUMENT_TREE`) e
 ### Onde colocar
 
 O Rust registra o plugin com
-`api.register_android_plugin("com.retrosync.app", "StoragePlugin")`
+`api.register_android_plugin("com.slot2sync.app", "StoragePlugin")`
 (em `mobile_storage::init()`), então a classe precisa estar no classpath do app,
-no pacote `com.retrosync.app`. Depois de `npm run tauri android init`, copie para:
+no pacote `com.slot2sync.app`. Depois de `npm run tauri android init`, copie para:
 
 ```
-src-tauri/gen/android/app/src/main/java/com/retrosync/app/StoragePlugin.kt
+src-tauri/gen/android/app/src/main/java/com/slot2sync/app/StoragePlugin.kt
 ```
 
 ### Dependência Gradle
@@ -38,7 +35,7 @@ implementation("androidx.documentfile:documentfile:1.0.1")
   documento. A convergência de mtime que o `SyncEngine` usa no desktop (mtime local
   = `modifiedTime` do Drive) não vale aqui — avaliar guardar o mtime do Drive num
   sidecar/manifest, ou tratar o mobile como "uma origem só de escrita confiável" no
-  diff. **Decisão pendente da Fase 4.**
+  diff.
 - **Nome de arquivo no `createFile`:** o provedor pode anexar extensão conforme o
   mime. Saves têm nomes exatos — testar; se necessário, criar com mime mais
   específico ou renomear após criar.

@@ -94,7 +94,7 @@ pub async fn detect_emulator_mobile(_tree: String) -> AppResult<Option<EmulatorP
 }
 
 /// Abre o navegador para o consentimento OAuth2 e aguarda a autorização.
-/// Desktop: TCP loopback (RFC 8252). Mobile: deep link `retrosync://oauth`.
+/// Desktop: TCP loopback (RFC 8252). Mobile: deep link `slot2sync://oauth`.
 #[cfg(desktop)]
 #[tauri::command]
 pub async fn connect_google_drive(
@@ -127,7 +127,7 @@ pub async fn connect_google_drive(
             let urls: Vec<String> = serde_json::from_str(event.payload()).unwrap_or_default();
             if let Some(url) = urls
                 .into_iter()
-                .find(|u| u.starts_with("com.retrosync.app:/oauth2redirect"))
+                .find(|u| u.starts_with("com.slot2sync.app:/oauth2redirect"))
             {
                 if let Some(sender) = tx.lock().unwrap().take() {
                     let _ = sender.send(url);
@@ -478,7 +478,7 @@ pub async fn get_settings(app: AppHandle, state: State<'_, AppState>) -> AppResu
     Ok(settings)
 }
 
-/// Liga/desliga o início automático do RetroSync junto com o sistema. O estado
+/// Liga/desliga o início automático do Slot2Sync junto com o sistema. O estado
 /// é persistido pelo SO (registro do Windows / LaunchAgent), não no banco local.
 /// Ao subir pelo SO, o app é lançado com `--minimized` e fica só na bandeja.
 #[cfg(desktop)]
@@ -502,7 +502,7 @@ pub async fn set_autostart(app: AppHandle, enabled: bool) -> AppResult<()> {
     Ok(())
 }
 
-/// Lê do SO se o RetroSync está registrado para iniciar com o sistema.
+/// Lê do SO se o Slot2Sync está registrado para iniciar com o sistema.
 #[cfg(desktop)]
 fn autostart_enabled(app: &AppHandle) -> AppResult<bool> {
     app.autolaunch()
@@ -549,7 +549,7 @@ pub async fn reveal_backup_path(app: AppHandle, path: String) -> AppResult<()> {
     let root_canonical = tokio::fs::canonicalize(&backups_root).await?;
     if !canonical.starts_with(&root_canonical) {
         return Err(AppError::Other(
-            "caminho fora da pasta de backups do RetroSync".into(),
+            "caminho fora da pasta de backups do Slot2Sync".into(),
         ));
     }
     let dir = canonical
@@ -819,7 +819,7 @@ pub async fn restore_version(
     Ok(())
 }
 
-/// Histórico dos backups locais que o RetroSync criou antes de sobrescrever
+/// Histórico dos backups locais que o Slot2Sync criou antes de sobrescrever
 /// arquivos (primeiro sync e resolução de conflito). Só leitura — restauração
 /// continua manual, pela pasta.
 #[tauri::command]

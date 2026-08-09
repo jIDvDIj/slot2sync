@@ -30,7 +30,7 @@ pub struct Conflict {
     pub local_abs_path: String,
     pub detected_at_ms: i64,
     /// Cópia padronizada do lado local
-    /// (`<nome>.retrosync-conflict-<carimbo>-<device><ext>`) para inspeção
+    /// (`<nome>.slot2sync-conflict-<carimbo>-<device><ext>`) para inspeção
     /// manual. `None` quando a cópia não pôde ser criada.
     pub backup_path: Option<String>,
 }
@@ -171,7 +171,7 @@ mod tests {
             local_abs_path: "/tmp/ppsspp/SAVEDATA/GAME01/SAVE.bin".into(),
             detected_at_ms: 1_700_000_300_000,
             backup_path: Some(
-                "/backups/PPSSPP/conflicts/saves/GAME01/SAVE.retrosync-conflict-x.bin".into(),
+                "/backups/PPSSPP/conflicts/saves/GAME01/SAVE.slot2sync-conflict-x.bin".into(),
             ),
         }
     }
@@ -232,6 +232,6 @@ mod tests {
         assert!(json["backupPath"]
             .as_str()
             .unwrap()
-            .contains("retrosync-conflict"));
+            .contains("slot2sync-conflict"));
     }
 }

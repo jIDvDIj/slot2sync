@@ -41,7 +41,7 @@ export const settings: Localized<typeof SettingsEn> = {
     },
     startup: {
       heading: "Inicialização",
-      hint: "Sobe o RetroSync junto com o sistema, direto na bandeja, para sincronizar em segundo plano sem você precisar abrir o app.",
+      hint: "Sobe o Slot2Sync junto com o sistema, direto na bandeja, para sincronizar em segundo plano sem você precisar abrir o app.",
       label: "Abrir com o sistema",
       sublabel: "roda em segundo plano ao ligar o computador",
     },
@@ -66,7 +66,7 @@ export const settings: Localized<typeof SettingsEn> = {
       excludeSaved: "Salvo",
     },
     triggers: {
-      startupLabel: "Ao abrir o RetroSync",
+      startupLabel: "Ao abrir o Slot2Sync",
       startupHint: "sincroniza quando o app inicia",
       emulatorStartLabel: "Antes de abrir o emulador",
       emulatorStartHint: "baixa os saves frescos do Drive",
@@ -75,7 +75,7 @@ export const settings: Localized<typeof SettingsEn> = {
     },
     backups: {
       heading: "Backups",
-      hint: "Cópias que o RetroSync guarda antes de sobrescrever um arquivo local — no primeiro sync de um arquivo que já existe no Drive, ou ao resolver um conflito mantendo a versão do Drive. Nada é apagado.",
+      hint: "Cópias que o Slot2Sync guarda antes de sobrescrever um arquivo local — no primeiro sync de um arquivo que já existe no Drive, ou ao resolver um conflito mantendo a versão do Drive. Nada é apagado.",
       open: "Abrir pasta de backups",
       history: "Ver histórico",
       retentionLabel: "Manter backups por (dias)",
@@ -90,7 +90,7 @@ export const settings: Localized<typeof SettingsEn> = {
   backupHistory: {
     title: "Histórico de backups",
     intro:
-      "Cópias que o RetroSync guardou antes de sobrescrever arquivos locais. Entradas versionadas (history) podem ser restauradas aqui mesmo — o arquivo atual é arquivado antes.",
+      "Cópias que o Slot2Sync guardou antes de sobrescrever arquivos locais. Entradas versionadas (history) podem ser restauradas aqui mesmo — o arquivo atual é arquivado antes.",
     restore: "Restaurar",
     restoring: "Restaurando…",
     restored: "Restaurado",

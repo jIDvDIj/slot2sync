@@ -2,7 +2,7 @@
 
 ## Reportando uma vulnerabilidade
 
-Se você encontrou uma vulnerabilidade de segurança real no RetroSync (não
+Se você encontrou uma vulnerabilidade de segurança real no Slot2Sync (não
 um bug comum — use as Issues normais para isso), **não abra uma issue
 pública** detalhando como explorá-la.
 

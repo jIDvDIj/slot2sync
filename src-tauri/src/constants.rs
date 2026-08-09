@@ -1,12 +1,12 @@
-//! Constantes globais do RetroSync — nomes de pastas do Drive, chaves do
+//! Constantes globais do Slot2Sync — nomes de pastas do Drive, chaves do
 //! keyring e parâmetros de runtime. Nenhum magic string fora daqui.
 
 #![allow(dead_code)]
 
 /// Pasta raiz criada no Google Drive do usuário.
-pub const DRIVE_ROOT_FOLDER: &str = "RetroSync";
+pub const DRIVE_ROOT_FOLDER: &str = "Slot2Sync";
 
-/// Subpastas criadas dentro de `RetroSync/<Emulador>/`.
+/// Subpastas criadas dentro de `Slot2Sync/<Emulador>/`.
 pub const DRIVE_SAVES_FOLDER: &str = "saves";
 pub const DRIVE_STATES_FOLDER: &str = "savestates";
 pub const DRIVE_CONFIG_FOLDER: &str = "config";
@@ -26,21 +26,21 @@ pub const DRIVE_APP_PROP_DEVICE: &str = "device";
 pub const DRIVE_APP_PROP_DEVICE_ID: &str = "deviceId";
 
 /// Arquivo SQLite local (criado no diretório de dados do app).
-pub const LOCAL_DB_FILE: &str = "retrosync.db";
+pub const LOCAL_DB_FILE: &str = "slot2sync.db";
 
 /// Pasta de backups locais (criada no diretório de dados do app). Recebe o
 /// arquivo local antes de ser sobrescrito no primeiro sync.
 pub const LOCAL_BACKUP_DIR: &str = "backups";
 
 /// Identificação das credenciais no keychain do SO.
-pub const KEYRING_SERVICE: &str = "com.retrosync.app";
+pub const KEYRING_SERVICE: &str = "com.slot2sync.app";
 pub const KEYRING_REFRESH_TOKEN_KEY: &str = "google_drive_refresh_token";
 
 /// Chave do keyring para o identificador estável deste dispositivo (UUID v4).
 /// Vive fora do SQLite de propósito: sobrevive à desinstalação do app e à
 /// limpeza do banco, ao contrário do nome amigável (`SETTING_DEVICE_NAME`).
-/// Prefixada com `retrosync_` para não colidir com entradas de outros apps.
-pub const KEYRING_DEVICE_ID_KEY: &str = "retrosync_device_id";
+/// Prefixada com `slot2sync_` para não colidir com entradas de outros apps.
+pub const KEYRING_DEVICE_ID_KEY: &str = "slot2sync_device_id";
 
 /// Intervalo de polling do process watcher.
 pub const WATCHER_POLL_INTERVAL_SECS: u64 = 2;
@@ -77,7 +77,7 @@ pub const DRIVE_BATCH_MIN_OPS: usize = 12;
 
 /// Sufixo de arquivos temporários de download (gravação atômica via rename).
 /// O scan local ignora arquivos com este sufixo.
-pub const TMP_SUFFIX: &str = ".retrosync-tmp";
+pub const TMP_SUFFIX: &str = ".slot2sync-tmp";
 
 /// Identificação dos gatilhos de sync (logs e evento `sync:started`).
 pub const TRIGGER_STARTUP: &str = "startup";

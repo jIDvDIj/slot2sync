@@ -436,7 +436,7 @@ fn build_multipart_related(
     metadata: &serde_json::Value,
     content: &[u8],
 ) -> AppResult<(String, Vec<u8>)> {
-    let boundary = format!("retrosync-{:016x}", rand::random::<u64>());
+    let boundary = format!("slot2sync-{:016x}", rand::random::<u64>());
     let metadata_json = serde_json::to_vec(metadata)?;
 
     let mut body = Vec::with_capacity(content.len() + metadata_json.len() + 256);
@@ -457,7 +457,7 @@ fn build_multipart_related(
 fn build_batch_body(ops: &[BatchUploadOp]) -> AppResult<(String, Vec<u8>)> {
     // `fields` precisa ir percent-encoded (vírgulas) no path literal do sub-request.
     let fields = FILE_FIELDS.replace(',', "%2C");
-    let boundary = format!("retrosync-batch-{:016x}", rand::random::<u64>());
+    let boundary = format!("slot2sync-batch-{:016x}", rand::random::<u64>());
     let mut body = Vec::new();
     for (i, op) in ops.iter().enumerate() {
         let mut metadata = json!({

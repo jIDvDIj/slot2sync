@@ -7,7 +7,7 @@
 //!   só dispara `FS_WATCHER_DEBOUNCE_SECS` após o ÚLTIMO evento (agrupa
 //!   rajadas de escrita em um único sync);
 //! - **Anti-loop**: eventos em arquivos que o próprio sync acabou de baixar
-//!   (`SyncEngine::is_recent_download`) e em temporários `.retrosync-tmp` são
+//!   (`SyncEngine::is_recent_download`) e em temporários `.slot2sync-tmp` são
 //!   ignorados;
 //! - **Nunca com o jogo aberto**: o disparo é adiado enquanto qualquer
 //!   emulador estiver rodando (o gatilho `emulator-stop` cobre o fechamento).
@@ -65,7 +65,7 @@ fn owner_of<'a>(watched: &'a [WatchedEmulator], path: &Path) -> Option<&'a str> 
         .map(|w| w.name.as_str())
 }
 
-/// Temporários do próprio sync (`.retrosync-tmp`) nunca disparam um novo sync.
+/// Temporários do próprio sync (`.slot2sync-tmp`) nunca disparam um novo sync.
 fn is_tmp_path(path: &Path) -> bool {
     path.file_name()
         .is_some_and(|n| n.to_string_lossy().ends_with(TMP_SUFFIX))
@@ -329,7 +329,7 @@ mod tests {
     #[test]
     fn is_tmp_path_reconhece_sufixo_temporario() {
         assert!(is_tmp_path(Path::new(
-            "/emu/PSP/SAVEDATA/GAME01/save.bin.retrosync-tmp"
+            "/emu/PSP/SAVEDATA/GAME01/save.bin.slot2sync-tmp"
         )));
     }
 

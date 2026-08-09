@@ -1,6 +1,6 @@
-# Objetivos e princípios do RetroSync
+# Objetivos e princípios do Slot2Sync
 
-O que guia as decisões de projeto do RetroSync, em ordem de prioridade. A versão resumida
+O que guia as decisões de projeto do Slot2Sync, em ordem de prioridade. A versão resumida
 está no [`README.md`](./README.md#objetivos); este documento existe para o comentário mais
 longo por trás de cada item.
 

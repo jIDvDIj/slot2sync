@@ -1,7 +1,7 @@
 const GOOGLE_TOKEN = "https://oauth2.googleapis.com/token";
 
 // URI do deep link que o Android registra via tauri-plugin-deep-link.
-const MOBILE_DEEP_LINK = "com.retrosync.app:/oauth2redirect";
+const MOBILE_DEEP_LINK = "com.slot2sync.app:/oauth2redirect";
 
 export default {
   async fetch(request, env) {

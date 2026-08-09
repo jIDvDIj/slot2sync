@@ -14,7 +14,7 @@ interface Props {
 }
 
 /**
- * Histórico dos backups locais: lista as cópias que o RetroSync guardou antes de sobrescrever
+ * Histórico dos backups locais: lista as cópias que o Slot2Sync guardou antes de sobrescrever
  * arquivos, com filtro por texto. Restauração continua manual, pela pasta.
  */
 export function BackupHistoryModal({ onClose }: Props) {

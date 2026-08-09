@@ -53,7 +53,7 @@ pub struct DriveClient {
     /// Banco local — espelha o `folder_cache` na tabela `drive_folders` para que
     /// os IDs sobrevivam a reinícios.
     pub(crate) db: Db,
-    /// Cache de IDs de pastas por caminho lógico (ex.: "RetroSync/PPSSPP/saves").
+    /// Cache de IDs de pastas por caminho lógico (ex.: "Slot2Sync/PPSSPP/saves").
     /// Semente carregada do SQLite no boot; escrito a cada ID novo resolvido.
     pub(crate) folder_cache: RwLock<HashMap<String, String>>,
     /// Bases da API — sempre o Google real em produção; sobrescritas por

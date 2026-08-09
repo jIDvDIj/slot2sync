@@ -1,9 +1,9 @@
 //! Cache persistente de IDs de pasta do Drive por caminho lógico
-//! (ex.: `"RetroSync/PPSSPP/saves"` → `fileId`).
+//! (ex.: `"Slot2Sync/PPSSPP/saves"` → `fileId`).
 //!
 //! O `DriveClient` mantém um `HashMap` em memória do mesmo mapa; esta tabela é o
 //! espelho durável. Sem ela, o cache zera a cada reinício e o sync de startup
-//! re-resolve toda a cadeia `RetroSync/<Emu>/<categoria>/...` via `files.list`
+//! re-resolve toda a cadeia `Slot2Sync/<Emu>/<categoria>/...` via `files.list`
 //! (uma chamada de latência pura por segmento).
 //!
 //! Invalidação: uma entrada cujo ID retornar `notFound` numa operação é
@@ -63,13 +63,13 @@ mod tests {
     fn upsert_load_e_clear_fazem_roundtrip() {
         let db = Db::open_in_memory().unwrap();
         db.with_sync(|conn| {
-            upsert(conn, "RetroSync", "id-root")?;
-            upsert(conn, "RetroSync/PPSSPP", "id-emu")?;
-            upsert(conn, "RetroSync/PPSSPP/saves", "id-cat")?;
+            upsert(conn, "Slot2Sync", "id-root")?;
+            upsert(conn, "Slot2Sync/PPSSPP", "id-emu")?;
+            upsert(conn, "Slot2Sync/PPSSPP/saves", "id-cat")?;
 
             let map = load_all(conn)?;
             assert_eq!(map.len(), 3);
-            assert_eq!(map.get("RetroSync/PPSSPP/saves").unwrap(), "id-cat");
+            assert_eq!(map.get("Slot2Sync/PPSSPP/saves").unwrap(), "id-cat");
 
             clear(conn)?;
             assert!(load_all(conn)?.is_empty());
@@ -81,20 +81,20 @@ mod tests {
     fn remove_subtree_apaga_a_pasta_e_suas_subpastas() {
         let db = Db::open_in_memory().unwrap();
         db.with_sync(|conn| {
-            upsert(conn, "RetroSync", "id-root")?;
-            upsert(conn, "RetroSync/PPSSPP", "id-emu")?;
-            upsert(conn, "RetroSync/PPSSPP/saves", "id-cat")?;
-            upsert(conn, "RetroSync/PPSSPP/saves/GAME1", "id-sub")?;
+            upsert(conn, "Slot2Sync", "id-root")?;
+            upsert(conn, "Slot2Sync/PPSSPP", "id-emu")?;
+            upsert(conn, "Slot2Sync/PPSSPP/saves", "id-cat")?;
+            upsert(conn, "Slot2Sync/PPSSPP/saves/GAME1", "id-sub")?;
 
             // Invalida a categoria: remove ela e a subpasta, preserva raiz e emulador.
-            remove_subtree(conn, "RetroSync/PPSSPP/saves")?;
+            remove_subtree(conn, "Slot2Sync/PPSSPP/saves")?;
 
             let map = load_all(conn)?;
             assert_eq!(map.len(), 2);
-            assert!(map.contains_key("RetroSync"));
-            assert!(map.contains_key("RetroSync/PPSSPP"));
-            assert!(!map.contains_key("RetroSync/PPSSPP/saves"));
-            assert!(!map.contains_key("RetroSync/PPSSPP/saves/GAME1"));
+            assert!(map.contains_key("Slot2Sync"));
+            assert!(map.contains_key("Slot2Sync/PPSSPP"));
+            assert!(!map.contains_key("Slot2Sync/PPSSPP/saves"));
+            assert!(!map.contains_key("Slot2Sync/PPSSPP/saves/GAME1"));
             Ok(())
         });
     }

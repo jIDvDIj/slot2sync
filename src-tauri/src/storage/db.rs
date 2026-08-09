@@ -92,7 +92,7 @@ CREATE TABLE IF NOT EXISTS sync_conflicts (
 ";
 
 /// v6 — cache persistente de IDs de pasta do Drive por caminho lógico
-/// (ex.: "RetroSync/PPSSPP/saves" → fileId). Sobrevive a reinícios para que o
+/// (ex.: "Slot2Sync/PPSSPP/saves" → fileId). Sobrevive a reinícios para que o
 /// sync de startup não re-resolva toda a cadeia de pastas a cada boot.
 /// Invalidada reativamente em `notFound` e zerada no logout.
 const SCHEMA_V6: &str = "
@@ -117,7 +117,7 @@ ALTER TABLE pending_ops ADD COLUMN next_retry_at_ms INTEGER DEFAULT 0;
 ";
 
 /// v9 — caminho da cópia padronizada do lado local do conflito
-/// (`<nome>.retrosync-conflict-<carimbo>-<device>.<ext>`), para o usuário
+/// (`<nome>.slot2sync-conflict-<carimbo>-<device>.<ext>`), para o usuário
 /// inspecionar os dois lados antes de decidir. `NULL` quando a cópia falhou.
 const SCHEMA_V9: &str = "
 ALTER TABLE sync_conflicts ADD COLUMN backup_path TEXT;

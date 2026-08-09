@@ -67,7 +67,7 @@ impl Harness {
         secrets
             .set(
                 KEYRING_REFRESH_TOKEN_KEY,
-                r#"{"refresh_token":"tok-teste","email":"teste@retrosync"}"#,
+                r#"{"refresh_token":"tok-teste","email":"teste@slot2sync"}"#,
             )
             .unwrap();
         let device_id = crate::device::get_or_create(&*secrets).unwrap();
@@ -206,7 +206,7 @@ async fn primeiro_sync_mescla_local_e_drive_com_backup() {
     assert_eq!(h.backup_of("c.bin").unwrap(), b"local-c");
 
     assert_eq!(h.manifest_len().await, 3);
-    // Snapshot de auditoria publicado na raiz RetroSync/.
+    // Snapshot de auditoria publicado na raiz Slot2Sync/.
     assert!(h.drive.root_file(DRIVE_MANIFEST_FILE).is_some());
 }
 
@@ -562,7 +562,7 @@ async fn renomeacao_local_vira_rename_no_drive_sem_retransferir() {
 }
 
 /// Conflito gera a cópia padronizada do lado local em `conflicts/`
-/// (`nome.retrosync-conflict-<carimbo>-<device>.ext`) e grava o caminho no
+/// (`nome.slot2sync-conflict-<carimbo>-<device>.ext`) e grava o caminho no
 /// registro do conflito.
 #[tokio::test]
 async fn conflito_gera_copia_padronizada_do_lado_local() {
@@ -589,7 +589,7 @@ async fn conflito_gera_copia_padronizada_do_lado_local() {
         .backup_path
         .clone()
         .expect("cópia de conflito registrada");
-    assert!(backup_path.contains(".retrosync-conflict-"));
+    assert!(backup_path.contains(".slot2sync-conflict-"));
     assert!(backup_path.contains(&h.device_id), "device id no nome");
     assert_eq!(
         std::fs::read(&backup_path).unwrap(),

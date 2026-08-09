@@ -436,7 +436,7 @@ impl<R: Runtime> SyncEngine<R> {
             .app
             .notification()
             .builder()
-            .title("RetroSync — sincronização concluída")
+            .title("Slot2Sync — sincronização concluída")
             .body(format!(
                 "↑ {} enviados · ↓ {} baixados",
                 summary.uploaded, summary.downloaded
@@ -453,7 +453,7 @@ impl<R: Runtime> SyncEngine<R> {
             .app
             .notification()
             .builder()
-            .title("RetroSync — conflito de sincronização")
+            .title("Slot2Sync — conflito de sincronização")
             .body(format!(
                 "{emulator}: \"{rel_path}\" mudou nos dois lados. Resolva no app."
             ))
@@ -470,7 +470,7 @@ impl<R: Runtime> SyncEngine<R> {
             .app
             .notification()
             .builder()
-            .title("RetroSync — falha na sincronização")
+            .title("Slot2Sync — falha na sincronização")
             .body(format!("{emulator}: {message}"))
             .show()
         {
@@ -1371,7 +1371,7 @@ impl<R: Runtime> SyncEngine<R> {
     }
 
     /// Copia o lado local do conflito para
-    /// `<backups>/<emu>/conflicts/<cat>/<rel_dir>/<nome>.retrosync-conflict-<carimbo>-<device><ext>`
+    /// `<backups>/<emu>/conflicts/<cat>/<rel_dir>/<nome>.slot2sync-conflict-<carimbo>-<device><ext>`
     /// e poda cópias antigas do mesmo arquivo (máx. [`MAX_CONFLICT_COPIES`]).
     /// Retorna o caminho persistível da cópia, ou `None` em falha.
     async fn copy_conflict_side(
@@ -1443,7 +1443,7 @@ impl<R: Runtime> SyncEngine<R> {
             .await
     }
 
-    /// Snapshot do manifest publicado na raiz `RetroSync/` (best-effort).
+    /// Snapshot do manifest publicado na raiz `Slot2Sync/` (best-effort).
     /// É só registro/auditoria: grava quem (`device`) e quando (`generatedAt`)
     /// publicou a última versão, além de um dump das entradas. O app nunca lê
     /// este arquivo de volta — a fonte de verdade operacional é a tabela

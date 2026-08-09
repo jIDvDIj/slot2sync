@@ -184,7 +184,7 @@ export interface Conflict {
   driveFileId: string;
   localAbsPath: string;
   detectedAtMs: number;
-  /** Cópia padronizada do lado local (`…retrosync-conflict-<carimbo>-<device>…`),
+  /** Cópia padronizada do lado local (`…slot2sync-conflict-<carimbo>-<device>…`),
    * para inspeção manual. `null` quando a cópia não pôde ser criada. */
   backupPath: string | null;
 }

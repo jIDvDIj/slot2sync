@@ -56,7 +56,7 @@ pub fn run() {
     }
 
     // Plugins exclusivos do mobile:
-    // - deep-link: captura `retrosync://oauth?code=...` de volta ao app (OAuth).
+    // - deep-link: captura `slot2sync://oauth?code=...` de volta ao app (OAuth).
     // - opener: abre o browser nativo (o crate `open` não funciona no sandbox Android).
     #[cfg(mobile)]
     {
@@ -69,7 +69,7 @@ pub fn run() {
     builder
         .setup(|app| {
             init_logging(app.handle())?;
-            tracing::info!(version = env!("CARGO_PKG_VERSION"), "RetroSync iniciado");
+            tracing::info!(version = env!("CARGO_PKG_VERSION"), "Slot2Sync iniciado");
 
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
@@ -195,7 +195,7 @@ pub fn run() {
                 }
             });
 
-            // Gatilho "ao iniciar o RetroSync": sync bidirecional em background,
+            // Gatilho "ao iniciar o Slot2Sync": sync bidirecional em background,
             // se o usuário não tiver desativado o gatilho `startup`. Vale para
             // desktop e mobile (no mobile é o sync ao abrir o app).
             let startup_db = db.clone();
@@ -270,15 +270,15 @@ pub fn run() {
             commands::reveal_backup_path,
         ])
         .run(tauri::generate_context!())
-        .expect("erro ao iniciar o RetroSync");
+        .expect("erro ao iniciar o Slot2Sync");
 }
 
 /// Logs em stdout (dev) e em arquivo diário no diretório de logs do app
-/// (`%LOCALAPPDATA%/com.retrosync.app/logs` no Windows).
+/// (`%LOCALAPPDATA%/com.slot2sync.app/logs` no Windows).
 fn init_logging(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let log_dir = app.path().app_log_dir()?;
     std::fs::create_dir_all(&log_dir)?;
-    let file_appender = tracing_appender::rolling::daily(&log_dir, "retrosync.log");
+    let file_appender = tracing_appender::rolling::daily(&log_dir, "slot2sync.log");
 
     tracing_subscriber::registry()
         .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))

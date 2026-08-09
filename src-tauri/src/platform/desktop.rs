@@ -67,9 +67,9 @@ fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         .cloned()
         .ok_or("ícone padrão da janela ausente")?;
 
-    TrayIconBuilder::with_id("retrosync-tray")
+    TrayIconBuilder::with_id("slot2sync-tray")
         .icon(icon)
-        .tooltip("RetroSync")
+        .tooltip("Slot2Sync")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(on_tray_menu_event)
