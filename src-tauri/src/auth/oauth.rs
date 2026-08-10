@@ -34,10 +34,13 @@ const GOOGLE_SCOPE: &str = "openid email https://www.googleapis.com/auth/drive.f
 
 const DROPBOX_AUTH_ENDPOINT: &str = "https://www.dropbox.com/oauth2/authorize";
 const DROPBOX_TOKEN_ENDPOINT: &str = "https://api.dropboxapi.com/oauth2/token";
-/// Sem escopo explícito: o acesso já é restrito à App Folder pelo tipo de app
-/// registrado no App Console do Dropbox (não há equivalente ao `drive.file`
-/// como parâmetro de escopo).
-const DROPBOX_SCOPE: &str = "account_info.read";
+/// Apps com "Scoped access" no App Console do Dropbox exigem que o token
+/// resultante carregue explicitamente cada escopo de conteúdo — omitir aqui
+/// gera um token só de leitura de conta, sem acesso a arquivo nenhum. A
+/// restrição à App Folder (equivalente ao `drive.file`) vem do tipo de
+/// acesso do app no console, não de um escopo de path.
+const DROPBOX_SCOPE: &str =
+    "account_info.read files.metadata.read files.metadata.write files.content.read files.content.write";
 
 const MICROSOFT_AUTH_ENDPOINT: &str =
     "https://login.microsoftonline.com/common/oauth2/v2.0/authorize";
