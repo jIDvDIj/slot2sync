@@ -167,6 +167,31 @@ pub trait LocalStorage: Send + Sync {
     async fn cleanup_orphaned_temp_files(&self, _root: &Path, _bases: &[PathBuf]) {}
 }
 
+/// Recusa gravar se `dest` ou a pasta que o contém diretamente já forem um
+/// symlink — um link plantado no lugar exato de um arquivo/pasta de save
+/// (pelo emulador, ou por qualquer outro processo com acesso à pasta) não
+/// deve poder redirecionar a escrita para fora dela. Não sobe além do pai
+/// imediato: symlinks acima disso (ex.: a raiz do emulador inteira montada
+/// via link simbólico, configuração legítima e comum) não são tocados.
+#[cfg(desktop)]
+async fn reject_symlinked_dest(dest: &Path) -> AppResult<()> {
+    let mut candidates = vec![dest.to_path_buf()];
+    if let Some(parent) = dest.parent() {
+        candidates.push(parent.to_path_buf());
+    }
+    for path in candidates {
+        if let Ok(meta) = tokio::fs::symlink_metadata(&path).await {
+            if meta.file_type().is_symlink() {
+                return Err(AppError::Other(format!(
+                    "destino atravessa um symlink: {}",
+                    path.display()
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// `rename(tmp, dest)` com uma retentativa no Windows quando `dest` está
 /// marcado somente-leitura (herdado de um save trazido de outro sistema, ou
 /// atributo definido pelo próprio emulador) — o NTFS recusa sobrescrever um
@@ -270,6 +295,7 @@ impl LocalStorage for DesktopStorage {
         mtime_ms: Option<i64>,
     ) -> AppResult<()> {
         let dest = require_path(dest)?;
+        reject_symlinked_dest(dest).await?;
         let parent = dest.parent();
         if let Some(parent) = parent {
             tokio::fs::create_dir_all(parent).await?;
@@ -456,6 +482,41 @@ mod tests {
         assert_eq!(s.mtime_ms(&dest).await.unwrap(), 1_700_000_000_000);
         // Não deixa o temporário para trás.
         assert!(!tmp.path().join("sub/dir/save.bin.slot2sync-tmp").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn write_atomic_recusa_gravar_por_cima_de_symlink() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s = DesktopStorage;
+
+        let outside = tmp.path().join("fora-da-pasta.bin");
+        let link = tmp.path().join("save.bin");
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+
+        let dest = FileLoc::from_path(link.clone());
+        let err = s.write_atomic(&dest, b"conteudo", None).await.unwrap_err();
+
+        assert!(err.to_string().contains("symlink"));
+        assert!(!outside.exists(), "escrita não deveria seguir o symlink");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn write_atomic_recusa_gravar_quando_a_pasta_pai_e_symlink() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s = DesktopStorage;
+
+        let real_outside = tmp.path().join("fora-da-pasta");
+        std::fs::create_dir_all(&real_outside).unwrap();
+        let linked_dir = tmp.path().join("GAME01");
+        std::os::unix::fs::symlink(&real_outside, &linked_dir).unwrap();
+
+        let dest = FileLoc::from_path(linked_dir.join("save.bin"));
+        let err = s.write_atomic(&dest, b"conteudo", None).await.unwrap_err();
+
+        assert!(err.to_string().contains("symlink"));
+        assert!(!real_outside.join("save.bin").exists());
     }
 
     #[cfg(unix)]
