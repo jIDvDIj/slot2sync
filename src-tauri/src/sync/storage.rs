@@ -19,6 +19,8 @@ use super::diff;
 use crate::constants::TMP_SUFFIX;
 #[cfg(desktop)]
 use crate::error::AppError;
+#[cfg(desktop)]
+use std::time::{Duration, SystemTime};
 
 /// Locador opaco de um arquivo ou pasta no armazenamento local.
 ///
@@ -157,6 +159,14 @@ pub trait LocalStorage: Send + Sync {
     async fn available_space(&self, _loc: &FileLoc) -> Option<u64> {
         None
     }
+
+    /// Remove arquivos temporários de download (`TMP_SUFFIX`) órfãos há mais
+    /// de 24h nas pastas-base — restos de um download interrompido por uma
+    /// queda entre a escrita e o rename atômico. Chamado uma vez por
+    /// emulador, no início de `sync_target`. No-op por padrão; sem
+    /// equivalente no mobile, onde `write_atomic` não passa por um temporário
+    /// no filesystem local do app.
+    async fn cleanup_orphaned_temp_files(&self, _root: &Path, _bases: &[PathBuf]) {}
 }
 
 /// `rename(tmp, dest)` com uma retentativa no Windows quando `dest` está
@@ -343,6 +353,60 @@ impl LocalStorage for DesktopStorage {
             .ok()
             .flatten()
     }
+
+    async fn cleanup_orphaned_temp_files(&self, root: &Path, bases: &[PathBuf]) {
+        let (root, bases) = (root.to_path_buf(), bases.to_vec());
+        let _ = tokio::task::spawn_blocking(move || {
+            let cutoff = SystemTime::now()
+                .checked_sub(Duration::from_secs(24 * 60 * 60))
+                .unwrap_or(SystemTime::UNIX_EPOCH);
+            for base in &bases {
+                let base_abs = root.join(base);
+                if base_abs.is_dir() {
+                    remove_stale_temp_files(&base_abs, cutoff);
+                }
+            }
+        })
+        .await;
+    }
+}
+
+/// Percorre `dir` recursivamente removendo `*TMP_SUFFIX` cujo mtime é anterior
+/// a `cutoff`. Erros de leitura/remoção de uma entrada não interrompem as
+/// demais — best-effort, chamado no início de cada sync.
+#[cfg(desktop)]
+fn remove_stale_temp_files(dir: &Path, cutoff: SystemTime) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_dir() {
+            remove_stale_temp_files(&path, cutoff);
+            continue;
+        }
+        if !entry.file_name().to_string_lossy().ends_with(TMP_SUFFIX) {
+            continue;
+        }
+        let is_stale = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .is_ok_and(|modified| modified < cutoff);
+        if !is_stale {
+            continue;
+        }
+        match std::fs::remove_file(&path) {
+            Ok(()) => {
+                tracing::info!(arquivo = %path.display(), "temporário órfão removido (sync anterior interrompido)")
+            }
+            Err(err) => {
+                tracing::warn!(arquivo = %path.display(), error = %err, "falha ao remover temporário órfão")
+            }
+        }
+    }
 }
 
 /// Bytes livres do disco cujo ponto de montagem é o prefixo mais longo de
@@ -415,6 +479,39 @@ mod tests {
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o640);
         assert_eq!(s.read(&dest).await.unwrap(), b"v2 maior");
+    }
+
+    #[tokio::test]
+    async fn cleanup_orphaned_temp_files_remove_so_os_antigos() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().join("SAVEDATA");
+        std::fs::create_dir_all(base.join("GAME01")).unwrap();
+
+        let old_tmp = base.join(format!("velho{TMP_SUFFIX}"));
+        let old_nested_tmp = base.join(format!("GAME01/velho{TMP_SUFFIX}"));
+        let fresh_tmp = base.join(format!("novo{TMP_SUFFIX}"));
+        std::fs::write(&old_tmp, b"x").unwrap();
+        std::fs::write(&old_nested_tmp, b"x").unwrap();
+        std::fs::write(&fresh_tmp, b"x").unwrap();
+
+        let old_time =
+            filetime::FileTime::from_unix_time(chrono::Utc::now().timestamp() - 25 * 60 * 60, 0);
+        filetime::set_file_mtime(&old_tmp, old_time).unwrap();
+        filetime::set_file_mtime(&old_nested_tmp, old_time).unwrap();
+
+        let s = DesktopStorage;
+        s.cleanup_orphaned_temp_files(tmp.path(), &[PathBuf::from("SAVEDATA")])
+            .await;
+
+        assert!(!old_tmp.exists(), "temporário antigo na raiz deveria sumir");
+        assert!(
+            !old_nested_tmp.exists(),
+            "temporário antigo em subpasta deveria sumir"
+        );
+        assert!(
+            fresh_tmp.exists(),
+            "temporário recente não deveria ser tocado"
+        );
     }
 
     #[tokio::test]

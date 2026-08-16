@@ -519,6 +519,18 @@ impl<R: Runtime> SyncEngine<R> {
             .with(move |conn| stats::touch_last_scan(conn, &emulator, now_ms))
             .await;
 
+        // Restos de um download interrompido por queda entre a escrita e o
+        // rename atômico (ver `TMP_SUFFIX`) — best-effort, uma vez por
+        // emulador, antes de qualquer scan.
+        let all_bases: Vec<PathBuf> = target
+            .categories
+            .iter()
+            .flat_map(|(_, bases)| bases.iter().cloned())
+            .collect();
+        self.storage
+            .cleanup_orphaned_temp_files(&target.root, &all_bases)
+            .await;
+
         // Padrões de exclusão do emulador, compilados uma vez por sync.
         let exclude = super::build_exclude_set(&target.exclude_patterns);
 
