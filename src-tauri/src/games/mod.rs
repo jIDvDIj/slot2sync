@@ -223,6 +223,7 @@ mod tests {
             last_synced_at_ms: ts,
             file_hash: None,
             flags: 0,
+            inaccessible: false,
         }
     }
 

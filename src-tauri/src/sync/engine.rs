@@ -872,6 +872,7 @@ impl<R: Runtime> SyncEngine<R> {
                         last_synced_at_ms: chrono::Utc::now().timestamp_millis(),
                         file_hash: Some(super::sha256_hex(&content)),
                         flags: 0,
+                        inaccessible: false,
                     };
                     let (emu, old_rel) = (emulator.to_string(), orphan_rel);
                     let _ = self
@@ -962,6 +963,35 @@ impl<R: Runtime> SyncEngine<R> {
                 }
             }
             Err(err) => {
+                // Upload travado pelo emulador (arquivo aberto/exclusivo): não é um
+                // erro permanente nem uma falha de rede a reagendar por backoff — o
+                // watcher de filesystem já dispara um resync quando o emulador
+                // libera o arquivo. Marca inacessível em vez de enfileirar.
+                let locked = op.action == SyncAction::Upload
+                    && matches!(
+                        &err,
+                        AppError::Io(io)
+                            if matches!(
+                                io.kind(),
+                                std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::WouldBlock
+                            )
+                    );
+                if locked {
+                    tracing::info!(
+                        emulador = %ctx.emulator,
+                        arquivo = %rel_path,
+                        "upload abortado: arquivo travado pelo emulador; marcado inacessível"
+                    );
+                    let (emulator, category, rel) = (ctx.emulator.clone(), ctx.category, rel_path);
+                    let _ = self
+                        .db
+                        .with(move |conn| {
+                            manifest::mark_inaccessible(conn, &emulator, category, &rel)
+                        })
+                        .await;
+                    return OpOutcome::Failed;
+                }
+
                 let retryable = matches!(
                     err,
                     AppError::Network(_) | AppError::FileBusy(_) | AppError::Integrity(_)
@@ -1506,9 +1536,10 @@ impl<R: Runtime> SyncEngine<R> {
             size_bytes: Some(size_bytes),
             last_synced_at_ms: chrono::Utc::now().timestamp_millis(),
             file_hash,
-            // Sync bem-sucedido: qualquer flag anterior (conflito/pendência)
-            // não se aplica mais a esta versão do arquivo.
+            // Sync bem-sucedido: qualquer flag/trava anterior não se aplica
+            // mais a esta versão do arquivo.
             flags: 0,
+            inaccessible: false,
         }
     }
 
@@ -1675,8 +1706,9 @@ impl<R: Runtime> SyncEngine<R> {
             size_bytes: Some(size_bytes),
             last_synced_at_ms: chrono::Utc::now().timestamp_millis(),
             file_hash,
-            // Conflito resolvido: a versão escolhida não está mais em conflito.
+            // Conflito resolvido: a versão escolhida não está mais em conflito nem travada.
             flags: 0,
+            inaccessible: false,
         };
         self.db
             .with(move |conn| manifest::upsert(conn, &entry))

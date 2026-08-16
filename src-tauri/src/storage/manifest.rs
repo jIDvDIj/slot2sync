@@ -27,6 +27,12 @@ pub struct ManifestEntry {
     /// não a fonte de verdade (essa continua em `sync_conflicts`/`pending_ops`).
     /// Zerado a cada sync bem-sucedido do arquivo.
     pub flags: i64,
+    /// Upload abortado por `PermissionDenied`/`WouldBlock` (emulador segura o
+    /// arquivo aberto). Distingue trava transitória de erro permanente: o
+    /// watcher de filesystem dispara um resync quando o arquivo for liberado,
+    /// em vez de entrar no backoff exponencial de `pending_ops`. Zerado no
+    /// próximo sync bem-sucedido do arquivo.
+    pub inaccessible: bool,
 }
 
 /// Conflito pendente para este arquivo (ver `storage::conflicts`).
@@ -42,7 +48,8 @@ pub const FLAG_IGNORED: i64 = 4;
 pub const FLAG_HASH_MISMATCH: i64 = 8;
 
 const COLS: &str = "emulator, category, rel_path, remote_file_id, local_mtime_ms, \
-                    remote_mtime_ms, size_bytes, last_synced_at_ms, file_hash, flags";
+                    remote_mtime_ms, size_bytes, last_synced_at_ms, file_hash, flags, \
+                    inaccessible";
 
 fn from_row(row: &Row) -> rusqlite::Result<ManifestEntry> {
     let category_str: String = row.get(1)?;
@@ -64,14 +71,16 @@ fn from_row(row: &Row) -> rusqlite::Result<ManifestEntry> {
         last_synced_at_ms: row.get(7)?,
         file_hash: row.get(8)?,
         flags: row.get(9)?,
+        inaccessible: row.get(10)?,
     })
 }
 
 pub fn upsert(conn: &Connection, entry: &ManifestEntry) -> AppResult<()> {
     conn.prepare_cached(
         "INSERT OR REPLACE INTO sync_manifest (emulator, category, rel_path, remote_file_id, \
-         local_mtime_ms, remote_mtime_ms, size_bytes, last_synced_at_ms, file_hash, flags) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+         local_mtime_ms, remote_mtime_ms, size_bytes, last_synced_at_ms, file_hash, flags, \
+         inaccessible) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
     )?
     .execute(params![
         entry.emulator,
@@ -84,7 +93,27 @@ pub fn upsert(conn: &Connection, entry: &ManifestEntry) -> AppResult<()> {
         entry.last_synced_at_ms,
         entry.file_hash,
         entry.flags,
+        entry.inaccessible,
     ])?;
+    Ok(())
+}
+
+/// Marca o arquivo como inacessível (trava do emulador durante upload), best-
+/// effort: cria uma linha mínima no manifest se ainda não existir uma, em vez
+/// de fazer no-op como `set_flag` — o primeiro upload de um arquivo pode
+/// muito bem topar com o arquivo já travado.
+pub fn mark_inaccessible(
+    conn: &Connection,
+    emulator: &str,
+    category: SyncCategory,
+    rel_path: &str,
+) -> AppResult<()> {
+    conn.prepare_cached(
+        "INSERT INTO sync_manifest (emulator, category, rel_path, last_synced_at_ms, inaccessible) \
+         VALUES (?1, ?2, ?3, 0, 1) \
+         ON CONFLICT (emulator, category, rel_path) DO UPDATE SET inaccessible = 1",
+    )?
+    .execute(params![emulator, category.as_str(), rel_path])?;
     Ok(())
 }
 
@@ -221,6 +250,7 @@ mod tests {
             last_synced_at_ms: 1_700_000_001_000,
             file_hash: Some("ab".repeat(32)),
             flags: 0,
+            inaccessible: false,
         }
     }
 
@@ -388,6 +418,47 @@ mod tests {
                 FLAG_CONFLICT,
             )?;
             assert_eq!(get(conn, "PPSSPP", SyncCategory::Saves, "nada.bin")?, None);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn mark_inaccessible_cria_linha_minima_quando_nao_existe() {
+        let db = Db::open_in_memory().unwrap();
+        db.with_sync(|conn| {
+            mark_inaccessible(conn, "PPSSPP", SyncCategory::Saves, "locked.bin")?;
+            let loaded = get(conn, "PPSSPP", SyncCategory::Saves, "locked.bin")?.unwrap();
+            assert!(loaded.inaccessible);
+            assert_eq!(loaded.remote_file_id, None);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn mark_inaccessible_em_linha_existente_preserva_o_resto_da_entrada() {
+        let db = Db::open_in_memory().unwrap();
+        db.with_sync(|conn| {
+            upsert(conn, &sample_entry())?;
+
+            mark_inaccessible(conn, "PPSSPP", SyncCategory::Saves, "GAME123/SAVE.bin")?;
+
+            let loaded = get(conn, "PPSSPP", SyncCategory::Saves, "GAME123/SAVE.bin")?.unwrap();
+            assert!(loaded.inaccessible);
+            assert_eq!(loaded.remote_file_id, Some("drive-id-1".into()));
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn upsert_zera_inaccessible_ao_sincronizar_com_sucesso() {
+        let db = Db::open_in_memory().unwrap();
+        db.with_sync(|conn| {
+            mark_inaccessible(conn, "PPSSPP", SyncCategory::Saves, "GAME123/SAVE.bin")?;
+
+            upsert(conn, &sample_entry())?;
+
+            let loaded = get(conn, "PPSSPP", SyncCategory::Saves, "GAME123/SAVE.bin")?.unwrap();
+            assert!(!loaded.inaccessible);
             Ok(())
         });
     }

@@ -180,6 +180,15 @@ const SCHEMA_V14: &str = "
 ALTER TABLE sync_manifest ADD COLUMN flags INTEGER NOT NULL DEFAULT 0;
 ";
 
+/// v15 — marca de arquivo temporariamente inacessível (bloqueado pelo
+/// emulador durante um upload: `PermissionDenied`/`WouldBlock`). Fica
+/// pendurada no manifest em vez de virar retentativa com backoff em
+/// `pending_ops` — o watcher de filesystem já dispara um resync assim que o
+/// emulador libera o arquivo. Ver `storage::manifest`.
+const SCHEMA_V15: &str = "
+ALTER TABLE sync_manifest ADD COLUMN inaccessible INTEGER NOT NULL DEFAULT 0;
+";
+
 /// Intervalo mínimo entre manutenções (7 dias) — não vale a pena rodar em
 /// todo shutdown, só quando o banco já cresceu o suficiente para o planner
 /// ficar desatualizado.
@@ -353,6 +362,10 @@ fn migrate(conn: &Connection) -> AppResult<()> {
     if version < 14 {
         conn.execute_batch(SCHEMA_V14)?;
         version = 14;
+    }
+    if version < 15 {
+        conn.execute_batch(SCHEMA_V15)?;
+        version = 15;
     }
     conn.pragma_update(None, "user_version", version)?;
 

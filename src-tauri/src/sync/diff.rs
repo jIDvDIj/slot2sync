@@ -254,6 +254,7 @@ mod tests {
             last_synced_at_ms: T,
             file_hash: None,
             flags: 0,
+            inaccessible: false,
         }
     }
 
