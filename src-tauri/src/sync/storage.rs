@@ -16,8 +16,6 @@ use crate::error::AppResult;
 #[cfg(desktop)]
 use super::diff;
 #[cfg(desktop)]
-use crate::constants::TMP_SUFFIX;
-#[cfg(desktop)]
 use crate::error::AppError;
 #[cfg(desktop)]
 use std::time::{Duration, SystemTime};
@@ -160,7 +158,7 @@ pub trait LocalStorage: Send + Sync {
         None
     }
 
-    /// Remove arquivos temporários de download (`TMP_SUFFIX`) órfãos há mais
+    /// Remove arquivos temporários de download (ver `diff::tmp_name`) órfãos há mais
     /// de 24h nas pastas-base — restos de um download interrompido por uma
     /// queda entre a escrita e o rename atômico. Chamado uma vez por
     /// emulador, no início de `sync_target`. No-op por padrão; sem
@@ -284,9 +282,8 @@ impl LocalStorage for DesktopStorage {
             .map(|m| m.permissions());
 
         // Gravação atômica: temp + rename evita save corrompido se cair no meio.
-        let tmp = dest.with_file_name(format!(
-            "{}{TMP_SUFFIX}",
-            dest.file_name().unwrap_or_default().to_string_lossy()
+        let tmp = dest.with_file_name(diff::tmp_name(
+            &dest.file_name().unwrap_or_default().to_string_lossy(),
         ));
         tokio::fs::write(&tmp, bytes).await?;
         // fsync do conteúdo antes do rename: sem isso, o rename pode ficar
@@ -371,7 +368,7 @@ impl LocalStorage for DesktopStorage {
     }
 }
 
-/// Percorre `dir` recursivamente removendo `*TMP_SUFFIX` cujo mtime é anterior
+/// Percorre `dir` recursivamente removendo temporários (`diff::is_temp_name`) cujo mtime é anterior
 /// a `cutoff`. Erros de leitura/remoção de uma entrada não interrompem as
 /// demais — best-effort, chamado no início de cada sync.
 #[cfg(desktop)]
@@ -388,7 +385,7 @@ fn remove_stale_temp_files(dir: &Path, cutoff: SystemTime) {
             remove_stale_temp_files(&path, cutoff);
             continue;
         }
-        if !entry.file_name().to_string_lossy().ends_with(TMP_SUFFIX) {
+        if !diff::is_temp_name(&entry.file_name().to_string_lossy()) {
             continue;
         }
         let is_stale = entry
@@ -487,9 +484,9 @@ mod tests {
         let base = tmp.path().join("SAVEDATA");
         std::fs::create_dir_all(base.join("GAME01")).unwrap();
 
-        let old_tmp = base.join(format!("velho{TMP_SUFFIX}"));
-        let old_nested_tmp = base.join(format!("GAME01/velho{TMP_SUFFIX}"));
-        let fresh_tmp = base.join(format!("novo{TMP_SUFFIX}"));
+        let old_tmp = base.join(diff::tmp_name("velho"));
+        let old_nested_tmp = base.join("GAME01").join(diff::tmp_name("velho"));
+        let fresh_tmp = base.join(diff::tmp_name("novo"));
         std::fs::write(&old_tmp, b"x").unwrap();
         std::fs::write(&old_nested_tmp, b"x").unwrap();
         std::fs::write(&fresh_tmp, b"x").unwrap();

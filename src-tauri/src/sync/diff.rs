@@ -9,10 +9,41 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use super::conflict::{decide, SyncAction};
 use super::storage::FileLoc;
 use super::SyncDirection;
-use crate::constants::TMP_SUFFIX;
+use crate::constants::{TMP_PREFIX_UNIX, TMP_PREFIX_WINDOWS};
 use crate::error::{AppError, AppResult};
 use crate::remote::RemoteFile;
 use crate::storage::manifest::ManifestEntry;
+
+/// Acima deste tamanho, o nome-base do temporário vira um hash — nomes de
+/// jogo/arquivo muito longos (comuns em coleções importadas de outros
+/// sistemas) podem estourar o limite de caminho do filesystem quando somados
+/// ao prefixo e ao caminho da pasta.
+const TMP_NAME_HASH_THRESHOLD: usize = 200;
+
+/// Nome do arquivo temporário de gravação atômica para `name` (nome final,
+/// sem diretório). Prefixo por plataforma (ver `TMP_PREFIX_WINDOWS`/
+/// `TMP_PREFIX_UNIX`); nomes muito longos viram um hash curto do nome
+/// original em vez de `prefixo + nome`.
+pub fn tmp_name(name: &str) -> String {
+    let prefix = if cfg!(target_os = "windows") {
+        TMP_PREFIX_WINDOWS
+    } else {
+        TMP_PREFIX_UNIX
+    };
+    if name.len() > TMP_NAME_HASH_THRESHOLD {
+        format!("{prefix}{}", &super::sha256_hex(name.as_bytes())[..16])
+    } else {
+        format!("{prefix}{name}")
+    }
+}
+
+/// `true` se `name` é um temporário de gravação atômica do Slot2Sync — checa
+/// os dois prefixos (não só o da plataforma atual), já que um scan pode topar
+/// com um resto de escrita feita por outra instalação/SO (ex.: dual-boot
+/// apontando para a mesma pasta).
+pub fn is_temp_name(name: &str) -> bool {
+    name.starts_with(TMP_PREFIX_WINDOWS) || name.starts_with(TMP_PREFIX_UNIX)
+}
 
 #[derive(Debug, Clone)]
 pub struct LocalFile {
@@ -93,7 +124,7 @@ fn walk(
         }
 
         let name = entry.file_name().to_string_lossy().into_owned();
-        if name.ends_with(TMP_SUFFIX) {
+        if is_temp_name(&name) {
             continue;
         }
 
@@ -257,6 +288,32 @@ mod tests {
     fn system_time_subsec_ns_remainder_e_zero_em_fronteira_de_ms() {
         let t = UNIX_EPOCH + std::time::Duration::new(1_700_000_000, 5_000_000);
         assert_eq!(system_time_subsec_ns_remainder(t), 0);
+    }
+
+    #[test]
+    fn tmp_name_usa_o_prefixo_da_plataforma_atual() {
+        let name = tmp_name("save.bin");
+        let prefix = if cfg!(target_os = "windows") {
+            TMP_PREFIX_WINDOWS
+        } else {
+            TMP_PREFIX_UNIX
+        };
+        assert_eq!(name, format!("{prefix}save.bin"));
+    }
+
+    #[test]
+    fn tmp_name_troca_por_hash_quando_o_nome_e_muito_longo() {
+        let long_name = "a".repeat(250);
+        let name = tmp_name(&long_name);
+        assert!(name.len() < long_name.len());
+        assert!(is_temp_name(&name));
+    }
+
+    #[test]
+    fn is_temp_name_reconhece_os_dois_prefixos_independente_do_so_atual() {
+        assert!(is_temp_name(&format!("{TMP_PREFIX_WINDOWS}save.bin")));
+        assert!(is_temp_name(&format!("{TMP_PREFIX_UNIX}save.bin")));
+        assert!(!is_temp_name("save.bin"));
     }
 
     fn local_file(rel: &str, mtime: i64) -> LocalFile {
@@ -533,7 +590,7 @@ mod tests {
         std::fs::create_dir_all(base.join("GAME01")).unwrap();
         std::fs::write(base.join("GAME01/SAVE.bin"), b"abc").unwrap();
         std::fs::write(base.join("topo.txt"), b"x").unwrap();
-        std::fs::write(base.join(format!("baixando{TMP_SUFFIX}")), b"parcial").unwrap();
+        std::fs::write(base.join(tmp_name("baixando")), b"parcial").unwrap();
 
         let files = scan_local_bases(tmp.path(), &[PathBuf::from("SAVEDATA")]).unwrap();
 

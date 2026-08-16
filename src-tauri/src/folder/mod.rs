@@ -21,12 +21,12 @@ use async_trait::async_trait;
 use tokio::fs;
 
 use crate::constants::{
-    DRIVE_CONFIG_FOLDER, DRIVE_ROOT_FOLDER, DRIVE_SAVES_FOLDER, DRIVE_STATES_FOLDER, TMP_SUFFIX,
+    DRIVE_CONFIG_FOLDER, DRIVE_ROOT_FOLDER, DRIVE_SAVES_FOLDER, DRIVE_STATES_FOLDER,
 };
 use crate::error::{AppError, AppResult};
 use crate::remote::device_index::{DeviceEntry, DeviceIndex, INDEX_FILE_NAME};
 use crate::remote::{BatchUploadOp, DeviceTag, RemoteFile, RemoteProvider};
-use crate::sync::{sha256_hex, SyncCategory};
+use crate::sync::{is_temp_name, sha256_hex, tmp_name, SyncCategory};
 
 pub struct FolderProvider {
     root: PathBuf,
@@ -100,16 +100,15 @@ impl FolderProvider {
     }
 }
 
-/// Escreve com rename atômico (mesmo padrão `TMP_SUFFIX` usado pela escrita
-/// local em `sync::storage`): evita que um crash a meio da escrita deixe um
-/// arquivo corrompido no lugar do original.
+/// Escreve com rename atômico (mesmo padrão de nome temporário usado pela
+/// escrita local em `sync::storage`, via `tmp_name`): evita que um crash a
+/// meio da escrita deixe um arquivo corrompido no lugar do original.
 async fn write_atomic(dest: &Path, content: &[u8]) -> AppResult<()> {
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent).await?;
     }
-    let tmp = dest.with_file_name(format!(
-        "{}{TMP_SUFFIX}",
-        dest.file_name().unwrap_or_default().to_string_lossy()
+    let tmp = dest.with_file_name(tmp_name(
+        &dest.file_name().unwrap_or_default().to_string_lossy(),
     ));
     fs::write(&tmp, content).await?;
     fs::rename(&tmp, dest).await?;
@@ -174,7 +173,7 @@ impl RemoteProvider for FolderProvider {
                     continue;
                 }
                 let name = entry.file_name().to_string_lossy().into_owned();
-                if name == INDEX_FILE_NAME || name.ends_with(TMP_SUFFIX) {
+                if name == INDEX_FILE_NAME || is_temp_name(&name) {
                     continue;
                 }
                 let rel_path = path

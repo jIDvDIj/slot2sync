@@ -78,9 +78,14 @@ pub const DRIVE_BATCH_MAX_OPS: usize = 100;
 /// o ganho do batch aparece no primeiro sync de coleções grandes.
 pub const DRIVE_BATCH_MIN_OPS: usize = 12;
 
-/// Sufixo de arquivos temporários de download (gravação atômica via rename).
-/// O scan local ignora arquivos com este sufixo.
-pub const TMP_SUFFIX: &str = ".slot2sync-tmp";
+/// Prefixo de arquivo temporário de gravação atômica (temp + rename) no
+/// Windows: convenção comum de apps que fazem escrita segura ali (Office,
+/// editores), reconhecível como "arquivo temporário de alguma coisa" mesmo
+/// fora do Slot2Sync.
+pub const TMP_PREFIX_WINDOWS: &str = "~slot2sync~";
+/// Prefixo equivalente em Unix (Linux/macOS): ponto inicial segue a convenção
+/// local de arquivo oculto.
+pub const TMP_PREFIX_UNIX: &str = ".slot2sync.";
 
 /// Arquivo-marcador gravado na raiz de um emulador ao ser adicionado
 /// (`add_emulator`). Não é lido/checado hoje — `scan_local_bases` detecta

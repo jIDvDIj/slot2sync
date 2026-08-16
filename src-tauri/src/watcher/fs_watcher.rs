@@ -21,12 +21,10 @@ use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::sync::mpsc;
 
 use super::RunningEmulators;
-use crate::constants::{
-    FS_WATCHER_DEBOUNCE_SECS, FS_WATCHER_RECONCILE_SECS, TMP_SUFFIX, TRIGGER_FILE_CHANGE,
-};
+use crate::constants::{FS_WATCHER_DEBOUNCE_SECS, FS_WATCHER_RECONCILE_SECS, TRIGGER_FILE_CHANGE};
 use crate::storage::db::Db;
 use crate::storage::emulators;
-use crate::sync::{SyncDirection, SyncEngine};
+use crate::sync::{is_temp_name, SyncDirection, SyncEngine};
 
 /// Pastas observadas de um emulador (absolutas: raiz + bases de saves/states).
 struct WatchedEmulator {
@@ -68,7 +66,7 @@ fn owner_of<'a>(watched: &'a [WatchedEmulator], path: &Path) -> Option<&'a str> 
 /// Temporários do próprio sync (`.slot2sync-tmp`) nunca disparam um novo sync.
 fn is_tmp_path(path: &Path) -> bool {
     path.file_name()
-        .is_some_and(|n| n.to_string_lossy().ends_with(TMP_SUFFIX))
+        .is_some_and(|n| is_temp_name(&n.to_string_lossy()))
 }
 
 /// Alguma pasta observada mudou desde a última reconciliação (emulador
@@ -327,10 +325,11 @@ mod tests {
     }
 
     #[test]
-    fn is_tmp_path_reconhece_sufixo_temporario() {
-        assert!(is_tmp_path(Path::new(
-            "/emu/PSP/SAVEDATA/GAME01/save.bin.slot2sync-tmp"
-        )));
+    fn is_tmp_path_reconhece_nome_temporario() {
+        let tmp_file = crate::sync::tmp_name("save.bin");
+        assert!(is_tmp_path(Path::new(&format!(
+            "/emu/PSP/SAVEDATA/GAME01/{tmp_file}"
+        ))));
     }
 
     #[test]

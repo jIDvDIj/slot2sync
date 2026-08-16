@@ -21,6 +21,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(desktop)]
+pub(crate) use diff::{is_temp_name, tmp_name};
 pub use engine::{ConflictResolution, LastSync, LastSyncStore, SyncEngine, SyncSummary};
 #[cfg(desktop)]
 pub use storage::DesktopStorage;
