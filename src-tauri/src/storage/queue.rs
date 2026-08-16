@@ -145,14 +145,15 @@ pub fn enqueue(
         error,
     ])?;
 
-    let attempts: u32 = conn.prepare_cached(
-        "SELECT attempts FROM pending_ops \
+    let attempts: u32 = conn
+        .prepare_cached(
+            "SELECT attempts FROM pending_ops \
          WHERE emulator = ?1 AND category = ?2 AND rel_path = ?3 AND direction = ?4",
-    )?
-    .query_row(
-        params![emulator, category.as_str(), rel_path, direction.as_str()],
-        |row| row.get(0),
-    )?;
+        )?
+        .query_row(
+            params![emulator, category.as_str(), rel_path, direction.as_str()],
+            |row| row.get(0),
+        )?;
     let next_retry: Option<i64> = if attempts >= MAX_ATTEMPTS {
         None
     } else {
@@ -232,7 +233,6 @@ pub fn remove_for_emulator(conn: &Connection, emulator: &str) -> AppResult<()> {
     Ok(())
 }
 
-#[allow(dead_code)]
 pub fn count(conn: &Connection) -> AppResult<i64> {
     let count = conn
         .prepare_cached("SELECT COUNT(*) FROM pending_ops")?

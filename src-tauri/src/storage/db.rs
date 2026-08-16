@@ -274,6 +274,16 @@ impl Db {
     }
 }
 
+/// Tamanho total do banco em bytes, via a tabela virtual `dbstat` (soma do
+/// `pgsize` de todas as páginas) — evita abrir/stat o arquivo `.sqlite` do
+/// disco, que dá o tamanho do arquivo mas não reflete o WAL não-checkpointado.
+pub fn size_bytes(conn: &Connection) -> AppResult<u64> {
+    let size: i64 = conn.query_row("SELECT COALESCE(SUM(pgsize), 0) FROM dbstat", [], |row| {
+        row.get(0)
+    })?;
+    Ok(size as u64)
+}
+
 fn migrate(conn: &Connection) -> AppResult<()> {
     // Migrações incrementais: cada bloco eleva o `user_version` em 1. Adicionar
     // uma migração nova = mais um `if version < N` com seu `SCHEMA_VN`.
@@ -369,14 +379,12 @@ mod tests {
     async fn run_maintenance_if_due_nao_roda_de_novo_dentro_do_intervalo() {
         let db = Db::open_in_memory().unwrap();
         db.run_maintenance_if_due().await.unwrap();
-        let first: String = db.with_sync(|conn| {
-            Ok(crate::storage::kv::get(conn, MAINTENANCE_KV_KEY)?.unwrap())
-        });
+        let first: String =
+            db.with_sync(|conn| Ok(crate::storage::kv::get(conn, MAINTENANCE_KV_KEY)?.unwrap()));
 
         db.run_maintenance_if_due().await.unwrap();
-        let second: String = db.with_sync(|conn| {
-            Ok(crate::storage::kv::get(conn, MAINTENANCE_KV_KEY)?.unwrap())
-        });
+        let second: String =
+            db.with_sync(|conn| Ok(crate::storage::kv::get(conn, MAINTENANCE_KV_KEY)?.unwrap()));
 
         assert_eq!(first, second);
     }

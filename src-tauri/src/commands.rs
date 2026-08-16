@@ -38,15 +38,30 @@ pub struct HealthStatus {
     pub ready: bool,
     /// `true` quando compilado para Android ou iOS; `false` no desktop.
     pub is_mobile: bool,
+    /// Tamanho do arquivo SQLite (via `dbstat`). Crescimento anormal pode
+    /// indicar corrupção ou vazamento de dados de conflito.
+    pub db_size_bytes: u64,
+    /// Pendências acumuladas na fila offline. Valor alto por muito tempo
+    /// sugere que o dispositivo está sem conseguir sincronizar.
+    pub pending_ops_count: u32,
 }
 
-/// Verificação mínima de que a boundary frontend ↔ Rust está funcional.
+/// Verificação mínima de que a boundary frontend ↔ Rust está funcional, mais
+/// um retrato rápido da saúde do SQLite local.
 #[tauri::command]
-pub fn health_check() -> AppResult<HealthStatus> {
+pub async fn health_check(state: State<'_, AppState>) -> AppResult<HealthStatus> {
+    health_check_impl(&state).await
+}
+
+async fn health_check_impl<R: Runtime>(state: &State<'_, AppState<R>>) -> AppResult<HealthStatus> {
+    let db_size_bytes = state.db.with(crate::storage::db::size_bytes).await?;
+    let pending_ops_count = state.db.with(queue::count).await? as u32;
     Ok(HealthStatus {
         version: env!("CARGO_PKG_VERSION").to_string(),
         ready: true,
         is_mobile: cfg!(mobile),
+        db_size_bytes,
+        pending_ops_count,
     })
 }
 
@@ -1095,10 +1110,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn health_check_reporta_versao_e_pronto() {
-        let status = health_check().unwrap();
+    async fn health_check_reporta_versao_pronto_e_metricas_do_banco() {
+        let (app, _tmp) = build_app().await;
+        let state = app.state::<AppState<MockRuntime>>();
+
+        let status = health_check_impl(&state).await.unwrap();
         assert!(status.ready);
         assert!(!status.version.is_empty());
+        assert_eq!(status.pending_ops_count, 0);
+        // Banco novo não é vazio (migrações já criaram tabelas).
+        assert!(status.db_size_bytes > 0);
     }
 
     #[tokio::test]

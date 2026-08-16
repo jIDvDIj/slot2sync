@@ -10,6 +10,10 @@ export interface HealthStatus {
   ready: boolean;
   /** `true` quando compilado para Android ou iOS; `false` no desktop. */
   isMobile: boolean;
+  /** Tamanho do banco SQLite local em bytes (via `dbstat`). */
+  dbSizeBytes: number;
+  /** Pendências acumuladas na fila offline. */
+  pendingOpsCount: number;
 }
 
 /** `auth::AuthStatus` */
