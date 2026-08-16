@@ -205,6 +205,9 @@ async fn rename_dest(tmp: &Path, dest: &Path) -> AppResult<()> {
         Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
             if let Ok(meta) = tokio::fs::metadata(dest).await {
                 let mut perms = meta.permissions();
+                // No Windows isto limpa o atributo somente-leitura, não bits
+                // de permissão Unix (o lint padrão do clippy assume Unix).
+                #[allow(clippy::permissions_set_readonly_false)]
                 perms.set_readonly(false);
                 let _ = tokio::fs::set_permissions(dest, perms).await;
             }

@@ -10,7 +10,7 @@ use std::sync::Arc;
 use serde::Serialize;
 #[cfg(mobile)]
 use tauri::Listener;
-#[cfg(test)]
+#[cfg(all(test, desktop, not(windows)))]
 use tauri::Manager;
 use tauri::{AppHandle, Emitter, Runtime, State};
 #[cfg(desktop)]
