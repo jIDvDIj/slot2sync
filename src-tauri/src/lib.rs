@@ -75,6 +75,8 @@ pub fn run() {
         .setup(|app| {
             init_logging(app.handle())?;
             tracing::info!(version = env!("CARGO_PKG_VERSION"), "Slot2Sync iniciado");
+            #[cfg(windows)]
+            lower_process_priority();
 
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
@@ -353,6 +355,24 @@ pub fn run() {
 /// não viraram configuração de usuário (evita expandir a boundary IPC por uma
 /// issue de manutenção interna).
 const LOG_RETENTION_DAYS: u32 = 7;
+
+/// Baixa a prioridade do processo (`BELOW_NORMAL_PRIORITY_CLASS`) no
+/// startup — a sincronização faz I/O em background e não deve competir com um
+/// emulador aberto pelos ciclos de CPU/prioridade de I/O do Windows.
+/// Best-effort: falha aqui não impede o app de iniciar.
+#[cfg(windows)]
+fn lower_process_priority() {
+    use windows::Win32::System::Threading::{
+        GetCurrentProcess, SetPriorityClass, BELOW_NORMAL_PRIORITY_CLASS,
+    };
+    // SAFETY: `GetCurrentProcess` devolve um pseudo-handle válido para a
+    // duração do processo, sem precisar ser fechado; `SetPriorityClass` só
+    // lê esse handle e a flag de prioridade, não há estado inválido possível.
+    let result = unsafe { SetPriorityClass(GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS) };
+    if let Err(err) = result {
+        tracing::warn!(error = %err, "falha ao baixar a prioridade do processo");
+    }
+}
 
 fn init_logging(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let log_dir = locations::AppPath::LogDir.resolve(app)?;
