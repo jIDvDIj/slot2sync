@@ -150,6 +150,17 @@ ALTER TABLE sync_conflicts RENAME COLUMN drive_device TO remote_device;
 ALTER TABLE sync_conflicts RENAME COLUMN drive_file_id TO remote_file_id;
 ";
 
+/// v12 — tabela chave→valor genérica para metadados internos do app (carimbos
+/// de manutenção, versionamento lógico de schema). Separada de `app_settings`,
+/// que guarda apenas preferências visíveis/editáveis pelo usuário. Ver
+/// `storage::kv`.
+const SCHEMA_V12: &str = "
+CREATE TABLE IF NOT EXISTS internal_kv (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+";
+
 #[derive(Clone)]
 pub struct Db {
     conn: Arc<Mutex<Connection>>,
@@ -259,6 +270,10 @@ fn migrate(conn: &Connection) -> AppResult<()> {
     if version < 11 {
         conn.execute_batch(SCHEMA_V11)?;
         version = 11;
+    }
+    if version < 12 {
+        conn.execute_batch(SCHEMA_V12)?;
+        version = 12;
     }
     conn.pragma_update(None, "user_version", version)?;
     Ok(())
