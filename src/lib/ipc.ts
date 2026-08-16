@@ -21,6 +21,7 @@ import type {
   Settings,
   SyncCategories,
   SyncedGame,
+  SyncStateSnapshot,
   SyncSummary,
   TriggerSettings,
 } from "../types/ipc";
@@ -133,6 +134,13 @@ export function syncNow(): Promise<SyncSummary> {
 /** Último sync concluído nesta execução; `null` se ainda não houve nenhum. */
 export function getLastSync(): Promise<LastSync | null> {
   return invoke<LastSync | null>("get_last_sync");
+}
+
+/** Estado corrente do sync (idle/scanning/syncing/conflict/error) — usado para
+ * renderizar o estado certo ao montar a UI, sem depender de eventos perdidos
+ * antes da conexão (ex.: reconectar no meio de um sync). */
+export function getSyncState(): Promise<SyncStateSnapshot> {
+  return invoke<SyncStateSnapshot>("get_sync_state");
 }
 
 /** Configurações globais do usuário (nome do dispositivo, etc.). */

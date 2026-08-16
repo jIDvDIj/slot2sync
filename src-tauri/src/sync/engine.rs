@@ -28,6 +28,7 @@ use crate::constants::{
 use crate::error::{AppError, AppResult};
 use crate::events::{
     EVT_SYNC_COMPLETED, EVT_SYNC_CONFLICT, EVT_SYNC_ERROR, EVT_SYNC_PROGRESS, EVT_SYNC_STARTED,
+    EVT_SYNC_STATE_CHANGED,
 };
 use crate::remote::{BatchUploadOp, DeviceTag, RemoteProvider};
 use crate::storage::conflicts::{self, Conflict};
@@ -67,6 +68,49 @@ impl SyncSummary {
         self.conflicts += other.conflicts;
         self.renamed += other.renamed;
     }
+}
+
+/// Estado corrente do `SyncEngine`, visto de fora (tray, badge do app). O
+/// frontend renderiza a partir disto e de [`EVT_SYNC_STATE_CHANGED`] em vez
+/// de acumular os eventos discretos (`sync:started`/`progress`/`completed`/
+/// `conflict`/`error`) — reconectar no meio de um sync já chega com o estado
+/// certo, sem precisar ter visto os eventos anteriores.
+///
+/// Não é um estado travado por emulador: reflete a execução de `sync_all`
+/// como um todo. `Conflict`/`Error` são transições momentâneas (emitidas
+/// quando acontecem) — o sync continua para os demais emuladores da mesma
+/// leva, então o estado segue para `Scanning`/`Syncing` do próximo alvo, ou
+/// `Idle` ao final da leva.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SyncState {
+    Idle,
+    Scanning,
+    Syncing,
+    Conflict,
+    Error(String),
+}
+
+impl SyncState {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SyncState::Idle => "idle",
+            SyncState::Scanning => "scanning",
+            SyncState::Syncing => "syncing",
+            SyncState::Conflict => "conflict",
+            SyncState::Error(_) => "error",
+        }
+    }
+}
+
+/// Payload do evento `sync:state-changed`. (→ ipc.ts)
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncStateChanged {
+    pub from: &'static str,
+    pub to: &'static str,
+    pub emulator: Option<String>,
+    /// Só preenchido quando `to == "error"`.
+    pub error_message: Option<String>,
 }
 
 /// Payload do evento `sync:started`. (→ ipc.ts)
@@ -188,6 +232,8 @@ pub struct SyncEngine<R: Runtime = Wry> {
     /// em `do_download`). Em HDD, escritas sequenciais são mais rápidas que
     /// paralelas — um teto baixo evita thrashing de cabeça de leitura/escrita.
     disk_io: Semaphore,
+    /// Estado corrente exposto ao frontend (ver [`SyncState`]).
+    current_state: std::sync::Mutex<(SyncState, Option<String>)>,
 }
 
 impl<R: Runtime> SyncEngine<R> {
@@ -217,7 +263,45 @@ impl<R: Runtime> SyncEngine<R> {
             recent_downloads: std::sync::Mutex::new(std::collections::HashMap::new()),
             network_ops: Semaphore::new(MAX_NETWORK_OPS),
             disk_io: Semaphore::new(MAX_DISK_WRITES),
+            current_state: std::sync::Mutex::new((SyncState::Idle, None)),
         }
+    }
+
+    /// Estado corrente do engine e, se houver, o emulador associado — usado
+    /// pelo comando `get_sync_state` para o frontend renderizar o estado
+    /// certo ao reconectar no meio de um sync, sem depender de ter recebido
+    /// os eventos anteriores.
+    pub fn current_sync_state(&self) -> (SyncState, Option<String>) {
+        self.current_state.lock().unwrap().clone()
+    }
+
+    /// Muda o estado corrente e emite `sync:state-changed`. Sem efeito
+    /// (não emite) se `to` for igual ao estado atual E o emulador não mudar —
+    /// evita ruído de eventos idênticos repetidos.
+    fn transition(&self, to: SyncState, emulator: Option<&str>) {
+        let mut guard = self.current_state.lock().unwrap();
+        let (from, from_emulator) = &*guard;
+        if *from == to && from_emulator.as_deref() == emulator {
+            return;
+        }
+        let from_str = from.as_str();
+        let to_str = to.as_str();
+        let error_message = match &to {
+            SyncState::Error(msg) => Some(msg.clone()),
+            _ => None,
+        };
+        *guard = (to, emulator.map(str::to_string));
+        drop(guard);
+
+        let _ = self.app.emit(
+            EVT_SYNC_STATE_CHANGED,
+            &SyncStateChanged {
+                from: from_str,
+                to: to_str,
+                emulator: emulator.map(str::to_string),
+                error_message,
+            },
+        );
     }
 
     /// Troca o provedor de storage ativo (conectar pela primeira vez ou mudar
@@ -378,6 +462,7 @@ impl<R: Runtime> SyncEngine<R> {
                 direction,
             },
         );
+        self.transition(SyncState::Scanning, None);
 
         // Rótulo desta execução, usado para agrupar os backups locais do
         // primeiro sync numa pasta por sync.
@@ -397,6 +482,8 @@ impl<R: Runtime> SyncEngine<R> {
                 tracing::info!(emulador = %target.label, "conflito pendente; sync do emulador bloqueado");
                 continue;
             }
+
+            self.transition(SyncState::Scanning, Some(&target.label));
 
             match self
                 .sync_target(
@@ -422,6 +509,7 @@ impl<R: Runtime> SyncEngine<R> {
                 Err(err) => {
                     summary.failed += 1;
                     tracing::error!(emulador = %target.label, error = %err, "sync do emulador falhou");
+                    self.transition(SyncState::Error(err.to_string()), Some(&target.label));
                     let _ = self.app.emit(
                         EVT_SYNC_ERROR,
                         &SyncError {
@@ -435,6 +523,8 @@ impl<R: Runtime> SyncEngine<R> {
                 }
             }
         }
+
+        self.transition(SyncState::Idle, None);
 
         if let Err(err) = self.publish_manifest_snapshot().await {
             tracing::warn!(error = %err, "falha ao publicar sync_manifest.json no Drive");
@@ -675,6 +765,8 @@ impl<R: Runtime> SyncEngine<R> {
                     .ensure_subpath(&folder_id, &folder_key, dir)
                     .await?;
             }
+
+            self.transition(SyncState::Syncing, Some(&target.label));
 
             let ctx = CategoryCtx {
                 emulator: target.label.clone(),
@@ -1612,6 +1704,7 @@ impl<R: Runtime> SyncEngine<R> {
             .await;
 
         tracing::warn!(emulador = %ctx.emulator, arquivo = %op.rel_path, "conflito detectado: ambos os lados mudaram");
+        self.transition(SyncState::Conflict, Some(&ctx.emulator));
         let _ = self.app.emit(EVT_SYNC_CONFLICT, &conflict);
         if ctx.notif.notifies_errors() {
             self.notify_conflict(&ctx.emulator, &op.rel_path);

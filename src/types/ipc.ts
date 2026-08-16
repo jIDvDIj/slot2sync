@@ -230,6 +230,25 @@ export interface EmulatorStatusEvent {
   running: boolean;
 }
 
+/** `sync::SyncState` serializado como string — ver `commands::SyncStateSnapshot` */
+export type SyncStateKind = "idle" | "scanning" | "syncing" | "conflict" | "error";
+
+/** `sync::engine::SyncStateChanged` — payload do evento `sync:state-changed` */
+export interface SyncStateChangedEvent {
+  from: SyncStateKind;
+  to: SyncStateKind;
+  emulator: string | null;
+  /** Só preenchido quando `to === "error"`. */
+  errorMessage: string | null;
+}
+
+/** `commands::SyncStateSnapshot` — retorno de `get_sync_state` */
+export interface SyncStateSnapshot {
+  state: SyncStateKind;
+  emulator: string | null;
+  errorMessage: string | null;
+}
+
 /** `error::AppError` serializado — todo comando rejeita com este shape */
 export interface AppErrorPayload {
   code:
@@ -261,6 +280,7 @@ export const EVT = {
   SYNC_COMPLETED: "sync:completed",
   SYNC_ERROR: "sync:error",
   SYNC_CONFLICT: "sync:conflict",
+  SYNC_STATE_CHANGED: "sync:state-changed",
   AUTH_STATUS: "auth:status",
   EMULATOR_STATUS: "emulator:status",
 } as const;

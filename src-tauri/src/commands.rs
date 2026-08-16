@@ -885,6 +885,33 @@ pub async fn list_pending_ops(state: State<'_, AppState>) -> AppResult<Vec<queue
     state.db.with(queue::list_all).await
 }
 
+/// Retrato do `SyncState` corrente do engine. (→ ipc.ts)
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncStateSnapshot {
+    pub state: &'static str,
+    pub emulator: Option<String>,
+    /// Só preenchido quando `state == "error"`.
+    pub error_message: Option<String>,
+}
+
+/// Estado corrente do sync (`idle`/`scanning`/`syncing`/`conflict`/`error`) —
+/// permite ao frontend renderizar o estado certo ao reconectar no meio de um
+/// sync, sem depender de ter recebido os eventos `sync:*` anteriores.
+#[tauri::command]
+pub fn get_sync_state(state: State<'_, AppState>) -> SyncStateSnapshot {
+    let (sync_state, emulator) = state.engine.current_sync_state();
+    let error_message = match &sync_state {
+        crate::sync::SyncState::Error(msg) => Some(msg.clone()),
+        _ => None,
+    };
+    SyncStateSnapshot {
+        state: sync_state.as_str(),
+        emulator,
+        error_message,
+    }
+}
+
 /// Ação "tentar novamente" da fila offline: zera as tentativas e o backoff de
 /// um arquivo (inclusive pendências mortas), liberando a retentativa no próximo
 /// sync.

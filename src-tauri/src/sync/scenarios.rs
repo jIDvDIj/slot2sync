@@ -10,7 +10,9 @@ use std::sync::Arc;
 use tauri::test::MockRuntime;
 
 use super::engine::ConflictResolution;
-use super::{DesktopStorage, LastSyncStore, SyncCategory, SyncDirection, SyncEngine, SyncSummary};
+use super::{
+    DesktopStorage, LastSyncStore, SyncCategory, SyncDirection, SyncEngine, SyncState, SyncSummary,
+};
 use crate::constants::{DRIVE_BATCH_MIN_OPS, DRIVE_MANIFEST_FILE};
 use crate::drive::mock::MockDrive;
 use crate::emulator::EmulatorProfile;
@@ -278,6 +280,62 @@ async fn conflito_bloqueia_emulador_e_resolucao_desbloqueia() {
 /// timestamp — detectar isso exige hash, ainda não implementado.
 /// Este teste DOCUMENTA a limitação atual; quando o hash entrar, ele deve
 /// passar a falhar e ser invertido.
+#[tokio::test]
+async fn sync_state_comeca_e_termina_ocioso() {
+    let h = Harness::new().await;
+    assert_eq!(h.engine.current_sync_state(), (SyncState::Idle, None));
+
+    h.write_local("save.bin", b"conteudo", T);
+    h.sync().await;
+
+    assert_eq!(
+        h.engine.current_sync_state(),
+        (SyncState::Idle, None),
+        "sync termina sempre voltando a Idle, mesmo com transferência real"
+    );
+}
+
+#[tokio::test]
+async fn sync_state_emite_transicao_para_conflict() {
+    use std::sync::{Arc, Mutex};
+    use tauri::Listener;
+
+    let h = Harness::new().await;
+    h.write_local("save.bin", b"v1", T);
+    h.sync().await;
+
+    // Ambos os lados mudam desde a âncora → conflito.
+    h.write_local("save.bin", b"v2-local", T + S10);
+    h.drive.overwrite_as_device(
+        EMU,
+        SyncCategory::Saves,
+        "save.bin",
+        b"v2-drive",
+        T + 2 * S10,
+        "dev-B",
+    );
+
+    let seen_conflict = Arc::new(Mutex::new(false));
+    let flag = seen_conflict.clone();
+    h._app
+        .handle()
+        .listen(crate::events::EVT_SYNC_STATE_CHANGED, move |event| {
+            if event.payload().contains("\"to\":\"conflict\"") {
+                *flag.lock().unwrap() = true;
+            }
+        });
+
+    let summary = h.sync().await;
+
+    assert_eq!(summary.conflicts, 1);
+    assert!(
+        *seen_conflict.lock().unwrap(),
+        "deveria ter emitido sync:state-changed com to=conflict"
+    );
+    // O sync sempre volta a Idle ao final da leva, mesmo após um conflito.
+    assert_eq!(h.engine.current_sync_state(), (SyncState::Idle, None));
+}
+
 #[tokio::test]
 async fn mtime_igual_com_conteudo_diferente_passa_despercebido() {
     let h = Harness::new().await;
