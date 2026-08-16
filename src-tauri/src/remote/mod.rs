@@ -167,3 +167,27 @@ pub trait RemoteProvider: Send + Sync {
     /// Zera todo o cache de pastas (logout/troca de conta), se houver.
     async fn clear_folder_cache(&self);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::ProviderKind;
+
+    #[test]
+    fn as_str_e_parse_fazem_round_trip_para_todas_as_variantes() {
+        for kind in [
+            ProviderKind::GoogleDrive,
+            ProviderKind::Dropbox,
+            ProviderKind::OneDrive,
+            ProviderKind::LocalFolder,
+        ] {
+            assert_eq!(ProviderKind::parse(kind.as_str()), Some(kind));
+        }
+    }
+
+    #[test]
+    fn parse_rejeita_string_desconhecida() {
+        assert_eq!(ProviderKind::parse("dropbox_v2"), None);
+        assert_eq!(ProviderKind::parse(""), None);
+        assert_eq!(ProviderKind::parse("GoogleDrive"), None);
+    }
+}
