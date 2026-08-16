@@ -8,6 +8,7 @@ export const auth = {
     connect: "Connect to {{provider}}",
     providerLabel: "Storage provider",
     providerLocalFolder: "Local/network folder",
+    comingSoon: "coming soon",
     folderPathLabel: "Folder path",
     folderPathPlaceholder: "e.g. D:\\Slot2Sync or \\\\server\\share",
     selectFolder: "Select folder…",

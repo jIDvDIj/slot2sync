@@ -35,6 +35,13 @@ const OAUTH_CONNECT: Record<(typeof OAUTH_PROVIDERS)[number], () => Promise<Auth
 };
 
 /**
+ * Provedores com o backend pronto, mas ainda sem credenciais cadastradas nos
+ * consoles externos ficam visíveis e desativados em vez de somem, sinalizando o que já está a
+ * caminho sem deixar o usuário cair num fluxo OAuth que só falharia.
+ */
+const UNAVAILABLE_PROVIDERS = new Set<(typeof OAUTH_PROVIDERS)[number]>(["dropbox", "one_drive"]);
+
+/**
  * Tela de login dedicada. É a única coisa renderizada enquanto o usuário não
  * está conectado — a tela principal só aparece depois que o login conclui.
  *
@@ -103,17 +110,23 @@ export function LoginScreen({ initialDeviceName, onConnected, theme, onToggleThe
         <div className="field">
           <span>{t("login.providerLabel")}</span>
           <div className="provider-picker">
-            {OAUTH_PROVIDERS.map((kind) => (
-              <Button
-                key={kind}
-                type="button"
-                variant={provider === kind ? "primary" : "secondary"}
-                size="sm"
-                onClick={() => setProvider(kind)}
-              >
-                {providerLabel(kind, t)}
-              </Button>
-            ))}
+            {OAUTH_PROVIDERS.map((kind) => {
+              const unavailable = UNAVAILABLE_PROVIDERS.has(kind);
+              return (
+                <Button
+                  key={kind}
+                  type="button"
+                  variant={provider === kind ? "primary" : "secondary"}
+                  size="sm"
+                  disabled={unavailable}
+                  title={unavailable ? t("login.comingSoon") : undefined}
+                  onClick={() => setProvider(kind)}
+                >
+                  {providerLabel(kind, t)}
+                  {unavailable ? <span className="muted"> ({t("login.comingSoon")})</span> : null}
+                </Button>
+              );
+            })}
             {!isMobile ? (
               <Button
                 type="button"
