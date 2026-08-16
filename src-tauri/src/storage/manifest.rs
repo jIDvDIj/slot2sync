@@ -23,10 +23,26 @@ pub struct ManifestEntry {
     /// SHA-256 (hex) do conteúdo no último sync. `None` em entradas gravadas
     /// antes da migração v7 — o hash passa a existir no próximo sync do arquivo.
     pub file_hash: Option<String>,
+    /// Bitmask best-effort (`FLAG_*`) — índice secundário para consulta rápida,
+    /// não a fonte de verdade (essa continua em `sync_conflicts`/`pending_ops`).
+    /// Zerado a cada sync bem-sucedido do arquivo.
+    pub flags: i64,
 }
 
+/// Conflito pendente para este arquivo (ver `storage::conflicts`).
+pub const FLAG_CONFLICT: i64 = 1;
+/// Pendência na fila offline para este arquivo (ver `storage::queue`).
+pub const FLAG_PENDING: i64 = 2;
+/// Reservada para uso futuro: arquivo fora do sync por padrão de exclusão.
+#[allow(dead_code)]
+pub const FLAG_IGNORED: i64 = 4;
+/// Reservada para uso futuro: última verificação encontrou hash divergente
+/// do esperado.
+#[allow(dead_code)]
+pub const FLAG_HASH_MISMATCH: i64 = 8;
+
 const COLS: &str = "emulator, category, rel_path, remote_file_id, local_mtime_ms, \
-                    remote_mtime_ms, size_bytes, last_synced_at_ms, file_hash";
+                    remote_mtime_ms, size_bytes, last_synced_at_ms, file_hash, flags";
 
 fn from_row(row: &Row) -> rusqlite::Result<ManifestEntry> {
     let category_str: String = row.get(1)?;
@@ -47,14 +63,15 @@ fn from_row(row: &Row) -> rusqlite::Result<ManifestEntry> {
         size_bytes: row.get(6)?,
         last_synced_at_ms: row.get(7)?,
         file_hash: row.get(8)?,
+        flags: row.get(9)?,
     })
 }
 
 pub fn upsert(conn: &Connection, entry: &ManifestEntry) -> AppResult<()> {
     conn.prepare_cached(
         "INSERT OR REPLACE INTO sync_manifest (emulator, category, rel_path, remote_file_id, \
-         local_mtime_ms, remote_mtime_ms, size_bytes, last_synced_at_ms, file_hash) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+         local_mtime_ms, remote_mtime_ms, size_bytes, last_synced_at_ms, file_hash, flags) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
     )?
     .execute(params![
         entry.emulator,
@@ -66,7 +83,46 @@ pub fn upsert(conn: &Connection, entry: &ManifestEntry) -> AppResult<()> {
         entry.size_bytes,
         entry.last_synced_at_ms,
         entry.file_hash,
+        entry.flags,
     ])?;
+    Ok(())
+}
+
+/// Liga os bits de `flags` na entrada, se ela existir. Best-effort: não-op
+/// silencioso quando não há linha do manifest para o arquivo ainda (ex.:
+/// conflito detectado num arquivo nunca sincronizado antes).
+pub fn set_flag(
+    conn: &Connection,
+    emulator: &str,
+    category: SyncCategory,
+    rel_path: &str,
+    flag: i64,
+) -> AppResult<()> {
+    conn.prepare_cached(
+        "UPDATE sync_manifest SET flags = flags | ?4 \
+         WHERE emulator = ?1 AND category = ?2 AND rel_path = ?3",
+    )?
+    .execute(params![emulator, category.as_str(), rel_path, flag])?;
+    Ok(())
+}
+
+/// Desliga os bits de `flags` na entrada, se ela existir. Hoje as limpezas
+/// acontecem via `upsert`/`upsert_batch` reescrevendo `flags: 0` numa
+/// sincronização bem-sucedida; esta função fica disponível para limpar uma
+/// flag isolada sem tocar no resto da entrada.
+#[allow(dead_code)]
+pub fn clear_flag(
+    conn: &Connection,
+    emulator: &str,
+    category: SyncCategory,
+    rel_path: &str,
+    flag: i64,
+) -> AppResult<()> {
+    conn.prepare_cached(
+        "UPDATE sync_manifest SET flags = flags & ~?4 \
+         WHERE emulator = ?1 AND category = ?2 AND rel_path = ?3",
+    )?
+    .execute(params![emulator, category.as_str(), rel_path, flag])?;
     Ok(())
 }
 
@@ -164,6 +220,7 @@ mod tests {
             size_bytes: Some(4096),
             last_synced_at_ms: 1_700_000_001_000,
             file_hash: Some("ab".repeat(32)),
+            flags: 0,
         }
     }
 
@@ -280,5 +337,58 @@ mod tests {
         assert_eq!(json["category"], "saves");
         assert_eq!(json["remoteFileId"], "drive-id-1");
         assert_eq!(json["lastSyncedAtMs"], 1_700_000_001_000i64);
+    }
+
+    #[test]
+    fn set_flag_e_clear_flag_ligam_e_desligam_bits_sem_afetar_outros() {
+        let db = Db::open_in_memory().unwrap();
+        db.with_sync(|conn| {
+            let entry = sample_entry();
+            upsert(conn, &entry)?;
+
+            set_flag(
+                conn,
+                "PPSSPP",
+                SyncCategory::Saves,
+                "GAME123/SAVE.bin",
+                FLAG_CONFLICT,
+            )?;
+            set_flag(
+                conn,
+                "PPSSPP",
+                SyncCategory::Saves,
+                "GAME123/SAVE.bin",
+                FLAG_PENDING,
+            )?;
+            let loaded = get(conn, "PPSSPP", SyncCategory::Saves, "GAME123/SAVE.bin")?.unwrap();
+            assert_eq!(loaded.flags, FLAG_CONFLICT | FLAG_PENDING);
+
+            clear_flag(
+                conn,
+                "PPSSPP",
+                SyncCategory::Saves,
+                "GAME123/SAVE.bin",
+                FLAG_CONFLICT,
+            )?;
+            let loaded = get(conn, "PPSSPP", SyncCategory::Saves, "GAME123/SAVE.bin")?.unwrap();
+            assert_eq!(loaded.flags, FLAG_PENDING);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn set_flag_sem_linha_correspondente_e_no_op_silencioso() {
+        let db = Db::open_in_memory().unwrap();
+        db.with_sync(|conn| {
+            set_flag(
+                conn,
+                "PPSSPP",
+                SyncCategory::Saves,
+                "nada.bin",
+                FLAG_CONFLICT,
+            )?;
+            assert_eq!(get(conn, "PPSSPP", SyncCategory::Saves, "nada.bin")?, None);
+            Ok(())
+        });
     }
 }

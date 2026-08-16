@@ -228,6 +228,7 @@ mod tests {
                 size_bytes: Some(4096),
                 last_synced_at_ms: 1_700_000_000_000,
                 file_hash: None,
+                flags: 0,
             },
         )
     }

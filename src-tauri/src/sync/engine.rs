@@ -32,7 +32,7 @@ use crate::events::{
 use crate::remote::{BatchUploadOp, DeviceTag, RemoteProvider};
 use crate::storage::conflicts::{self, Conflict};
 use crate::storage::db::Db;
-use crate::storage::manifest::{self, ManifestEntry};
+use crate::storage::manifest::{self, ManifestEntry, FLAG_CONFLICT, FLAG_PENDING};
 use crate::storage::settings::{self, NotificationLevel};
 use crate::storage::{emulators, queue, stats};
 use crate::versioning::Versioner;
@@ -871,6 +871,7 @@ impl<R: Runtime> SyncEngine<R> {
                         size_bytes: Some(content.len() as i64),
                         last_synced_at_ms: chrono::Utc::now().timestamp_millis(),
                         file_hash: Some(super::sha256_hex(&content)),
+                        flags: 0,
                     };
                     let (emu, old_rel) = (emulator.to_string(), orphan_rel);
                     let _ = self
@@ -973,7 +974,8 @@ impl<R: Runtime> SyncEngine<R> {
                     "operação de sync falhou"
                 );
                 if retryable {
-                    let (emulator, category, rel) = (ctx.emulator.clone(), ctx.category, rel_path);
+                    let (emulator, category, rel) =
+                        (ctx.emulator.clone(), ctx.category, rel_path.clone());
                     let direction = match op.action {
                         SyncAction::Upload => queue::OpDirection::Upload,
                         _ => queue::OpDirection::Download,
@@ -983,6 +985,15 @@ impl<R: Runtime> SyncEngine<R> {
                         .db
                         .with(move |conn| {
                             queue::enqueue(conn, &emulator, category, &rel, direction, &message)
+                        })
+                        .await;
+                    // Índice best-effort em sync_manifest.flags — não-op se a
+                    // linha ainda não existir.
+                    let (emulator, category) = (ctx.emulator.clone(), ctx.category);
+                    let _ = self
+                        .db
+                        .with(move |conn| {
+                            manifest::set_flag(conn, &emulator, category, &rel_path, FLAG_PENDING)
                         })
                         .await;
                     OpOutcome::Queued
@@ -1409,6 +1420,13 @@ impl<R: Runtime> SyncEngine<R> {
         self.db
             .with(move |conn| conflicts::upsert(conn, &stored))
             .await?;
+        // Índice best-effort em sync_manifest.flags — não-op se a linha ainda
+        // não existir (arquivo nunca sincronizado antes deste conflito).
+        let (emulator, category, rel) = (ctx.emulator.clone(), ctx.category, op.rel_path.clone());
+        let _ = self
+            .db
+            .with(move |conn| manifest::set_flag(conn, &emulator, category, &rel, FLAG_CONFLICT))
+            .await;
 
         tracing::warn!(emulador = %ctx.emulator, arquivo = %op.rel_path, "conflito detectado: ambos os lados mudaram");
         let _ = self.app.emit(EVT_SYNC_CONFLICT, &conflict);
@@ -1488,6 +1506,9 @@ impl<R: Runtime> SyncEngine<R> {
             size_bytes: Some(size_bytes),
             last_synced_at_ms: chrono::Utc::now().timestamp_millis(),
             file_hash,
+            // Sync bem-sucedido: qualquer flag anterior (conflito/pendência)
+            // não se aplica mais a esta versão do arquivo.
+            flags: 0,
         }
     }
 
@@ -1654,6 +1675,8 @@ impl<R: Runtime> SyncEngine<R> {
             size_bytes: Some(size_bytes),
             last_synced_at_ms: chrono::Utc::now().timestamp_millis(),
             file_hash,
+            // Conflito resolvido: a versão escolhida não está mais em conflito.
+            flags: 0,
         };
         self.db
             .with(move |conn| manifest::upsert(conn, &entry))

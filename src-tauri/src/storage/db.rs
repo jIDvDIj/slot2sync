@@ -170,6 +170,16 @@ CREATE TABLE IF NOT EXISTS schema_version (
 );
 ";
 
+/// v14 — bitmask de flags por entrada do manifest (`FLAG_CONFLICT`,
+/// `FLAG_PENDING`, ...). Índice secundário best-effort para consultas
+/// (`WHERE flags & 1 != 0`) — `sync_conflicts` e `pending_ops` continuam
+/// sendo a fonte de verdade; a flag some silenciosamente se a linha do
+/// manifest ainda não existir (ex.: conflito num arquivo nunca sincronizado).
+/// Ver `storage::manifest`.
+const SCHEMA_V14: &str = "
+ALTER TABLE sync_manifest ADD COLUMN flags INTEGER NOT NULL DEFAULT 0;
+";
+
 /// Intervalo mínimo entre manutenções (7 dias) — não vale a pena rodar em
 /// todo shutdown, só quando o banco já cresceu o suficiente para o planner
 /// ficar desatualizado.
@@ -339,6 +349,10 @@ fn migrate(conn: &Connection) -> AppResult<()> {
     if version < 13 {
         conn.execute_batch(SCHEMA_V13)?;
         version = 13;
+    }
+    if version < 14 {
+        conn.execute_batch(SCHEMA_V14)?;
+        version = 14;
     }
     conn.pragma_update(None, "user_version", version)?;
 
