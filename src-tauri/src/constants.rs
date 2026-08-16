@@ -34,7 +34,10 @@ pub const LOCAL_BACKUP_DIR: &str = "backups";
 
 /// Identificação das credenciais no keychain do SO.
 pub const KEYRING_SERVICE: &str = "com.slot2sync.app";
-pub const KEYRING_REFRESH_TOKEN_KEY: &str = "google_drive_refresh_token";
+/// Chave do refresh token por provedor OAuth (a pasta local não usa keyring).
+pub const KEYRING_GOOGLE_REFRESH_TOKEN_KEY: &str = "google_drive_refresh_token";
+pub const KEYRING_DROPBOX_REFRESH_TOKEN_KEY: &str = "dropbox_refresh_token";
+pub const KEYRING_ONEDRIVE_REFRESH_TOKEN_KEY: &str = "onedrive_refresh_token";
 
 /// Chave do keyring para o identificador estável deste dispositivo (UUID v4).
 /// Vive fora do SQLite de propósito: sobrevive à desinstalação do app e à
@@ -141,6 +144,12 @@ pub const MAX_CONFLICT_COPIES: usize = 3;
 /// IDs de banners informativos que o usuário dispensou (array JSON). Um banner
 /// dispensado não reaparece
 pub const SETTING_DISMISSED_NOTICES: &str = "dismissed_notices";
+
+/// Provedor de storage remoto ativo (`ProviderKind::as_str()`). Ausente =
+/// nenhum escolhido ainda (primeiro uso) — a UI mostra o seletor de provedor.
+pub const SETTING_STORAGE_PROVIDER: &str = "storage_provider";
+/// Caminho absoluto da pasta local/de rede, quando o provedor é `LocalFolder`.
+pub const SETTING_FOLDER_PROVIDER_PATH: &str = "folder_provider_path";
 
 /// Marca que o default de fábrica do autostart (ligado) já foi aplicado na
 /// primeira execução. Impede religar o autostart a cada inicialização — depois

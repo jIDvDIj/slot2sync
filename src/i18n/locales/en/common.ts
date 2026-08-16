@@ -5,7 +5,7 @@ export const common = {
     dismiss: "Dismiss",
   },
   app: {
-    checkingConnection: "Checking Google Drive connection…",
+    checkingConnection: "Checking remote provider connection…",
     settings: "⚙ Settings",
     emulators: "Emulators",
     loading: "loading…",

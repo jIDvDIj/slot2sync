@@ -198,8 +198,11 @@ mod tests {
     #[test]
     fn poll_once_detecta_o_proprio_processo_como_presente() {
         let mut system = System::new_all();
-        system
-            .refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
+        system.refresh_processes_specifics(
+            ProcessesToUpdate::All,
+            true,
+            ProcessRefreshKind::nothing(),
+        );
         let pid = sysinfo::get_current_pid().expect("PID do processo atual");
         let own_name = system
             .process(pid)

@@ -1,4 +1,4 @@
-//! `MockDrive` — implementação em memória do [`DriveApi`] para testes.
+//! `MockDrive` — implementação em memória do [`RemoteProvider`] para testes.
 //!
 //! Modela o Drive como pastas e arquivos num mapa, sem rede nem credenciais.
 //! Além do contrato do trait, expõe helpers de fixture (`seed_category_file`,
@@ -11,10 +11,10 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 
-use super::api::DriveApi;
-use super::{BatchUploadOp, DeviceTag, DriveFile, RemoteFile};
+use super::DriveFile;
 use crate::constants::{DRIVE_APP_PROP_DEVICE, DRIVE_APP_PROP_DEVICE_ID, DRIVE_ROOT_FOLDER};
 use crate::error::{AppError, AppResult};
+use crate::remote::{BatchUploadOp, DeviceTag, RemoteFile, RemoteProvider};
 use crate::sync::SyncCategory;
 
 #[derive(Debug, Clone)]
@@ -227,7 +227,7 @@ fn to_drive_file(id: &str, file: &MockFile) -> DriveFile {
 }
 
 #[async_trait]
-impl DriveApi for MockDrive {
+impl RemoteProvider for MockDrive {
     async fn ensure_root(&self) -> AppResult<String> {
         Ok(self.ensure_chain(DRIVE_ROOT_FOLDER))
     }
@@ -279,22 +279,20 @@ impl DriveApi for MockDrive {
         let mut out = Vec::new();
         for (id, file) in &state.files {
             if let Some(prefix) = rel_prefix(&state.folders, folder_id, file.parent.clone()) {
-                out.push(RemoteFile {
-                    rel_path: format!("{prefix}{}", file.name),
-                    file: to_drive_file(id, file),
-                });
+                let rel_path = format!("{prefix}{}", file.name);
+                out.push(to_drive_file(id, file).to_remote(rel_path));
             }
         }
         Ok(out)
     }
 
-    async fn find_child(&self, folder_id: &str, name: &str) -> AppResult<Option<DriveFile>> {
+    async fn find_child(&self, folder_id: &str, name: &str) -> AppResult<Option<RemoteFile>> {
         let state = self.state.lock().unwrap();
         Ok(state
             .files
             .iter()
             .find(|(_, f)| f.parent == folder_id && f.name == name)
-            .map(|(id, f)| to_drive_file(id, f)))
+            .map(|(id, f)| to_drive_file(id, f).to_remote(name.to_string())))
     }
 
     async fn download(&self, file_id: &str) -> AppResult<Vec<u8>> {
@@ -308,7 +306,7 @@ impl DriveApi for MockDrive {
             .files
             .get(file_id)
             .map(|f| f.content.clone())
-            .ok_or_else(|| AppError::DriveObjectNotFound(format!("mock: {file_id}")))
+            .ok_or_else(|| AppError::RemoteObjectNotFound(format!("mock: {file_id}")))
     }
 
     async fn upload_new(
@@ -318,11 +316,10 @@ impl DriveApi for MockDrive {
         content: Vec<u8>,
         mtime_ms: i64,
         device: DeviceTag<'_>,
-    ) -> AppResult<DriveFile> {
+    ) -> AppResult<RemoteFile> {
         self.upload_new_calls.fetch_add(1, Ordering::SeqCst);
-        Ok(self
-            .insert_file(parent_id, name, content, mtime_ms, device)
-            .1)
+        let (_id, file) = self.insert_file(parent_id, name, content, mtime_ms, device);
+        Ok(file.to_remote(name.to_string()))
     }
 
     async fn upload_existing(
@@ -331,12 +328,12 @@ impl DriveApi for MockDrive {
         content: Vec<u8>,
         mtime_ms: i64,
         device: DeviceTag<'_>,
-    ) -> AppResult<DriveFile> {
+    ) -> AppResult<RemoteFile> {
         let mut state = self.state.lock().unwrap();
         let file = state
             .files
             .get_mut(file_id)
-            .ok_or_else(|| AppError::DriveObjectNotFound(format!("mock: {file_id}")))?;
+            .ok_or_else(|| AppError::RemoteObjectNotFound(format!("mock: {file_id}")))?;
         file.content = content;
         file.mtime_ms = mtime_ms;
         if let Some(n) = device.name {
@@ -348,10 +345,10 @@ impl DriveApi for MockDrive {
                 .insert(DRIVE_APP_PROP_DEVICE_ID.to_string(), id.to_string());
         }
         let file = file.clone();
-        Ok(to_drive_file(file_id, &file))
+        Ok(to_drive_file(file_id, &file).to_remote(String::new()))
     }
 
-    async fn upload_batch(&self, ops: Vec<BatchUploadOp>) -> AppResult<Vec<DriveFile>> {
+    async fn upload_batch(&self, ops: Vec<BatchUploadOp>) -> AppResult<Vec<RemoteFile>> {
         self.batch_calls.fetch_add(1, Ordering::SeqCst);
         if self.fail_next_batch.swap(false, Ordering::SeqCst) {
             return Err(AppError::Other("mock: batch falhou de propósito".into()));
@@ -362,10 +359,10 @@ impl DriveApi for MockDrive {
                 name: op.device_name.as_deref(),
                 id: op.device_id.as_deref(),
             };
-            out.push(
-                self.insert_file(&op.parent_id, &op.name, op.content, op.mtime_ms, tag)
-                    .1,
-            );
+            let name = op.name.clone();
+            let (_id, file) =
+                self.insert_file(&op.parent_id, &op.name, op.content, op.mtime_ms, tag);
+            out.push(file.to_remote(name));
         }
         Ok(out)
     }
@@ -376,19 +373,19 @@ impl DriveApi for MockDrive {
         new_name: &str,
         add_parent: Option<&str>,
         remove_parent: Option<&str>,
-    ) -> AppResult<DriveFile> {
+    ) -> AppResult<RemoteFile> {
         let mut state = self.state.lock().unwrap();
         let file = state
             .files
             .get_mut(file_id)
-            .ok_or_else(|| AppError::DriveObjectNotFound(format!("mock: {file_id}")))?;
+            .ok_or_else(|| AppError::RemoteObjectNotFound(format!("mock: {file_id}")))?;
         file.name = new_name.to_string();
         if let Some(parent) = add_parent {
             file.parent = parent.to_string();
         }
         let _ = remove_parent;
         let file = file.clone();
-        Ok(to_drive_file(file_id, &file))
+        Ok(to_drive_file(file_id, &file).to_remote(new_name.to_string()))
     }
 
     async fn invalidate_folder_path(&self, _cache_key: &str) {}

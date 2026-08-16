@@ -509,10 +509,7 @@ mod tests {
         spec.saves = vec!["SAVEDATA".into()];
 
         let profile = try_match(tmp.path(), &spec).expect("deveria casar via base 'b'");
-        assert_eq!(
-            profile.saves_paths,
-            vec![Path::new("b").join("SAVEDATA")]
-        );
+        assert_eq!(profile.saves_paths, vec![Path::new("b").join("SAVEDATA")]);
     }
 
     #[test]

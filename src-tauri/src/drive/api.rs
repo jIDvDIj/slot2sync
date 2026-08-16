@@ -1,91 +1,16 @@
-//! `DriveApi` — a porta do `SyncEngine` para o Drive.
-//!
-//! O engine depende deste trait, nunca do `DriveClient` concreto: em produção
-//! o `DriveClient` (HTTP real) o implementa por delegação; nos testes, o
-//! `MockDrive` (`drive::mock`) opera sobre um mapa em memória, permitindo
-//! exercitar o engine de ponta a ponta sem rede e sem credenciais.
+//! `impl remote::RemoteProvider for DriveClient` — delegação simples para os
+//! métodos inerentes de `DriveClient` (já retornam os tipos genéricos de
+//! `remote`), permitindo ao `SyncEngine` depender só do trait.
 
 use async_trait::async_trait;
 
-use super::{BatchUploadOp, DeviceTag, DriveClient, DriveFile, RemoteFile};
+use super::DriveClient;
 use crate::error::AppResult;
+use crate::remote::{BatchUploadOp, DeviceTag, RemoteFile, RemoteProvider};
 use crate::sync::SyncCategory;
 
-/// Operações do Google Drive das quais o `SyncEngine` depende.
-///
-/// Espelha 1:1 os métodos públicos do `DriveClient` consumidos pelo engine —
-/// novas necessidades entram aqui primeiro, mantendo o mock em sincronia.
 #[async_trait]
-pub trait DriveApi: Send + Sync {
-    /// Garante `Slot2Sync/` na raiz do Drive e retorna seu ID.
-    async fn ensure_root(&self) -> AppResult<String>;
-
-    /// Garante `Slot2Sync/<emulator>/<categoria>` e retorna o ID da categoria.
-    async fn ensure_category_folder(
-        &self,
-        emulator: &str,
-        category: SyncCategory,
-    ) -> AppResult<String>;
-
-    /// Garante a cadeia de subpastas `rel_dir` (separador `/`) sob `base_id`.
-    async fn ensure_subpath(
-        &self,
-        base_id: &str,
-        base_key: &str,
-        rel_dir: &str,
-    ) -> AppResult<String>;
-
-    /// Lista recursivamente os arquivos sob `folder_id`, com caminhos relativos.
-    async fn list_tree(&self, folder_id: &str) -> AppResult<Vec<RemoteFile>>;
-
-    /// Filho direto por nome (sem recursão).
-    async fn find_child(&self, folder_id: &str, name: &str) -> AppResult<Option<DriveFile>>;
-
-    /// Baixa o conteúdo inteiro de um arquivo.
-    async fn download(&self, file_id: &str) -> AppResult<Vec<u8>>;
-
-    /// Cria um arquivo novo preservando o mtime e marcando o dispositivo.
-    async fn upload_new(
-        &self,
-        parent_id: &str,
-        name: &str,
-        content: Vec<u8>,
-        mtime_ms: i64,
-        device: DeviceTag<'_>,
-    ) -> AppResult<DriveFile>;
-
-    /// Atualiza o conteúdo de um arquivo existente preservando o mtime.
-    async fn upload_existing(
-        &self,
-        file_id: &str,
-        content: Vec<u8>,
-        mtime_ms: i64,
-        device: DeviceTag<'_>,
-    ) -> AppResult<DriveFile>;
-
-    /// Envia arquivos novos e pequenos em um único `multipart/mixed`.
-    /// Retorna os `DriveFile` na MESMA ordem das operações.
-    async fn upload_batch(&self, ops: Vec<BatchUploadOp>) -> AppResult<Vec<DriveFile>>;
-
-    /// Renomeia (e opcionalmente move) um arquivo sem reenviar conteúdo
-    /// (`files.update`). Usado pela detecção de renomeação por hash.
-    async fn rename_file(
-        &self,
-        file_id: &str,
-        new_name: &str,
-        add_parent: Option<&str>,
-        remove_parent: Option<&str>,
-    ) -> AppResult<DriveFile>;
-
-    /// Invalida um caminho lógico de pasta e sua subárvore no cache.
-    async fn invalidate_folder_path(&self, cache_key: &str);
-
-    /// Zera todo o cache de pastas (logout/troca de conta).
-    async fn clear_folder_cache(&self);
-}
-
-#[async_trait]
-impl DriveApi for DriveClient {
+impl RemoteProvider for DriveClient {
     async fn ensure_root(&self) -> AppResult<String> {
         DriveClient::ensure_root(self).await
     }
@@ -111,7 +36,7 @@ impl DriveApi for DriveClient {
         DriveClient::list_tree(self, folder_id).await
     }
 
-    async fn find_child(&self, folder_id: &str, name: &str) -> AppResult<Option<DriveFile>> {
+    async fn find_child(&self, folder_id: &str, name: &str) -> AppResult<Option<RemoteFile>> {
         DriveClient::find_child(self, folder_id, name).await
     }
 
@@ -126,7 +51,7 @@ impl DriveApi for DriveClient {
         content: Vec<u8>,
         mtime_ms: i64,
         device: DeviceTag<'_>,
-    ) -> AppResult<DriveFile> {
+    ) -> AppResult<RemoteFile> {
         DriveClient::upload_new(self, parent_id, name, content, mtime_ms, device).await
     }
 
@@ -136,11 +61,11 @@ impl DriveApi for DriveClient {
         content: Vec<u8>,
         mtime_ms: i64,
         device: DeviceTag<'_>,
-    ) -> AppResult<DriveFile> {
+    ) -> AppResult<RemoteFile> {
         DriveClient::upload_existing(self, file_id, content, mtime_ms, device).await
     }
 
-    async fn upload_batch(&self, ops: Vec<BatchUploadOp>) -> AppResult<Vec<DriveFile>> {
+    async fn upload_batch(&self, ops: Vec<BatchUploadOp>) -> AppResult<Vec<RemoteFile>> {
         DriveClient::upload_batch(self, ops).await
     }
 
@@ -150,7 +75,7 @@ impl DriveApi for DriveClient {
         new_name: &str,
         add_parent: Option<&str>,
         remove_parent: Option<&str>,
-    ) -> AppResult<DriveFile> {
+    ) -> AppResult<RemoteFile> {
         DriveClient::rename_file(self, file_id, new_name, add_parent, remove_parent).await
     }
 
@@ -186,7 +111,7 @@ mod tests {
     async fn delegacao_dos_metodos_http_para_o_cliente_real() {
         let server = MockServer::start().await;
         let client = client_against(&server).await;
-        let api: &dyn DriveApi = &client;
+        let api: &dyn RemoteProvider = &client;
 
         Mock::given(method("GET"))
             .and(path("/drive/v3/files"))
@@ -234,7 +159,7 @@ mod tests {
             Arc::new(MemSecrets::default()),
         ));
         let client = DriveClient::new(reqwest::Client::new(), auth, db);
-        let api: &dyn DriveApi = &client;
+        let api: &dyn RemoteProvider = &client;
 
         assert_eq!(api.ensure_root().await.unwrap(), "id-root");
         assert_eq!(

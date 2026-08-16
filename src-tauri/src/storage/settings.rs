@@ -11,14 +11,16 @@ use serde::{Deserialize, Serialize};
 use crate::constants::{
     BACKUP_RETENTION_DAYS_DEFAULT, MAX_BACKUP_VERSIONS_DEFAULT, SCAN_INTERVAL_MINUTES_DEFAULT,
     SETTING_BACKUP_RETENTION_DAYS, SETTING_DEVICE_NAME, SETTING_DISMISSED_NOTICES,
-    SETTING_DOWNLOAD_KBPS, SETTING_MAX_BACKUP_VERSIONS, SETTING_NOTIFICATION_LEVEL,
-    SETTING_SCAN_INTERVAL_MINUTES, SETTING_TRIGGER_EMULATOR_START, SETTING_TRIGGER_EMULATOR_STOP,
-    SETTING_TRIGGER_STARTUP, SETTING_UPLOAD_KBPS,
+    SETTING_DOWNLOAD_KBPS, SETTING_FOLDER_PROVIDER_PATH, SETTING_MAX_BACKUP_VERSIONS,
+    SETTING_NOTIFICATION_LEVEL, SETTING_SCAN_INTERVAL_MINUTES, SETTING_STORAGE_PROVIDER,
+    SETTING_TRIGGER_EMULATOR_START, SETTING_TRIGGER_EMULATOR_STOP, SETTING_TRIGGER_STARTUP,
+    SETTING_UPLOAD_KBPS,
 };
 // Consumido apenas pelas funções de autostart (só-desktop).
 #[cfg(desktop)]
 use crate::constants::SETTING_AUTOSTART_INITIALIZED;
 use crate::error::AppResult;
+use crate::remote::ProviderKind;
 
 /// Configurações globais. (→ ipc.ts)
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -56,6 +58,14 @@ pub struct Settings {
     /// Limite de download em KB/s (0 = ilimitado).
     #[serde(default)]
     pub download_kbps: u32,
+    /// Provedor de storage remoto ativo. `None` = nenhum escolhido ainda
+    /// (primeiro uso) — a UI mostra o seletor de provedor.
+    #[serde(default)]
+    pub storage_provider: Option<ProviderKind>,
+    /// Caminho absoluto da pasta local/de rede, quando `storage_provider` é
+    /// `LocalFolder`. Irrelevante para os demais provedores.
+    #[serde(default)]
+    pub folder_provider_path: Option<String>,
 }
 
 fn default_max_backup_versions() -> u32 {
@@ -82,6 +92,8 @@ impl Default for Settings {
             max_backup_versions: MAX_BACKUP_VERSIONS_DEFAULT,
             upload_kbps: 0,
             download_kbps: 0,
+            storage_provider: None,
+            folder_provider_path: None,
         }
     }
 }
@@ -170,6 +182,11 @@ fn set(conn: &Connection, key: &str, value: &str) -> AppResult<()> {
     Ok(())
 }
 
+fn delete(conn: &Connection, key: &str) -> AppResult<()> {
+    conn.execute("DELETE FROM app_settings WHERE key = ?1", params![key])?;
+    Ok(())
+}
+
 fn get_bool(conn: &Connection, key: &str, default: bool) -> AppResult<bool> {
     Ok(get(conn, key)?.map(|v| v == "true").unwrap_or(default))
 }
@@ -192,6 +209,8 @@ pub fn load(conn: &Connection) -> AppResult<Settings> {
         max_backup_versions: max_backup_versions(conn)?,
         upload_kbps: upload_kbps(conn)?,
         download_kbps: download_kbps(conn)?,
+        storage_provider: storage_provider(conn)?,
+        folder_provider_path: folder_provider_path(conn)?,
     })
 }
 
@@ -326,6 +345,33 @@ pub fn device_name(conn: &Connection) -> AppResult<Option<String>> {
 
 pub fn set_device_name(conn: &Connection, name: &str) -> AppResult<()> {
     set(conn, SETTING_DEVICE_NAME, name)
+}
+
+/// Provedor de storage remoto ativo. `None` = nenhum escolhido ainda.
+pub fn storage_provider(conn: &Connection) -> AppResult<Option<ProviderKind>> {
+    Ok(get(conn, SETTING_STORAGE_PROVIDER)?
+        .as_deref()
+        .and_then(ProviderKind::parse))
+}
+
+pub fn set_storage_provider(conn: &Connection, provider: ProviderKind) -> AppResult<()> {
+    set(conn, SETTING_STORAGE_PROVIDER, provider.as_str())
+}
+
+/// Limpa o provedor ativo e o caminho da pasta local (usado por
+/// `disconnect_provider`) — a UI volta a mostrar o seletor de provedor.
+pub fn clear_storage_provider(conn: &Connection) -> AppResult<()> {
+    delete(conn, SETTING_STORAGE_PROVIDER)?;
+    delete(conn, SETTING_FOLDER_PROVIDER_PATH)
+}
+
+/// Caminho absoluto da pasta local/de rede (só relevante para `LocalFolder`).
+pub fn folder_provider_path(conn: &Connection) -> AppResult<Option<String>> {
+    get(conn, SETTING_FOLDER_PROVIDER_PATH)
+}
+
+pub fn set_folder_provider_path(conn: &Connection, path: &str) -> AppResult<()> {
+    set(conn, SETTING_FOLDER_PROVIDER_PATH, path)
 }
 
 #[cfg(test)]
@@ -513,9 +559,12 @@ mod tests {
             max_backup_versions: 3,
             upload_kbps: 256,
             download_kbps: 0,
+            storage_provider: Some(ProviderKind::GoogleDrive),
+            folder_provider_path: None,
         })
         .unwrap();
         assert_eq!(json["deviceName"], "PC Gamer");
+        assert_eq!(json["storageProvider"], "google_drive");
         assert_eq!(json["backupRetentionDays"], 15);
         assert_eq!(json["scanIntervalMinutes"], 45);
         assert_eq!(json["maxBackupVersions"], 3);

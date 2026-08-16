@@ -174,6 +174,33 @@ button.secondary:hover:not(:disabled) {
   border-color: var(--rs-color-brand);
 }
 
+.provider-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--rs-space-2);
+}
+
+.folder-path-row {
+  display: flex;
+  gap: var(--rs-space-2);
+}
+
+.folder-path-row input {
+  flex: 1;
+  min-width: 0;
+  background-color: var(--rs-color-surface-alt);
+  border: 1px solid var(--rs-color-border);
+  border-radius: var(--rs-radius-md);
+  color: var(--rs-color-text);
+  padding: 0.5rem 0.7rem;
+  font-size: 0.9rem;
+}
+
+.folder-path-row input:focus {
+  outline: none;
+  border-color: var(--rs-color-brand);
+}
+
 .account {
   display: inline-flex;
   align-items: center;

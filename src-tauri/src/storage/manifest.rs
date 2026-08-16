@@ -1,5 +1,5 @@
 //! Tabela `sync_manifest`: estado conhecido de cada arquivo no último sync
-//! bem-sucedido (mtime local, modifiedTime e fileId no Drive). É a referência
+//! bem-sucedido (mtime local, mtime remoto e ID remoto). É a referência
 //! do diff — permite distinguir "mudou de um lado" de "mudou dos dois".
 
 use rusqlite::{params, Connection, OptionalExtension, Row};
@@ -15,9 +15,9 @@ pub struct ManifestEntry {
     pub category: SyncCategory,
     /// Caminho relativo à pasta da categoria, sempre com separador `/`.
     pub rel_path: String,
-    pub drive_file_id: Option<String>,
+    pub remote_file_id: Option<String>,
     pub local_mtime_ms: Option<i64>,
-    pub drive_mtime_ms: Option<i64>,
+    pub remote_mtime_ms: Option<i64>,
     pub size_bytes: Option<i64>,
     pub last_synced_at_ms: i64,
     /// SHA-256 (hex) do conteúdo no último sync. `None` em entradas gravadas
@@ -25,8 +25,8 @@ pub struct ManifestEntry {
     pub file_hash: Option<String>,
 }
 
-const COLS: &str = "emulator, category, rel_path, drive_file_id, local_mtime_ms, \
-                    drive_mtime_ms, size_bytes, last_synced_at_ms, file_hash";
+const COLS: &str = "emulator, category, rel_path, remote_file_id, local_mtime_ms, \
+                    remote_mtime_ms, size_bytes, last_synced_at_ms, file_hash";
 
 fn from_row(row: &Row) -> rusqlite::Result<ManifestEntry> {
     let category_str: String = row.get(1)?;
@@ -41,9 +41,9 @@ fn from_row(row: &Row) -> rusqlite::Result<ManifestEntry> {
         emulator: row.get(0)?,
         category,
         rel_path: row.get(2)?,
-        drive_file_id: row.get(3)?,
+        remote_file_id: row.get(3)?,
         local_mtime_ms: row.get(4)?,
-        drive_mtime_ms: row.get(5)?,
+        remote_mtime_ms: row.get(5)?,
         size_bytes: row.get(6)?,
         last_synced_at_ms: row.get(7)?,
         file_hash: row.get(8)?,
@@ -52,16 +52,16 @@ fn from_row(row: &Row) -> rusqlite::Result<ManifestEntry> {
 
 pub fn upsert(conn: &Connection, entry: &ManifestEntry) -> AppResult<()> {
     conn.execute(
-        "INSERT OR REPLACE INTO sync_manifest (emulator, category, rel_path, drive_file_id, \
-         local_mtime_ms, drive_mtime_ms, size_bytes, last_synced_at_ms, file_hash) \
+        "INSERT OR REPLACE INTO sync_manifest (emulator, category, rel_path, remote_file_id, \
+         local_mtime_ms, remote_mtime_ms, size_bytes, last_synced_at_ms, file_hash) \
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![
             entry.emulator,
             entry.category.as_str(),
             entry.rel_path,
-            entry.drive_file_id,
+            entry.remote_file_id,
             entry.local_mtime_ms,
-            entry.drive_mtime_ms,
+            entry.remote_mtime_ms,
             entry.size_bytes,
             entry.last_synced_at_ms,
             entry.file_hash,
@@ -105,7 +105,7 @@ pub fn list_for_category(
     Ok(entries)
 }
 
-/// Todas as entradas — base do snapshot `sync_manifest.json` publicado no Drive.
+/// Todas as entradas — base do snapshot `sync_manifest.json` publicado no provedor remoto.
 pub fn list_all(conn: &Connection) -> AppResult<Vec<ManifestEntry>> {
     let mut stmt = conn.prepare(&format!(
         "SELECT {COLS} FROM sync_manifest ORDER BY emulator, category, rel_path"
@@ -149,9 +149,9 @@ mod tests {
             emulator: "PPSSPP".into(),
             category: SyncCategory::Saves,
             rel_path: "GAME123/SAVE.bin".into(),
-            drive_file_id: Some("drive-id-1".into()),
+            remote_file_id: Some("drive-id-1".into()),
             local_mtime_ms: Some(1_700_000_000_000),
-            drive_mtime_ms: Some(1_700_000_000_500),
+            remote_mtime_ms: Some(1_700_000_000_500),
             size_bytes: Some(4096),
             last_synced_at_ms: 1_700_000_001_000,
             file_hash: Some("ab".repeat(32)),
@@ -189,12 +189,12 @@ mod tests {
             upsert(conn, &entry)?;
 
             entry.local_mtime_ms = Some(1_800_000_000_000);
-            entry.drive_file_id = None;
+            entry.remote_file_id = None;
             upsert(conn, &entry)?;
 
             let loaded = get(conn, "PPSSPP", SyncCategory::Saves, "GAME123/SAVE.bin")?.unwrap();
             assert_eq!(loaded.local_mtime_ms, Some(1_800_000_000_000));
-            assert_eq!(loaded.drive_file_id, None);
+            assert_eq!(loaded.remote_file_id, None);
             assert_eq!(list_all(conn)?.len(), 1);
             Ok(())
         });
@@ -243,7 +243,7 @@ mod tests {
         let json = serde_json::to_value(sample_entry()).unwrap();
         assert_eq!(json["relPath"], "GAME123/SAVE.bin");
         assert_eq!(json["category"], "saves");
-        assert_eq!(json["driveFileId"], "drive-id-1");
+        assert_eq!(json["remoteFileId"], "drive-id-1");
         assert_eq!(json["lastSyncedAtMs"], 1_700_000_001_000i64);
     }
 }

@@ -17,19 +17,37 @@ use tokio::net::{TcpListener, TcpStream};
 
 use crate::error::{AppError, AppResult};
 
-/// Sufixo do redirect URI mobile: o Worker recebe o code do Google e faz um 302
-/// para o deep link `com.slot2sync.app:/oauth2redirect`. O redirect URI completo
-/// é `{token_proxy_url}/oauth/callback` e deve estar registrado no Google Console.
+/// Sufixo do redirect URI mobile: o Worker recebe o code do provedor e faz um
+/// 302 para o deep link `com.slot2sync.app:/oauth2redirect`. O redirect URI
+/// completo é `{token_proxy_url}/oauth/callback` e deve estar registrado no
+/// console OAuth do provedor. Só o Google exige o Worker (ver `OAuthConfig`);
+/// Dropbox e Microsoft aceitam PKCE puro sem client secret.
 #[cfg(mobile)]
 pub const MOBILE_REDIRECT_SUFFIX: &str = "/oauth/callback";
 
-pub const GOOGLE_AUTH_ENDPOINT: &str = "https://accounts.google.com/o/oauth2/v2/auth";
-pub const GOOGLE_TOKEN_ENDPOINT: &str = "https://oauth2.googleapis.com/token";
-pub const GOOGLE_USERINFO_ENDPOINT: &str = "https://www.googleapis.com/oauth2/v3/userinfo";
-
+const GOOGLE_AUTH_ENDPOINT: &str = "https://accounts.google.com/o/oauth2/v2/auth";
+const GOOGLE_TOKEN_ENDPOINT: &str = "https://oauth2.googleapis.com/token";
+const GOOGLE_USERINFO_ENDPOINT: &str = "https://www.googleapis.com/oauth2/v3/userinfo";
 /// `drive.file` (não-sensível): o app só enxerga arquivos criados por ele.
 /// `openid email` permite exibir a conta conectada na UI.
-pub const OAUTH_SCOPE: &str = "openid email https://www.googleapis.com/auth/drive.file";
+const GOOGLE_SCOPE: &str = "openid email https://www.googleapis.com/auth/drive.file";
+
+const DROPBOX_AUTH_ENDPOINT: &str = "https://www.dropbox.com/oauth2/authorize";
+const DROPBOX_TOKEN_ENDPOINT: &str = "https://api.dropboxapi.com/oauth2/token";
+/// Apps com "Scoped access" no App Console do Dropbox exigem que o token
+/// resultante carregue explicitamente cada escopo de conteúdo — omitir aqui
+/// gera um token só de leitura de conta, sem acesso a arquivo nenhum. A
+/// restrição à App Folder (equivalente ao `drive.file`) vem do tipo de
+/// acesso do app no console, não de um escopo de path.
+const DROPBOX_SCOPE: &str =
+    "account_info.read files.metadata.read files.metadata.write files.content.read files.content.write";
+
+const MICROSOFT_AUTH_ENDPOINT: &str =
+    "https://login.microsoftonline.com/common/oauth2/v2.0/authorize";
+const MICROSOFT_TOKEN_ENDPOINT: &str = "https://login.microsoftonline.com/common/oauth2/v2.0/token";
+/// `Files.ReadWrite.AppFolder`: mesmo espírito do `drive.file` — o app só
+/// enxerga sua própria pasta especial (`/me/drive/special/approot`).
+const MICROSOFT_SCOPE: &str = "offline_access Files.ReadWrite.AppFolder User.Read";
 
 const LOOPBACK_HOST: &str = "127.0.0.1";
 const AUTH_FLOW_TIMEOUT: Duration = Duration::from_secs(300);
@@ -42,40 +60,119 @@ const ERROR_PAGE: &str = "<!doctype html><html lang=\"pt-BR\"><meta charset=\"ut
 <title>Slot2Sync</title><body style=\"font-family:sans-serif;text-align:center;padding-top:4rem\">\
 <h2>Autorização não concluída ✘</h2><p>Volte ao Slot2Sync e tente novamente.</p></body></html>";
 
+/// Estratégia de obtenção do e-mail do usuário conectado — cada provedor tem
+/// um endpoint e um shape de resposta próprios; todas convergem para o mesmo
+/// `Option<String>` que `AuthStatus.email` expõe.
+#[derive(Clone, Copy)]
+pub enum UserinfoStrategy {
+    /// OIDC padrão: `GET {endpoint}` com Bearer, campo `email` no corpo.
+    GoogleOidc,
+    /// `POST https://api.dropboxapi.com/2/users/get_current_account` com
+    /// Bearer, campo `email` aninhado em `{ "email": "..." }` no corpo (a API
+    /// do Dropbox devolve um objeto de conta, não um JWT/OIDC claims).
+    DropboxAccount,
+    /// Microsoft Graph `GET https://graph.microsoft.com/v1.0/me` com Bearer;
+    /// `mail` costuma vir preenchido, com `userPrincipalName` como fallback
+    /// (contas pessoais às vezes não têm `mail` setado).
+    MicrosoftGraph,
+}
+
 #[derive(Clone)]
 pub struct OAuthConfig {
     pub client_id: String,
+    pub auth_endpoint: String,
+    pub token_endpoint: String,
+    pub scope: String,
+    pub userinfo: UserinfoStrategy,
     /// URL do proxy Cloudflare Worker que guarda o client_secret (produção).
     /// Quando presente, `exchange_code` e `refresh_access_token` chamam o
-    /// Worker em vez do token endpoint do Google diretamente.
+    /// Worker em vez do token endpoint do provedor diretamente. Só o Google
+    /// precisa disso — Dropbox e Microsoft suportam PKCE puro (client
+    /// público, sem secret) para apps nativos.
     pub token_proxy_url: Option<String>,
     /// Shared secret enviado no header `X-Proxy-Secret` para impedir que
     /// terceiros esgotem a quota do Worker.
     pub proxy_secret: Option<String>,
-    /// Fallback para desenvolvimento local sem Worker configurado.
+    /// Fallback para desenvolvimento local sem Worker configurado (Google).
     pub client_secret: Option<String>,
+    /// Parâmetros extra da URL de autorização que pedem um refresh token —
+    /// cada provedor tem sua própria convenção (Google: `access_type=offline`
+    /// e `prompt=consent`; Dropbox: `token_access_type=offline`; Microsoft já
+    /// cobre isso via o escopo `offline_access`, sem parâmetro extra).
+    pub extra_auth_params: &'static [(&'static str, &'static str)],
 }
 
 impl OAuthConfig {
-    pub fn from_env() -> Option<Self> {
-        let client_id = option_env!("SLOT2SYNC_GOOGLE_CLIENT_ID")
-            .map(str::to_owned)
-            .or_else(|| std::env::var("SLOT2SYNC_GOOGLE_CLIENT_ID").ok())?;
-        let token_proxy_url = option_env!("SLOT2SYNC_TOKEN_PROXY_URL")
-            .map(str::to_owned)
-            .or_else(|| std::env::var("SLOT2SYNC_TOKEN_PROXY_URL").ok());
-        let proxy_secret = option_env!("SLOT2SYNC_PROXY_SECRET")
-            .map(str::to_owned)
-            .or_else(|| std::env::var("SLOT2SYNC_PROXY_SECRET").ok());
-        let client_secret = option_env!("SLOT2SYNC_GOOGLE_CLIENT_SECRET")
-            .map(str::to_owned)
-            .or_else(|| std::env::var("SLOT2SYNC_GOOGLE_CLIENT_SECRET").ok());
-        Some(Self {
-            client_id,
-            token_proxy_url,
-            proxy_secret,
-            client_secret,
-        })
+    /// Monta a config do provedor a partir das variáveis `SLOT2SYNC_*`
+    /// embutidas em build-time (ver `build.rs`) — `option_env!` só enxerga
+    /// literais, então cada provedor precisa do próprio `option_env!` aqui.
+    pub fn from_env(provider: crate::remote::ProviderKind) -> Option<Self> {
+        use crate::remote::ProviderKind;
+        match provider {
+            ProviderKind::GoogleDrive => {
+                let client_id = option_env!("SLOT2SYNC_GOOGLE_CLIENT_ID")
+                    .map(str::to_owned)
+                    .or_else(|| std::env::var("SLOT2SYNC_GOOGLE_CLIENT_ID").ok())?;
+                let token_proxy_url = option_env!("SLOT2SYNC_TOKEN_PROXY_URL")
+                    .map(str::to_owned)
+                    .or_else(|| std::env::var("SLOT2SYNC_TOKEN_PROXY_URL").ok());
+                let proxy_secret = option_env!("SLOT2SYNC_PROXY_SECRET")
+                    .map(str::to_owned)
+                    .or_else(|| std::env::var("SLOT2SYNC_PROXY_SECRET").ok());
+                let client_secret = option_env!("SLOT2SYNC_GOOGLE_CLIENT_SECRET")
+                    .map(str::to_owned)
+                    .or_else(|| std::env::var("SLOT2SYNC_GOOGLE_CLIENT_SECRET").ok());
+                Some(Self {
+                    client_id,
+                    auth_endpoint: GOOGLE_AUTH_ENDPOINT.to_string(),
+                    token_endpoint: GOOGLE_TOKEN_ENDPOINT.to_string(),
+                    scope: GOOGLE_SCOPE.to_string(),
+                    userinfo: UserinfoStrategy::GoogleOidc,
+                    token_proxy_url,
+                    proxy_secret,
+                    client_secret,
+                    extra_auth_params: &[("access_type", "offline"), ("prompt", "consent")],
+                })
+            }
+            ProviderKind::Dropbox => {
+                let client_id = option_env!("SLOT2SYNC_DROPBOX_CLIENT_ID")
+                    .map(str::to_owned)
+                    .or_else(|| std::env::var("SLOT2SYNC_DROPBOX_CLIENT_ID").ok())?;
+                Some(Self {
+                    client_id,
+                    auth_endpoint: DROPBOX_AUTH_ENDPOINT.to_string(),
+                    token_endpoint: DROPBOX_TOKEN_ENDPOINT.to_string(),
+                    scope: DROPBOX_SCOPE.to_string(),
+                    userinfo: UserinfoStrategy::DropboxAccount,
+                    token_proxy_url: option_env!("SLOT2SYNC_DROPBOX_TOKEN_PROXY_URL")
+                        .map(str::to_owned)
+                        .or_else(|| std::env::var("SLOT2SYNC_DROPBOX_TOKEN_PROXY_URL").ok()),
+                    proxy_secret: None,
+                    client_secret: None,
+                    extra_auth_params: &[("token_access_type", "offline")],
+                })
+            }
+            ProviderKind::OneDrive => {
+                let client_id = option_env!("SLOT2SYNC_ONEDRIVE_CLIENT_ID")
+                    .map(str::to_owned)
+                    .or_else(|| std::env::var("SLOT2SYNC_ONEDRIVE_CLIENT_ID").ok())?;
+                Some(Self {
+                    client_id,
+                    auth_endpoint: MICROSOFT_AUTH_ENDPOINT.to_string(),
+                    token_endpoint: MICROSOFT_TOKEN_ENDPOINT.to_string(),
+                    scope: MICROSOFT_SCOPE.to_string(),
+                    userinfo: UserinfoStrategy::MicrosoftGraph,
+                    token_proxy_url: option_env!("SLOT2SYNC_ONEDRIVE_TOKEN_PROXY_URL")
+                        .map(str::to_owned)
+                        .or_else(|| std::env::var("SLOT2SYNC_ONEDRIVE_TOKEN_PROXY_URL").ok()),
+                    proxy_secret: None,
+                    client_secret: None,
+                    extra_auth_params: &[],
+                })
+            }
+            // Pasta local/rede não usa OAuth — nunca deveria chegar aqui.
+            ProviderKind::LocalFolder => None,
+        }
     }
 }
 
@@ -125,23 +222,11 @@ pub async fn authorize_interactive(
     let port = listener.local_addr()?.port();
     let redirect_uri = format!("http://{LOOPBACK_HOST}:{port}");
 
-    let mut auth_url = url::Url::parse(GOOGLE_AUTH_ENDPOINT)
-        .map_err(|e| AppError::Auth(format!("URL de autorização inválida: {e}")))?;
-    auth_url
-        .query_pairs_mut()
-        .append_pair("client_id", &config.client_id)
-        .append_pair("redirect_uri", &redirect_uri)
-        .append_pair("response_type", "code")
-        .append_pair("scope", OAUTH_SCOPE)
-        .append_pair("code_challenge", &pkce.challenge)
-        .append_pair("code_challenge_method", "S256")
-        .append_pair("access_type", "offline")
-        .append_pair("prompt", "consent")
-        .append_pair("state", &state);
+    let auth_url = build_auth_url(config, &redirect_uri, &pkce.challenge, &state)?;
 
     open::that_detached(auth_url.as_str())
         .map_err(|e| AppError::Auth(format!("não foi possível abrir o navegador: {e}")))?;
-    tracing::info!(port, "aguardando autorização do Google no navegador");
+    tracing::info!(port, "aguardando autorização no navegador");
 
     let code = tokio::time::timeout(AUTH_FLOW_TIMEOUT, wait_for_code(&listener, &state))
         .await
@@ -165,38 +250,28 @@ pub async fn authorize_interactive_mobile<R: tauri::Runtime>(
 ) -> AppResult<TokenResponse> {
     use tauri_plugin_opener::OpenerExt;
 
-    // O redirect URI é o Worker + sufixo; deve estar registrado no Google Console.
+    // O redirect URI é o Worker + sufixo; deve estar registrado no console
+    // OAuth do provedor.
     let redirect_uri = config
         .token_proxy_url
         .as_deref()
         .map(|base| format!("{base}{MOBILE_REDIRECT_SUFFIX}"))
         .ok_or_else(|| {
             AppError::Auth(
-                "SLOT2SYNC_TOKEN_PROXY_URL não configurado — necessário para OAuth mobile".into(),
+                "token proxy não configurado para este provedor — necessário para OAuth mobile"
+                    .into(),
             )
         })?;
 
     let pkce = generate_pkce();
     let state = random_state();
 
-    let mut auth_url = url::Url::parse(GOOGLE_AUTH_ENDPOINT)
-        .map_err(|e| AppError::Auth(format!("URL de autorização inválida: {e}")))?;
-    auth_url
-        .query_pairs_mut()
-        .append_pair("client_id", &config.client_id)
-        .append_pair("redirect_uri", &redirect_uri)
-        .append_pair("response_type", "code")
-        .append_pair("scope", OAUTH_SCOPE)
-        .append_pair("code_challenge", &pkce.challenge)
-        .append_pair("code_challenge_method", "S256")
-        .append_pair("access_type", "offline")
-        .append_pair("prompt", "consent")
-        .append_pair("state", &state);
+    let auth_url = build_auth_url(config, &redirect_uri, &pkce.challenge, &state)?;
 
     app.opener()
         .open_url(auth_url.as_str(), None::<&str>)
         .map_err(|e| AppError::Auth(format!("não foi possível abrir o navegador: {e}")))?;
-    tracing::info!("aguardando autorização do Google via deep link (redirect: {redirect_uri})");
+    tracing::info!("aguardando autorização via deep link (redirect: {redirect_uri})");
 
     let redirect_url = tokio::time::timeout(AUTH_FLOW_TIMEOUT, async {
         redirect_rx
@@ -234,6 +309,35 @@ pub async fn authorize_interactive_mobile<R: tauri::Runtime>(
     let code = code.ok_or_else(|| AppError::Auth("deep link sem authorization code".into()))?;
 
     exchange_code(http, config, &code, &pkce.verifier, &redirect_uri).await
+}
+
+/// Monta a URL de consentimento OAuth2+PKCE, com os parâmetros extras de cada
+/// provedor (ver `OAuthConfig::extra_auth_params`). Compartilhada pelas
+/// variantes desktop e mobile de `authorize_interactive*` — só a origem do
+/// `redirect_uri` (loopback local vs. Worker) muda entre elas.
+fn build_auth_url(
+    config: &OAuthConfig,
+    redirect_uri: &str,
+    challenge: &str,
+    state: &str,
+) -> AppResult<url::Url> {
+    let mut auth_url = url::Url::parse(&config.auth_endpoint)
+        .map_err(|e| AppError::Auth(format!("URL de autorização inválida: {e}")))?;
+    {
+        let mut query = auth_url.query_pairs_mut();
+        query
+            .append_pair("client_id", &config.client_id)
+            .append_pair("redirect_uri", redirect_uri)
+            .append_pair("response_type", "code")
+            .append_pair("scope", &config.scope)
+            .append_pair("code_challenge", challenge)
+            .append_pair("code_challenge_method", "S256")
+            .append_pair("state", state);
+        for (key, value) in config.extra_auth_params {
+            query.append_pair(key, value);
+        }
+    }
+    Ok(auth_url)
 }
 
 /// Aceita conexões no listener até receber o redirect do OAuth (ignorando
@@ -351,7 +455,7 @@ async fn exchange_code(
     if let Some(secret) = config.client_secret.as_deref() {
         form.push(("client_secret", secret));
     }
-    post_token_at(http, GOOGLE_TOKEN_ENDPOINT, &form).await
+    post_token_at(http, &config.token_endpoint, &form).await
 }
 
 pub async fn refresh_access_token(
@@ -372,7 +476,7 @@ pub async fn refresh_access_token(
     if let Some(secret) = config.client_secret.as_deref() {
         form.push(("client_secret", secret));
     }
-    post_token_at(http, GOOGLE_TOKEN_ENDPOINT, &form).await
+    post_token_at(http, &config.token_endpoint, &form).await
 }
 
 async fn post_token_at(
@@ -412,14 +516,24 @@ async fn post_token_proxy(
     Ok(response.json::<TokenResponse>().await?)
 }
 
+const DROPBOX_ACCOUNT_ENDPOINT: &str = "https://api.dropboxapi.com/2/users/get_current_account";
+const MICROSOFT_ME_ENDPOINT: &str = "https://graph.microsoft.com/v1.0/me";
+
 #[derive(Debug, Deserialize)]
 struct UserInfo {
     email: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct GraphUser {
+    mail: Option<String>,
+    #[serde(rename = "userPrincipalName")]
+    user_principal_name: Option<String>,
+}
+
 /// Best-effort: falha em obter o e-mail não impede a conexão. Endpoint
-/// injetável (sempre `GOOGLE_USERINFO_ENDPOINT` em produção) para os
-/// chamadores poderem testar contra um servidor fake.
+/// injetável para os chamadores poderem testar contra um servidor fake.
+/// Usado por `GoogleOidc` (GET simples, campo `email` no corpo).
 pub(super) async fn fetch_user_email_at(
     http: &reqwest::Client,
     endpoint: &str,
@@ -434,6 +548,67 @@ pub(super) async fn fetch_user_email_at(
         .await
         .map(|u| u.email)
         .unwrap_or(None))
+}
+
+/// `POST` com corpo vazio — a API do Dropbox devolve o mesmo shape `{email}`
+/// dentre outros campos, então reaproveita `UserInfo`.
+async fn fetch_dropbox_email_at(
+    http: &reqwest::Client,
+    endpoint: &str,
+    access_token: &str,
+) -> AppResult<Option<String>> {
+    let response = http
+        .post(endpoint)
+        .bearer_auth(access_token)
+        .json(&serde_json::json!({}))
+        .send()
+        .await?;
+    if !response.status().is_success() {
+        return Ok(None);
+    }
+    Ok(response
+        .json::<UserInfo>()
+        .await
+        .map(|u| u.email)
+        .unwrap_or(None))
+}
+
+/// `mail` costuma vir preenchido; contas pessoais às vezes só têm
+/// `userPrincipalName` (que também é um e-mail válido nesse caso).
+async fn fetch_microsoft_email_at(
+    http: &reqwest::Client,
+    endpoint: &str,
+    access_token: &str,
+) -> AppResult<Option<String>> {
+    let response = http.get(endpoint).bearer_auth(access_token).send().await?;
+    if !response.status().is_success() {
+        return Ok(None);
+    }
+    Ok(response
+        .json::<GraphUser>()
+        .await
+        .ok()
+        .and_then(|u| u.mail.or(u.user_principal_name)))
+}
+
+/// Despacha para o endpoint/shape certo conforme a estratégia do provedor.
+pub(super) async fn fetch_user_email(
+    strategy: UserinfoStrategy,
+    http: &reqwest::Client,
+    access_token: &str,
+) -> Option<String> {
+    let result = match strategy {
+        UserinfoStrategy::GoogleOidc => {
+            fetch_user_email_at(http, GOOGLE_USERINFO_ENDPOINT, access_token).await
+        }
+        UserinfoStrategy::DropboxAccount => {
+            fetch_dropbox_email_at(http, DROPBOX_ACCOUNT_ENDPOINT, access_token).await
+        }
+        UserinfoStrategy::MicrosoftGraph => {
+            fetch_microsoft_email_at(http, MICROSOFT_ME_ENDPOINT, access_token).await
+        }
+    };
+    result.unwrap_or(None)
 }
 
 #[cfg(test)]
@@ -480,12 +655,155 @@ mod tests {
     }
 
     #[test]
+    fn build_auth_url_inclui_pkce_state_e_parametros_extras() {
+        let config = OAuthConfig {
+            client_id: "client-teste".into(),
+            auth_endpoint: DROPBOX_AUTH_ENDPOINT.to_string(),
+            token_endpoint: DROPBOX_TOKEN_ENDPOINT.to_string(),
+            scope: DROPBOX_SCOPE.to_string(),
+            userinfo: UserinfoStrategy::DropboxAccount,
+            token_proxy_url: None,
+            proxy_secret: None,
+            client_secret: None,
+            extra_auth_params: &[("token_access_type", "offline")],
+        };
+        let url = build_auth_url(
+            &config,
+            "http://127.0.0.1:9999",
+            "challenge-xyz",
+            "state-abc",
+        )
+        .unwrap();
+
+        let pairs: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();
+        assert_eq!(pairs.get("client_id").unwrap(), "client-teste");
+        assert_eq!(pairs.get("redirect_uri").unwrap(), "http://127.0.0.1:9999");
+        assert_eq!(pairs.get("response_type").unwrap(), "code");
+        assert_eq!(pairs.get("scope").unwrap(), DROPBOX_SCOPE);
+        assert_eq!(pairs.get("code_challenge").unwrap(), "challenge-xyz");
+        assert_eq!(pairs.get("code_challenge_method").unwrap(), "S256");
+        assert_eq!(pairs.get("state").unwrap(), "state-abc");
+        assert_eq!(pairs.get("token_access_type").unwrap(), "offline");
+    }
+
+    #[test]
+    fn build_auth_url_rejeita_endpoint_invalido() {
+        let config = OAuthConfig {
+            client_id: "x".into(),
+            auth_endpoint: "://endpoint-invalido".into(),
+            token_endpoint: "://endpoint-invalido".into(),
+            scope: "x".into(),
+            userinfo: UserinfoStrategy::GoogleOidc,
+            token_proxy_url: None,
+            proxy_secret: None,
+            client_secret: None,
+            extra_auth_params: &[],
+        };
+        let err = build_auth_url(&config, "http://127.0.0.1:1", "c", "s").unwrap_err();
+        assert!(matches!(err, AppError::Auth(msg) if msg.contains("URL de autorização inválida")));
+    }
+
+    #[test]
     fn random_state_gera_valores_unicos_com_tamanho_esperado() {
         let a = random_state();
         let b = random_state();
         assert_ne!(a, b);
         // 32 bytes em base64url sem padding = 43 caracteres.
         assert_eq!(a.len(), 43);
+    }
+
+    /// `option_env!` embute em build-time (via `.env`, ver `build.rs`); o
+    /// `.env` deste repo não define `SLOT2SYNC_*`, então em qualquer ambiente
+    /// de teste normal esses testes exercitam o fallback `std::env::var` em
+    /// runtime. Cada teste só toca as env vars do seu próprio provedor —
+    /// nomes não se sobrepõem entre testes, então rodar em paralelo é seguro.
+    #[test]
+    fn from_env_google_le_proxy_e_client_secret_da_env_var_de_runtime() {
+        use crate::remote::ProviderKind;
+
+        std::env::remove_var("SLOT2SYNC_GOOGLE_CLIENT_ID");
+        std::env::remove_var("SLOT2SYNC_TOKEN_PROXY_URL");
+        std::env::remove_var("SLOT2SYNC_PROXY_SECRET");
+        std::env::remove_var("SLOT2SYNC_GOOGLE_CLIENT_SECRET");
+        assert!(OAuthConfig::from_env(ProviderKind::GoogleDrive).is_none());
+
+        std::env::set_var("SLOT2SYNC_GOOGLE_CLIENT_ID", "google-client-teste");
+        std::env::set_var("SLOT2SYNC_TOKEN_PROXY_URL", "https://proxy.teste");
+        std::env::set_var("SLOT2SYNC_PROXY_SECRET", "s3gredo");
+        std::env::set_var("SLOT2SYNC_GOOGLE_CLIENT_SECRET", "client-secret-dev");
+        let config = OAuthConfig::from_env(ProviderKind::GoogleDrive).unwrap();
+        assert_eq!(config.client_id, "google-client-teste");
+        assert_eq!(config.auth_endpoint, GOOGLE_AUTH_ENDPOINT);
+        assert_eq!(config.token_endpoint, GOOGLE_TOKEN_ENDPOINT);
+        assert_eq!(config.scope, GOOGLE_SCOPE);
+        assert!(matches!(config.userinfo, UserinfoStrategy::GoogleOidc));
+        assert_eq!(
+            config.token_proxy_url.as_deref(),
+            Some("https://proxy.teste")
+        );
+        assert_eq!(config.proxy_secret.as_deref(), Some("s3gredo"));
+        assert_eq!(config.client_secret.as_deref(), Some("client-secret-dev"));
+        assert_eq!(
+            config.extra_auth_params,
+            &[("access_type", "offline"), ("prompt", "consent")]
+        );
+
+        std::env::remove_var("SLOT2SYNC_GOOGLE_CLIENT_ID");
+        std::env::remove_var("SLOT2SYNC_TOKEN_PROXY_URL");
+        std::env::remove_var("SLOT2SYNC_PROXY_SECRET");
+        std::env::remove_var("SLOT2SYNC_GOOGLE_CLIENT_SECRET");
+    }
+
+    #[test]
+    fn from_env_dropbox_usa_env_var_de_runtime_como_fallback() {
+        use crate::remote::ProviderKind;
+
+        std::env::remove_var("SLOT2SYNC_DROPBOX_CLIENT_ID");
+        std::env::remove_var("SLOT2SYNC_DROPBOX_TOKEN_PROXY_URL");
+        assert!(OAuthConfig::from_env(ProviderKind::Dropbox).is_none());
+
+        std::env::set_var("SLOT2SYNC_DROPBOX_CLIENT_ID", "dropbox-client-teste");
+        std::env::set_var("SLOT2SYNC_DROPBOX_TOKEN_PROXY_URL", "https://proxy.teste");
+        let config = OAuthConfig::from_env(ProviderKind::Dropbox).unwrap();
+        assert_eq!(config.client_id, "dropbox-client-teste");
+        assert_eq!(config.token_endpoint, DROPBOX_TOKEN_ENDPOINT);
+        assert_eq!(config.scope, DROPBOX_SCOPE);
+        assert!(matches!(config.userinfo, UserinfoStrategy::DropboxAccount));
+        assert_eq!(
+            config.token_proxy_url.as_deref(),
+            Some("https://proxy.teste")
+        );
+        assert!(config.client_secret.is_none());
+        assert!(config.proxy_secret.is_none());
+
+        std::env::remove_var("SLOT2SYNC_DROPBOX_CLIENT_ID");
+        std::env::remove_var("SLOT2SYNC_DROPBOX_TOKEN_PROXY_URL");
+    }
+
+    #[test]
+    fn from_env_onedrive_usa_env_var_de_runtime_como_fallback() {
+        use crate::remote::ProviderKind;
+
+        std::env::remove_var("SLOT2SYNC_ONEDRIVE_CLIENT_ID");
+        assert!(OAuthConfig::from_env(ProviderKind::OneDrive).is_none());
+
+        std::env::set_var("SLOT2SYNC_ONEDRIVE_CLIENT_ID", "onedrive-client-teste");
+        let config = OAuthConfig::from_env(ProviderKind::OneDrive).unwrap();
+        assert_eq!(config.client_id, "onedrive-client-teste");
+        assert_eq!(config.token_endpoint, MICROSOFT_TOKEN_ENDPOINT);
+        assert_eq!(config.scope, MICROSOFT_SCOPE);
+        assert!(matches!(config.userinfo, UserinfoStrategy::MicrosoftGraph));
+        assert!(config.extra_auth_params.is_empty());
+
+        std::env::remove_var("SLOT2SYNC_ONEDRIVE_CLIENT_ID");
+    }
+
+    #[test]
+    fn from_env_local_folder_e_sempre_none() {
+        use crate::remote::ProviderKind;
+
+        // Não usa OAuth — nenhuma env var faz diferença.
+        assert!(OAuthConfig::from_env(ProviderKind::LocalFolder).is_none());
     }
 
     #[tokio::test]
@@ -602,10 +920,119 @@ mod tests {
         fn proxy_config(proxy_url: &str, proxy_secret: Option<&str>) -> OAuthConfig {
             OAuthConfig {
                 client_id: "client-teste".into(),
+                auth_endpoint: GOOGLE_AUTH_ENDPOINT.to_string(),
+                token_endpoint: GOOGLE_TOKEN_ENDPOINT.to_string(),
+                scope: GOOGLE_SCOPE.to_string(),
+                userinfo: UserinfoStrategy::GoogleOidc,
                 token_proxy_url: Some(proxy_url.to_string()),
                 proxy_secret: proxy_secret.map(str::to_string),
                 client_secret: None,
+                extra_auth_params: &[],
             }
+        }
+
+        /// Sem `token_proxy_url`: bate direto no `token_endpoint` do provedor,
+        /// como Dropbox/OneDrive fazem em produção (PKCE puro, sem Worker).
+        fn direct_config(token_endpoint: &str, client_secret: Option<&str>) -> OAuthConfig {
+            OAuthConfig {
+                client_id: "client-teste".into(),
+                auth_endpoint: DROPBOX_AUTH_ENDPOINT.to_string(),
+                token_endpoint: token_endpoint.to_string(),
+                scope: DROPBOX_SCOPE.to_string(),
+                userinfo: UserinfoStrategy::DropboxAccount,
+                token_proxy_url: None,
+                proxy_secret: None,
+                client_secret: client_secret.map(str::to_string),
+                extra_auth_params: &[],
+            }
+        }
+
+        #[tokio::test]
+        async fn exchange_code_direto_sem_proxy_retorna_tokens() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/oauth2/token"))
+                .and(body_string_contains("grant_type=authorization_code"))
+                .and(body_string_contains("code=auth-code"))
+                .and(body_string_contains("code_verifier=verifier-xyz"))
+                .and(body_string_contains("client_id=client-teste"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "access_token": "tok-direto",
+                    "expires_in": 3600,
+                    "refresh_token": "refresh-direto",
+                })))
+                .mount(&server)
+                .await;
+
+            let config = direct_config(&format!("{}/oauth2/token", server.uri()), None);
+            let http = reqwest::Client::new();
+            let tokens = exchange_code(
+                &http,
+                &config,
+                "auth-code",
+                "verifier-xyz",
+                "http://127.0.0.1:9999",
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(tokens.access_token, "tok-direto");
+            assert_eq!(tokens.refresh_token.as_deref(), Some("refresh-direto"));
+        }
+
+        #[tokio::test]
+        async fn exchange_code_direto_inclui_client_secret_quando_configurado() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/oauth2/token"))
+                .and(body_string_contains("client_secret=segredo-dev"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "access_token": "tok-com-secret",
+                    "expires_in": 3600,
+                })))
+                .mount(&server)
+                .await;
+
+            let config = direct_config(
+                &format!("{}/oauth2/token", server.uri()),
+                Some("segredo-dev"),
+            );
+            let http = reqwest::Client::new();
+            exchange_code(
+                &http,
+                &config,
+                "auth-code",
+                "verifier-xyz",
+                "http://redirect",
+            )
+            .await
+            .unwrap();
+        }
+
+        #[tokio::test]
+        async fn exchange_code_direto_propaga_erro_http() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/oauth2/token"))
+                .respond_with(ResponseTemplate::new(400).set_body_string("invalid_grant"))
+                .mount(&server)
+                .await;
+
+            let config = direct_config(&format!("{}/oauth2/token", server.uri()), None);
+            let http = reqwest::Client::new();
+            let err = exchange_code(
+                &http,
+                &config,
+                "auth-code",
+                "verifier-xyz",
+                "http://redirect",
+            )
+            .await
+            .unwrap_err();
+
+            assert!(
+                matches!(err, AppError::Auth(msg) if msg.contains("400") && msg.contains("invalid_grant"))
+            );
         }
 
         #[tokio::test]
@@ -668,7 +1095,9 @@ mod tests {
                 .await
                 .unwrap_err();
 
-            assert!(matches!(err, AppError::Auth(msg) if msg.contains("400") && msg.contains("code inválido")));
+            assert!(
+                matches!(err, AppError::Auth(msg) if msg.contains("400") && msg.contains("code inválido"))
+            );
         }
 
         #[tokio::test]
@@ -746,7 +1175,32 @@ mod tests {
             let endpoint = format!("{}/token-direto", server.uri());
             let err = post_token_at(&http, &endpoint, &[]).await.unwrap_err();
 
-            assert!(matches!(err, AppError::Auth(msg) if msg.contains("500") && msg.contains("boom")));
+            assert!(
+                matches!(err, AppError::Auth(msg) if msg.contains("500") && msg.contains("boom"))
+            );
+        }
+
+        #[tokio::test]
+        async fn refresh_access_token_direto_sem_proxy_retorna_tokens() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/oauth2/token"))
+                .and(body_string_contains("grant_type=refresh_token"))
+                .and(body_string_contains("refresh_token=refresh-xyz"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "access_token": "tok-refresh-direto",
+                    "expires_in": 3600,
+                })))
+                .mount(&server)
+                .await;
+
+            let config = direct_config(&format!("{}/oauth2/token", server.uri()), None);
+            let http = reqwest::Client::new();
+            let tokens = refresh_access_token(&http, &config, "refresh-xyz")
+                .await
+                .unwrap();
+
+            assert_eq!(tokens.access_token, "tok-refresh-direto");
         }
 
         #[tokio::test]
@@ -801,6 +1255,106 @@ mod tests {
             let http = reqwest::Client::new();
             let endpoint = format!("{}/userinfo", server.uri());
             let email = fetch_user_email_at(&http, &endpoint, "tok-abc")
+                .await
+                .unwrap();
+
+            assert_eq!(email, None);
+        }
+
+        #[tokio::test]
+        async fn fetch_dropbox_email_at_faz_post_com_corpo_vazio() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/account"))
+                .and(header("Authorization", "Bearer tok-abc"))
+                .and(body_string_contains("{}"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(serde_json::json!({ "email": "dropbox@example.com" })),
+                )
+                .mount(&server)
+                .await;
+
+            let http = reqwest::Client::new();
+            let endpoint = format!("{}/account", server.uri());
+            let email = fetch_dropbox_email_at(&http, &endpoint, "tok-abc")
+                .await
+                .unwrap();
+
+            assert_eq!(email.as_deref(), Some("dropbox@example.com"));
+        }
+
+        #[tokio::test]
+        async fn fetch_dropbox_email_at_retorna_none_quando_http_falha() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/account"))
+                .respond_with(ResponseTemplate::new(401))
+                .mount(&server)
+                .await;
+
+            let http = reqwest::Client::new();
+            let endpoint = format!("{}/account", server.uri());
+            let email = fetch_dropbox_email_at(&http, &endpoint, "tok-invalido")
+                .await
+                .unwrap();
+
+            assert_eq!(email, None);
+        }
+
+        #[tokio::test]
+        async fn fetch_microsoft_email_at_prefere_o_campo_mail() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/me"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "mail": "ms@example.com",
+                    "userPrincipalName": "fallback@example.com",
+                })))
+                .mount(&server)
+                .await;
+
+            let http = reqwest::Client::new();
+            let endpoint = format!("{}/me", server.uri());
+            let email = fetch_microsoft_email_at(&http, &endpoint, "tok-abc")
+                .await
+                .unwrap();
+
+            assert_eq!(email.as_deref(), Some("ms@example.com"));
+        }
+
+        #[tokio::test]
+        async fn fetch_microsoft_email_at_cai_para_user_principal_name() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/me"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "userPrincipalName": "fallback@example.com",
+                })))
+                .mount(&server)
+                .await;
+
+            let http = reqwest::Client::new();
+            let endpoint = format!("{}/me", server.uri());
+            let email = fetch_microsoft_email_at(&http, &endpoint, "tok-abc")
+                .await
+                .unwrap();
+
+            assert_eq!(email.as_deref(), Some("fallback@example.com"));
+        }
+
+        #[tokio::test]
+        async fn fetch_microsoft_email_at_retorna_none_quando_http_falha() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/me"))
+                .respond_with(ResponseTemplate::new(401))
+                .mount(&server)
+                .await;
+
+            let http = reqwest::Client::new();
+            let endpoint = format!("{}/me", server.uri());
+            let email = fetch_microsoft_email_at(&http, &endpoint, "tok-invalido")
                 .await
                 .unwrap();
 

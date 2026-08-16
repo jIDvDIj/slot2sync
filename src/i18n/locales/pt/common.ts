@@ -8,7 +8,7 @@ export const common: Localized<typeof CommonEn> = {
     dismiss: "Dispensar",
   },
   app: {
-    checkingConnection: "verificando conexão com o Google Drive…",
+    checkingConnection: "verificando conexão com o provedor remoto…",
     settings: "⚙ Configurações",
     emulators: "Emuladores",
     loading: "carregando…",

@@ -1,5 +1,5 @@
 //! Scan do estado local e montagem do plano de sincronização:
-//! união (local ∪ Drive ∪ manifest) → `conflict::decide` por arquivo →
+//! união (local ∪ remoto ∪ manifest) → `conflict::decide` por arquivo →
 //! filtro pela direção do sync.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -10,8 +10,8 @@ use super::conflict::{decide, SyncAction};
 use super::storage::FileLoc;
 use super::SyncDirection;
 use crate::constants::TMP_SUFFIX;
-use crate::drive::{DriveFile, RemoteFile};
 use crate::error::{AppError, AppResult};
+use crate::remote::RemoteFile;
 use crate::storage::manifest::ManifestEntry;
 
 #[derive(Debug, Clone)]
@@ -34,7 +34,7 @@ pub struct PlannedOp {
     pub rel_path: String,
     pub action: SyncAction,
     pub local: Option<LocalFile>,
-    pub remote: Option<DriveFile>,
+    pub remote: Option<RemoteFile>,
 }
 
 /// Varre as pastas-base de uma categoria (relativas a `root`). Em `rel_path`
@@ -131,8 +131,10 @@ pub fn build_plan(
 ) -> CategoryPlan {
     let local_map: HashMap<String, LocalFile> =
         local.into_iter().map(|f| (f.rel_path.clone(), f)).collect();
-    let remote_map: HashMap<String, DriveFile> =
-        remote.into_iter().map(|f| (f.rel_path, f.file)).collect();
+    let remote_map: HashMap<String, RemoteFile> = remote
+        .into_iter()
+        .map(|f| (f.rel_path.clone(), f))
+        .collect();
     let manifest_map: HashMap<String, ManifestEntry> = manifest
         .into_iter()
         .map(|e| (e.rel_path.clone(), e))
@@ -149,13 +151,13 @@ pub fn build_plan(
         let remote_file = remote_map.get(&rel_path);
         let last_synced = manifest_map
             .get(&rel_path)
-            .and_then(|e| e.local_mtime_ms.zip(e.drive_mtime_ms));
+            .and_then(|e| e.local_mtime_ms.zip(e.remote_mtime_ms));
 
         let action = decide(
             local_file.map(|f| f.mtime_ms),
-            remote_file.and_then(|f| f.modified_ms()),
+            remote_file.and_then(|f| f.modified_ms),
             last_synced,
-            remote_file.and_then(|f| f.device_id()),
+            remote_file.and_then(|f| f.device_id.as_deref()),
             this_device_id,
         );
 
@@ -223,38 +225,31 @@ mod tests {
 
     fn remote_file(rel: &str, mtime: i64) -> RemoteFile {
         RemoteFile {
+            id: format!("id-{rel}"),
             rel_path: rel.to_string(),
-            file: DriveFile {
-                id: format!("id-{rel}"),
-                name: rel.rsplit('/').next().unwrap().to_string(),
-                mime_type: "application/octet-stream".into(),
-                modified_time: chrono::DateTime::from_timestamp_millis(mtime),
-                size: Some("100".into()),
-                md5_checksum: None,
-                app_properties: std::collections::HashMap::new(),
-            },
+            modified_ms: Some(mtime),
+            size_bytes: Some(100),
+            hash: None,
+            device_name: None,
+            device_id: None,
         }
     }
 
-    /// Como [`remote_file`], mas marcando o ID do dispositivo que publicou a
-    /// versão (`appProperties.deviceId`).
+    /// Como [`remote_file`], mas marcando o ID do dispositivo que publicou a versão.
     fn remote_file_from(rel: &str, mtime: i64, device_id: &str) -> RemoteFile {
         let mut rf = remote_file(rel, mtime);
-        rf.file.app_properties.insert(
-            crate::constants::DRIVE_APP_PROP_DEVICE_ID.to_string(),
-            device_id.to_string(),
-        );
+        rf.device_id = Some(device_id.to_string());
         rf
     }
 
-    fn manifest_entry(rel: &str, local: i64, drive: i64) -> ManifestEntry {
+    fn manifest_entry(rel: &str, local: i64, remote: i64) -> ManifestEntry {
         ManifestEntry {
             emulator: "PPSSPP".into(),
             category: SyncCategory::Saves,
             rel_path: rel.to_string(),
-            drive_file_id: Some(format!("id-{rel}")),
+            remote_file_id: Some(format!("id-{rel}")),
             local_mtime_ms: Some(local),
-            drive_mtime_ms: Some(drive),
+            remote_mtime_ms: Some(remote),
             size_bytes: Some(100),
             last_synced_at_ms: T,
             file_hash: None,
