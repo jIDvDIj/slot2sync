@@ -11,11 +11,18 @@ coverage:
         target: 80%
 
 # Bootstrap/orquestração testados manualmente (rodando o app), não por unit
-# test: setup do Tauri (plugins, janela, tray) e o loop assíncrono do
-# fs-watcher que só encadeia chamadas às funções puras já cobertas em
-# watcher/fs_watcher.rs. Sem `ignore`, o patch check bloquearia PRs por
-# linhas que nenhum teste unitário plausível exercitaria.
+# test: setup do Tauri (plugins, janela, tray), o entrypoint do binário, o
+# loop assíncrono do watcher de processos (encadeia chamadas às funções puras
+# já cobertas em watcher/process_watcher.rs) e o fs-watcher (idem, cobertas
+# em watcher/fs_watcher.rs). mobile_storage é compilado só sob cfg(mobile),
+# que o runner de cobertura (desktop) nunca ativa — cobertura zero ali é
+# ausência física do binário testado, não falta de teste. Sem `ignore`, o
+# patch check bloquearia PRs por linhas que nenhum teste unitário plausível
+# exercitaria.
 ignore:
   - "src-tauri/src/lib.rs"
+  - "src-tauri/src/main.rs"
   - "src-tauri/src/platform/desktop.rs"
+  - "src-tauri/src/watcher/mod.rs"
   - "src-tauri/src/watcher/fs_watcher.rs"
+  - "src-tauri/src/sync/mobile_storage.rs"
