@@ -261,6 +261,16 @@ export function retryPendingOp(
   return invoke<void>("retry_pending_op", { emulator, category, relPath });
 }
 
+/** Marca uma pendência como prioritária e libera a retentativa imediata
+ * ("↑ mover para frente da fila"). */
+export function bumpPendingOp(
+  emulator: string,
+  category: PendingOp["category"],
+  relPath: string,
+): Promise<void> {
+  return invoke<void>("bump_pending_op", { emulator, category, relPath });
+}
+
 /** IDs de banners informativos já dispensados pelo usuário. */
 export function listDismissedNotices(): Promise<string[]> {
   return invoke<string[]>("list_dismissed_notices");

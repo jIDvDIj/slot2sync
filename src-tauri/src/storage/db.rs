@@ -197,6 +197,12 @@ const SCHEMA_V16: &str = "
 ALTER TABLE sync_manifest ADD COLUMN mtime_ns INTEGER NOT NULL DEFAULT 0;
 ";
 
+/// v17 — marca de prioridade na fila offline (\"mover para frente\" da UI).
+/// Ver `storage::queue::bump_priority`.
+const SCHEMA_V17: &str = "
+ALTER TABLE pending_ops ADD COLUMN priority INTEGER NOT NULL DEFAULT 0;
+";
+
 /// Intervalo mínimo entre manutenções (7 dias) — não vale a pena rodar em
 /// todo shutdown, só quando o banco já cresceu o suficiente para o planner
 /// ficar desatualizado.
@@ -378,6 +384,10 @@ fn migrate(conn: &Connection) -> AppResult<()> {
     if version < 16 {
         conn.execute_batch(SCHEMA_V16)?;
         version = 16;
+    }
+    if version < 17 {
+        conn.execute_batch(SCHEMA_V17)?;
+        version = 17;
     }
     conn.pragma_update(None, "user_version", version)?;
 

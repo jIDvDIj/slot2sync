@@ -153,6 +153,9 @@ export interface PendingOp {
   /** A partir de quando pode ser retentado; `null` = morta (esgotou as
    * tentativas — só volta pela ação "tentar novamente"). */
   nextRetryAtMs: number | null;
+  /** `true` = usuário pediu para priorizar este arquivo ("↑ mover para
+   * frente da fila") — listado primeiro por `list_pending_ops`. */
+  priority: boolean;
 }
 
 /** `backups::BackupEntry` — cópia de backup local listada no histórico */

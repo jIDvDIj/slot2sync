@@ -964,6 +964,23 @@ pub async fn retry_pending_op(
         .await
 }
 
+/// Ação "↑ mover para frente da fila" da UI: marca a pendência como
+/// prioritária e libera a retentativa imediata (mesmo efeito de backoff de
+/// `retry_pending_op`). O próximo sync (automático ou manual) é quem de fato
+/// reprocessa o arquivo.
+#[tauri::command]
+pub async fn bump_pending_op(
+    state: State<'_, AppState>,
+    emulator: String,
+    category: SyncCategory,
+    rel_path: String,
+) -> AppResult<()> {
+    state
+        .db
+        .with(move |conn| queue::bump_priority(conn, &emulator, category, &rel_path))
+        .await
+}
+
 /// IDs de banners informativos que o usuário dispensou (não reaparecem).
 #[tauri::command]
 pub async fn list_dismissed_notices(state: State<'_, AppState>) -> AppResult<Vec<String>> {

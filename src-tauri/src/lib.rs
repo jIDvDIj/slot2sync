@@ -335,6 +335,7 @@ pub fn run() {
             commands::get_recent_errors,
             commands::clear_errors,
             commands::retry_pending_op,
+            commands::bump_pending_op,
             commands::list_dismissed_notices,
             commands::dismiss_notice,
             commands::list_backups,

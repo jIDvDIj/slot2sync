@@ -52,6 +52,8 @@ export const sync: Localized<typeof SyncEn> = {
     retrying: "Sincronizando…",
     dead: "desistiu após muitas tentativas",
     retryFile: "Retentar este arquivo",
+    bumpFile: "↑ Priorizar",
+    prioritized: "priorizado",
   },
   conflict: {
     title: "Conflito — {{emulator}}",
