@@ -232,6 +232,14 @@ jobs:
 
   release:
     needs: version
+    # Sobrescreve o `permissions:` do workflow (nível job zera o herdado):
+    # `contents: write` continua necessário para o tauri-action publicar os
+    # assets; `id-token`/`attestations` são exigidos pelo
+    # attest-build-provenance abaixo para assinar a proveniência SLSA.
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
@@ -344,3 +352,19 @@ jobs:
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
+
+      # Proveniência SLSA assinada (Sigstore) para os instaladores publicados
+      # — cada plataforma só produz um subconjunto destas extensões; padrões
+      # sem correspondência nesta matriz específica são ignorados, desde que
+      # ao menos um arquivo bata em algum deles.
+      - name: Assinar proveniência de build (SLSA)
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            src-tauri/target/**/release/bundle/**/*.dmg
+            src-tauri/target/**/release/bundle/**/*.app.tar.gz
+            src-tauri/target/**/release/bundle/**/*.deb
+            src-tauri/target/**/release/bundle/**/*.rpm
+            src-tauri/target/**/release/bundle/**/*.AppImage
+            src-tauri/target/**/release/bundle/**/*.msi
+            src-tauri/target/**/release/bundle/**/*.exe
