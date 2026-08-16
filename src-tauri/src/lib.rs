@@ -10,6 +10,7 @@ mod error;
 mod events;
 mod folder;
 mod games;
+mod locations;
 mod onedrive;
 mod platform;
 mod remote;
@@ -77,7 +78,8 @@ pub fn run() {
 
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
-            let db = storage::db::Db::open(&data_dir.join(constants::LOCAL_DB_FILE))?;
+            let db_path = locations::AppPath::Database.resolve(app.handle())?;
+            let db = storage::db::Db::open(&db_path)?;
 
             let last_sync: sync::LastSyncStore = Arc::new(std::sync::Mutex::new(None));
             let http = reqwest::Client::new();
@@ -177,7 +179,7 @@ pub fn run() {
                 remote_provider,
                 app.handle().clone(),
                 last_sync.clone(),
-                data_dir.join(constants::LOCAL_BACKUP_DIR),
+                locations::AppPath::BackupDir.resolve(app.handle())?,
                 storage.clone(),
                 secret_store.clone(),
             ));
@@ -240,7 +242,7 @@ pub fn run() {
             // Retenção de backups: remove no startup as execuções de backup mais
             // antigas que o limite configurado (default 30 dias; 0 desativa).
             let retention_db = db.clone();
-            let backups_root = data_dir.join(constants::LOCAL_BACKUP_DIR);
+            let backups_root = locations::AppPath::BackupDir.resolve(app.handle())?;
             tauri::async_runtime::spawn(async move {
                 let days = retention_db
                     .with(storage::settings::backup_retention_days)
@@ -347,7 +349,7 @@ pub fn run() {
 /// Logs em stdout (dev) e em arquivo diário no diretório de logs do app
 /// (`%LOCALAPPDATA%/com.slot2sync.app/logs` no Windows).
 fn init_logging(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
-    let log_dir = app.path().app_log_dir()?;
+    let log_dir = locations::AppPath::LogDir.resolve(app)?;
     std::fs::create_dir_all(&log_dir)?;
     let file_appender = tracing_appender::rolling::daily(&log_dir, "slot2sync.log");
 

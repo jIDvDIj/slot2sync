@@ -10,12 +10,14 @@ use std::sync::Arc;
 use serde::Serialize;
 #[cfg(mobile)]
 use tauri::Listener;
-use tauri::{AppHandle, Emitter, Manager, Runtime, State};
+#[cfg(test)]
+use tauri::Manager;
+use tauri::{AppHandle, Emitter, Runtime, State};
 #[cfg(desktop)]
 use tauri_plugin_autostart::ManagerExt;
 
 use crate::auth::{AuthManager, AuthStatus};
-use crate::constants::{LOCAL_BACKUP_DIR, TRIGGER_MANUAL};
+use crate::constants::TRIGGER_MANUAL;
 use crate::emulator::{self, EmulatorProfile};
 use crate::error::{AppError, AppResult};
 use crate::events::EVT_AUTH_STATUS;
@@ -741,11 +743,7 @@ fn autostart_enabled(_app: &AppHandle) -> AppResult<bool> {
 #[cfg(desktop)]
 #[tauri::command]
 pub async fn open_backup_folder(app: AppHandle) -> AppResult<()> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| AppError::Other(format!("diretório de dados indisponível: {e}")))?
-        .join(LOCAL_BACKUP_DIR);
+    let dir = crate::locations::AppPath::BackupDir.resolve(&app)?;
     tokio::fs::create_dir_all(&dir).await?;
     tokio::task::spawn_blocking(move || open::that(&dir))
         .await
@@ -759,11 +757,7 @@ pub async fn open_backup_folder(app: AppHandle) -> AppResult<()> {
 #[cfg(desktop)]
 #[tauri::command]
 pub async fn reveal_backup_path(app: AppHandle, path: String) -> AppResult<()> {
-    let backups_root = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| AppError::Other(format!("diretório de dados indisponível: {e}")))?
-        .join(LOCAL_BACKUP_DIR);
+    let backups_root = crate::locations::AppPath::BackupDir.resolve(&app)?;
     let target = PathBuf::from(&path);
     let canonical = tokio::fs::canonicalize(&target).await?;
     let root_canonical = tokio::fs::canonicalize(&backups_root).await?;
@@ -923,11 +917,7 @@ pub async fn list_file_versions(
     category: SyncCategory,
     rel_path: String,
 ) -> AppResult<Vec<crate::versioning::FileVersion>> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| AppError::Other(format!("diretório de dados indisponível: {e}")))?
-        .join(LOCAL_BACKUP_DIR);
+    let dir = crate::locations::AppPath::BackupDir.resolve(&app)?;
     tokio::task::spawn_blocking(move || {
         use crate::versioning::Versioner;
         crate::versioning::FsVersioner::new(dir).versions(&emulator, category.as_str(), &rel_path)
@@ -949,11 +939,7 @@ pub async fn restore_version(
     category: SyncCategory,
     versioned_rel_path: String,
 ) -> AppResult<()> {
-    let backups_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| AppError::Other(format!("diretório de dados indisponível: {e}")))?
-        .join(LOCAL_BACKUP_DIR);
+    let backups_dir = crate::locations::AppPath::BackupDir.resolve(&app)?;
 
     // Valida o caminho versionado e deriva origem + rel_path original
     // (lógica pura e testada em `versioning::resolve_restore`).
@@ -1044,11 +1030,7 @@ pub async fn restore_version(
 /// continua manual, pela pasta.
 #[tauri::command]
 pub async fn list_backups(app: AppHandle) -> AppResult<Vec<crate::backups::BackupEntry>> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| AppError::Other(format!("diretório de dados indisponível: {e}")))?
-        .join(LOCAL_BACKUP_DIR);
+    let dir = crate::locations::AppPath::BackupDir.resolve(&app)?;
     tokio::task::spawn_blocking(move || crate::backups::list(&dir))
         .await
         .map_err(|e| AppError::Other(format!("tarefa bloqueante abortada: {e}")))?
