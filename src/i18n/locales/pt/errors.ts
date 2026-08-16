@@ -15,6 +15,8 @@ export const errors: Localized<typeof ErrorsEn> = {
     remote_not_found: "pasta ou arquivo não encontrado no provedor remoto",
     insufficient_disk_space: "espaço em disco insuficiente para o download",
     integrity: "falha na verificação de integridade da transferência",
+    folder_not_mounted: "pasta não encontrada — o dispositivo está desconectado?",
+    case_conflict: "dois arquivos com o mesmo nome em maiúsculas/minúsculas diferentes colidiriam",
     unexpected: "erro inesperado ao falar com o backend",
   },
 };
