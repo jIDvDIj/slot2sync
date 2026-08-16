@@ -1,9 +1,12 @@
-//! Autenticação com o Google via OAuth2 + PKCE.
+//! Autenticação OAuth2 + PKCE com os provedores de storage (Google, Dropbox,
+//! Microsoft).
 //!
 //! `AuthManager` é a única porta de entrada: fluxo interativo de conexão,
 //! status, desconexão e `access_token()` com renovação automática (usado
-//! pelo módulo `drive`). Tokens nunca cruzam a boundary — o frontend só
-//! recebe `AuthStatus`.
+//! pelos módulos `drive`/`dropbox`/`onedrive`). Cada instância é de UM
+//! provedor (`ProviderKind::is_oauth() == true`) — a pasta local/rede não usa
+//! `AuthManager`. Tokens nunca cruzam a boundary — o frontend só recebe
+//! `AuthStatus`.
 
 #![allow(dead_code)]
 
@@ -17,7 +20,12 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
+use crate::constants::{
+    KEYRING_DROPBOX_REFRESH_TOKEN_KEY, KEYRING_GOOGLE_REFRESH_TOKEN_KEY,
+    KEYRING_ONEDRIVE_REFRESH_TOKEN_KEY,
+};
 use crate::error::{AppError, AppResult};
+use crate::remote::ProviderKind;
 use crate::secrets::SecretStore;
 use oauth::OAuthConfig;
 use token_store::{StoredAuth, TokenStore};
@@ -44,14 +52,12 @@ impl AuthorizeFlow for RealAuthorizeFlow {
         config: &OAuthConfig,
     ) -> AppResult<(oauth::TokenResponse, Option<String>)> {
         let tokens = oauth::authorize_interactive(http, config).await?;
-        let email = oauth::fetch_user_email_at(http, oauth::GOOGLE_USERINFO_ENDPOINT, &tokens.access_token)
-            .await
-            .unwrap_or(None);
+        let email = oauth::fetch_user_email(config.userinfo, http, &tokens.access_token).await;
         Ok((tokens, email))
     }
 }
 
-/// Estado da conexão com o Google Drive exposto ao frontend. (→ ipc.ts)
+/// Estado da conexão com o provedor de storage exposto ao frontend. (→ ipc.ts)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AuthStatus {
@@ -60,7 +66,7 @@ pub struct AuthStatus {
 }
 
 impl AuthStatus {
-    fn disconnected() -> Self {
+    pub(crate) fn disconnected() -> Self {
         Self {
             connected: false,
             email: None,
@@ -76,30 +82,50 @@ struct CachedToken {
     expires_at: Instant,
 }
 
+/// Chave do keyring para o refresh token deste provedor.
+fn keyring_key(provider: ProviderKind) -> &'static str {
+    match provider {
+        ProviderKind::GoogleDrive => KEYRING_GOOGLE_REFRESH_TOKEN_KEY,
+        ProviderKind::Dropbox => KEYRING_DROPBOX_REFRESH_TOKEN_KEY,
+        ProviderKind::OneDrive => KEYRING_ONEDRIVE_REFRESH_TOKEN_KEY,
+        ProviderKind::LocalFolder => {
+            unreachable!("LocalFolder não usa AuthManager (ProviderKind::is_oauth() == false)")
+        }
+    }
+}
+
 pub struct AuthManager {
     http: reqwest::Client,
     config: Option<OAuthConfig>,
+    keyring_key: &'static str,
     cached: RwLock<Option<CachedToken>>,
     secrets: Arc<dyn SecretStore>,
     authorize_flow: Box<dyn AuthorizeFlow>,
     /// Token "sempre renovável" para testes de retry: quando setado, uma
     /// invalidação (401) é seguida por uma renovação sem OAuth real — os
-    /// testes de `send_with_retry` não precisam mockar o endpoint do Google.
+    /// testes de `send_with_retry` não precisam mockar o endpoint do provedor.
     #[cfg(test)]
     test_fixed_token: RwLock<Option<String>>,
 }
 
 impl AuthManager {
-    pub fn new(http: reqwest::Client, secrets: Arc<dyn SecretStore>) -> Self {
-        let config = OAuthConfig::from_env();
+    /// Instância para um provedor OAuth específico (Google/Dropbox/OneDrive).
+    pub fn new_for(
+        provider: ProviderKind,
+        http: reqwest::Client,
+        secrets: Arc<dyn SecretStore>,
+    ) -> Self {
+        let config = OAuthConfig::from_env(provider);
         if config.is_none() {
             tracing::warn!(
-                "SLOT2SYNC_GOOGLE_CLIENT_ID não configurado; conexão ao Drive indisponível"
+                provider = provider.as_str(),
+                "client ID não configurado; conexão indisponível para este provedor"
             );
         }
         Self {
             http,
             config,
+            keyring_key: keyring_key(provider),
             cached: RwLock::new(None),
             secrets,
             authorize_flow: Box::new(RealAuthorizeFlow),
@@ -108,11 +134,16 @@ impl AuthManager {
         }
     }
 
+    /// Atalho para o Google Drive — mantém os call sites/testes existentes
+    /// simples quando o provedor já é conhecido em compile-time.
+    pub fn new(http: reqwest::Client, secrets: Arc<dyn SecretStore>) -> Self {
+        Self::new_for(ProviderKind::GoogleDrive, http, secrets)
+    }
+
     fn config(&self) -> AppResult<&OAuthConfig> {
         self.config.as_ref().ok_or_else(|| {
             AppError::Auth(
-                "Client ID do Google não configurado — defina SLOT2SYNC_GOOGLE_CLIENT_ID (veja o README)"
-                    .into(),
+                "credenciais OAuth não configuradas para este provedor (veja o README)".into(),
             )
         })
     }
@@ -126,7 +157,7 @@ impl AuthManager {
         let status = self.finish_connect(tokens, email).await?;
         tracing::info!(
             email = status.email.as_deref().unwrap_or("?"),
-            "conectado ao Google Drive"
+            "conectado ao provedor remoto"
         );
         Ok(status)
     }
@@ -141,8 +172,8 @@ impl AuthManager {
     ) -> AppResult<AuthStatus> {
         let refresh_token = tokens.refresh_token.clone().ok_or_else(|| {
             AppError::Auth(
-                "o Google não retornou um refresh token; revogue o acesso do Slot2Sync em \
-                 myaccount.google.com/permissions e conecte novamente"
+                "o provedor não retornou um refresh token; revogue o acesso do Slot2Sync nas \
+                 configurações de segurança da sua conta e conecte novamente"
                     .into(),
             )
         })?;
@@ -151,8 +182,8 @@ impl AuthManager {
             refresh_token,
             email: email.clone(),
         };
-        let secrets = self.secrets.clone();
-        run_blocking(move || TokenStore::save(&stored, &*secrets)).await?;
+        let (secrets, key) = (self.secrets.clone(), self.keyring_key);
+        run_blocking(move || TokenStore::save(key, &stored, &*secrets)).await?;
 
         self.cache_token(&tokens).await;
 
@@ -173,26 +204,21 @@ impl AuthManager {
         let config = self.config()?;
         let tokens =
             oauth::authorize_interactive_mobile(&self.http, config, app, redirect_rx).await?;
-        let email = oauth::fetch_user_email_at(
-            &self.http,
-            oauth::GOOGLE_USERINFO_ENDPOINT,
-            &tokens.access_token,
-        )
-            .await
-            .unwrap_or(None);
+        let email =
+            oauth::fetch_user_email(config.userinfo, &self.http, &tokens.access_token).await;
 
         let status = self.finish_connect(tokens, email).await?;
         tracing::info!(
             email = status.email.as_deref().unwrap_or("?"),
-            "conectado ao Google Drive (mobile)"
+            "conectado ao provedor remoto (mobile)"
         );
         Ok(status)
     }
 
     /// Conectado = existe refresh token no keyring (não exige rede).
     pub async fn status(&self) -> AppResult<AuthStatus> {
-        let secrets = self.secrets.clone();
-        let stored = run_blocking(move || TokenStore::load(&*secrets)).await?;
+        let (secrets, key) = (self.secrets.clone(), self.keyring_key);
+        let stored = run_blocking(move || TokenStore::load(key, &*secrets)).await?;
         Ok(match stored {
             Some(auth) => AuthStatus {
                 connected: true,
@@ -203,10 +229,10 @@ impl AuthManager {
     }
 
     pub async fn disconnect(&self) -> AppResult<AuthStatus> {
-        let secrets = self.secrets.clone();
-        run_blocking(move || TokenStore::clear(&*secrets)).await?;
+        let (secrets, key) = (self.secrets.clone(), self.keyring_key);
+        run_blocking(move || TokenStore::clear(key, &*secrets)).await?;
         *self.cached.write().await = None;
-        tracing::info!("desconectado do Google Drive");
+        tracing::info!("desconectado do provedor remoto");
         Ok(AuthStatus::disconnected())
     }
 
@@ -229,10 +255,10 @@ impl AuthManager {
         }
 
         let config = self.config()?;
-        let secrets = self.secrets.clone();
-        let stored = run_blocking(move || TokenStore::load(&*secrets))
+        let (secrets, key) = (self.secrets.clone(), self.keyring_key);
+        let stored = run_blocking(move || TokenStore::load(key, &*secrets))
             .await?
-            .ok_or_else(|| AppError::Auth("não conectado ao Google Drive".into()))?;
+            .ok_or_else(|| AppError::Auth("não conectado ao provedor remoto".into()))?;
 
         let tokens = oauth::refresh_access_token(&self.http, config, &stored.refresh_token).await?;
         self.cache_token(&tokens).await;
@@ -286,7 +312,7 @@ mod tests {
     use super::oauth::OAuthConfig;
     use super::token_store::{StoredAuth, TokenStore};
     use super::{AuthManager, AuthorizeFlow, CachedToken};
-    use crate::constants::KEYRING_REFRESH_TOKEN_KEY;
+    use crate::constants::KEYRING_GOOGLE_REFRESH_TOKEN_KEY;
     use crate::error::{AppError, AppResult};
     use crate::secrets::{MemSecrets, SecretStore};
 
@@ -347,6 +373,7 @@ mod tests {
         AuthManager {
             http: reqwest::Client::new(),
             config,
+            keyring_key: KEYRING_GOOGLE_REFRESH_TOKEN_KEY,
             cached: tokio::sync::RwLock::new(None),
             secrets: secrets.clone(),
             authorize_flow: Box::new(flow),
@@ -357,9 +384,14 @@ mod tests {
     fn proxy_config(proxy_url: &str) -> OAuthConfig {
         OAuthConfig {
             client_id: "client-de-teste".into(),
+            auth_endpoint: "https://example.invalid/auth".into(),
+            token_endpoint: "https://example.invalid/token".into(),
+            scope: "scope-de-teste".into(),
+            userinfo: super::oauth::UserinfoStrategy::GoogleOidc,
             token_proxy_url: Some(proxy_url.into()),
             proxy_secret: None,
             client_secret: None,
+            extra_auth_params: &[],
         }
     }
 
@@ -375,6 +407,7 @@ mod tests {
     async fn status_conectado_le_email_do_token_salvo() {
         let secrets = Arc::new(MemSecrets::default());
         TokenStore::save(
+            KEYRING_GOOGLE_REFRESH_TOKEN_KEY,
             &StoredAuth {
                 refresh_token: "tok".into(),
                 email: Some("dev@slot2sync".into()),
@@ -392,7 +425,7 @@ mod tests {
     async fn token_ilegivel_degrada_para_desconectado() {
         let secrets = Arc::new(MemSecrets::default());
         secrets
-            .set(KEYRING_REFRESH_TOKEN_KEY, "não é json")
+            .set(KEYRING_GOOGLE_REFRESH_TOKEN_KEY, "não é json")
             .unwrap();
 
         let status = manager(&secrets).status().await.unwrap();
@@ -403,6 +436,7 @@ mod tests {
     async fn disconnect_apaga_o_token_persistido() {
         let secrets = Arc::new(MemSecrets::default());
         TokenStore::save(
+            KEYRING_GOOGLE_REFRESH_TOKEN_KEY,
             &StoredAuth {
                 refresh_token: "tok".into(),
                 email: None,
@@ -416,7 +450,10 @@ mod tests {
 
         let after = m.disconnect().await.unwrap();
         assert!(!after.connected);
-        assert!(secrets.get(KEYRING_REFRESH_TOKEN_KEY).unwrap().is_none());
+        assert!(secrets
+            .get(KEYRING_GOOGLE_REFRESH_TOKEN_KEY)
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -427,13 +464,17 @@ mod tests {
             email: Some("x@y".into()),
         };
 
-        TokenStore::save(&auth, &secrets).unwrap();
-        let loaded = TokenStore::load(&secrets).unwrap().unwrap();
+        TokenStore::save(KEYRING_GOOGLE_REFRESH_TOKEN_KEY, &auth, &secrets).unwrap();
+        let loaded = TokenStore::load(KEYRING_GOOGLE_REFRESH_TOKEN_KEY, &secrets)
+            .unwrap()
+            .unwrap();
         assert_eq!(loaded.refresh_token, "abc");
         assert_eq!(loaded.email.as_deref(), Some("x@y"));
 
-        TokenStore::clear(&secrets).unwrap();
-        assert!(TokenStore::load(&secrets).unwrap().is_none());
+        TokenStore::clear(KEYRING_GOOGLE_REFRESH_TOKEN_KEY, &secrets).unwrap();
+        assert!(TokenStore::load(KEYRING_GOOGLE_REFRESH_TOKEN_KEY, &secrets)
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
@@ -468,6 +509,7 @@ mod tests {
 
         let secrets = Arc::new(MemSecrets::default());
         TokenStore::save(
+            KEYRING_GOOGLE_REFRESH_TOKEN_KEY,
             &StoredAuth {
                 refresh_token: "refresh-antigo".into(),
                 email: None,
@@ -497,6 +539,7 @@ mod tests {
 
         let secrets = Arc::new(MemSecrets::default());
         TokenStore::save(
+            KEYRING_GOOGLE_REFRESH_TOKEN_KEY,
             &StoredAuth {
                 refresh_token: "refresh-invalido".into(),
                 email: None,
@@ -525,6 +568,7 @@ mod tests {
 
         let secrets = Arc::new(MemSecrets::default());
         TokenStore::save(
+            KEYRING_GOOGLE_REFRESH_TOKEN_KEY,
             &StoredAuth {
                 refresh_token: "refresh".into(),
                 email: None,
@@ -595,6 +639,7 @@ mod tests {
     async fn disconnect_limpa_cache_em_memoria() {
         let secrets = Arc::new(MemSecrets::default());
         TokenStore::save(
+            KEYRING_GOOGLE_REFRESH_TOKEN_KEY,
             &StoredAuth {
                 refresh_token: "r".into(),
                 email: None,
@@ -639,9 +684,12 @@ mod tests {
 
         assert!(status.connected);
         assert_eq!(status.email.as_deref(), Some("dev@slot2sync"));
-        let stored = TokenStore::load(&*secrets as &dyn SecretStore)
-            .unwrap()
-            .unwrap();
+        let stored = TokenStore::load(
+            KEYRING_GOOGLE_REFRESH_TOKEN_KEY,
+            &*secrets as &dyn SecretStore,
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(stored.refresh_token, "refresh-novo");
         assert_eq!(
             m.cached.read().await.as_ref().unwrap().access_token,
@@ -674,9 +722,12 @@ mod tests {
 
         let err = m.connect().await.unwrap_err();
         assert!(matches!(err, AppError::Auth(msg) if msg.contains("refresh token")));
-        assert!(TokenStore::load(&*secrets as &dyn SecretStore)
-            .unwrap()
-            .is_none());
+        assert!(TokenStore::load(
+            KEYRING_GOOGLE_REFRESH_TOKEN_KEY,
+            &*secrets as &dyn SecretStore
+        )
+        .unwrap()
+        .is_none());
     }
 
     fn tokens(refresh_token: Option<&str>) -> super::oauth::TokenResponse {
@@ -697,9 +748,12 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, AppError::Auth(msg) if msg.contains("refresh token")));
-        assert!(TokenStore::load(&*secrets as &dyn SecretStore)
-            .unwrap()
-            .is_none());
+        assert!(TokenStore::load(
+            KEYRING_GOOGLE_REFRESH_TOKEN_KEY,
+            &*secrets as &dyn SecretStore
+        )
+        .unwrap()
+        .is_none());
     }
 
     #[tokio::test]
@@ -715,9 +769,12 @@ mod tests {
         assert!(status.connected);
         assert_eq!(status.email.as_deref(), Some("dev@slot2sync"));
 
-        let stored = TokenStore::load(&*secrets as &dyn SecretStore)
-            .unwrap()
-            .unwrap();
+        let stored = TokenStore::load(
+            KEYRING_GOOGLE_REFRESH_TOKEN_KEY,
+            &*secrets as &dyn SecretStore,
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(stored.refresh_token, "refresh-novo");
         assert_eq!(
             m.cached.read().await.as_ref().unwrap().access_token,

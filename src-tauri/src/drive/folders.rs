@@ -273,7 +273,9 @@ mod http_tests {
 
         Mock::given(method("GET"))
             .and(path("/drive/v3/files"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "files": [] })))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "files": [] })),
+            )
             .mount(&server)
             .await;
 
@@ -328,7 +330,10 @@ mod http_tests {
             .await;
 
         let err = client.ensure_root().await.unwrap_err();
-        assert!(matches!(err, crate::error::AppError::DriveObjectNotFound(_)));
+        assert!(matches!(
+            err,
+            crate::error::AppError::RemoteObjectNotFound(_)
+        ));
     }
 
     #[tokio::test]
@@ -338,7 +343,9 @@ mod http_tests {
 
         Mock::given(method("GET"))
             .and(path("/drive/v3/files"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "files": [] })))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "files": [] })),
+            )
             .mount(&server)
             .await;
         Mock::given(method("POST"))
@@ -348,7 +355,10 @@ mod http_tests {
             .await;
 
         let err = client.ensure_root().await.unwrap_err();
-        assert!(matches!(err, crate::error::AppError::DriveObjectNotFound(_)));
+        assert!(matches!(
+            err,
+            crate::error::AppError::RemoteObjectNotFound(_)
+        ));
         assert!(client.folder_cache.read().await.get("Slot2Sync").is_none());
     }
 
@@ -360,7 +370,9 @@ mod http_tests {
         // find nunca encontra nada: toda a cadeia é criada do zero.
         Mock::given(method("GET"))
             .and(path("/drive/v3/files"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "files": [] })))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "files": [] })),
+            )
             .mount(&server)
             .await;
 
@@ -411,7 +423,9 @@ mod http_tests {
 
         Mock::given(method("GET"))
             .and(path("/drive/v3/files"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "files": [] })))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "files": [] })),
+            )
             .mount(&server)
             .await;
         Mock::given(method("POST"))

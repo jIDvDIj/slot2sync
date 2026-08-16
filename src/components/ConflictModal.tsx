@@ -80,14 +80,14 @@ export function ConflictModal({ emulator, conflicts, onClose, onResolved }: Prop
             </div>
             <div className="conflict-side">
               <div className="conflict-side-title">
-                {t("conflict.drive")}
-                {c.driveDevice ? ` · ${c.driveDevice}` : ""}
+                {t("conflict.remote")}
+                {c.remoteDevice ? ` · ${c.remoteDevice}` : ""}
               </div>
               <div className="muted">
-                {formatDate(c.driveMtimeMs)} · {formatBytes(c.driveSize)}
+                {formatDate(c.remoteMtimeMs)} · {formatBytes(c.remoteSize)}
               </div>
-              <button disabled={busy === c.relPath} onClick={() => resolve(c, "drive")}>
-                {t("conflict.keepDrive")}
+              <button disabled={busy === c.relPath} onClick={() => resolve(c, "remote")}>
+                {t("conflict.keepRemote")}
               </button>
             </div>
           </div>

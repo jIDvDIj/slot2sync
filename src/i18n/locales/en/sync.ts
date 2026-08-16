@@ -10,8 +10,10 @@ export const sync = {
     failed: "failed {{count}}",
     lastSync: "Last sync {{when}}",
     never: "No sync yet",
-    backupBanner_one: "{{count}} local file was backed up before the first sync (Drive won).",
-    backupBanner_other: "{{count}} local files were backed up before the first sync (Drive won).",
+    backupBanner_one:
+      "{{count}} local file was backed up before the first sync (the remote version won).",
+    backupBanner_other:
+      "{{count}} local files were backed up before the first sync (the remote version won).",
     openBackupFolder: "Open backup folder",
     lastSyncError: "Last sync failed{{emulator}}: {{message}}",
     autoPreGame: "Downloading fresh saves before the game…",
@@ -51,11 +53,11 @@ export const sync = {
   conflict: {
     title: "Conflict — {{emulator}}",
     intro:
-      "These files changed on this device and on Drive since the last sync. Choose which version to keep — syncing this emulator is paused until you resolve it. The version discarded locally is saved to backup.",
+      "These files changed on this device and in remote storage since the last sync. Choose which version to keep — syncing this emulator is paused until you resolve it. The version discarded locally is saved to backup.",
     thisDevice: "This device",
-    drive: "Drive",
+    remote: "Remote",
     keepLocal: "Keep local",
-    keepDrive: "Keep Drive's",
+    keepRemote: "Keep remote",
     openCopy: "Show local copy in folder",
   },
 } as const;

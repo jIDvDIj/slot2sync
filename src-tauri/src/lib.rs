@@ -4,11 +4,15 @@ mod commands;
 mod constants;
 mod device;
 mod drive;
+mod dropbox;
 mod emulator;
 mod error;
 mod events;
+mod folder;
 mod games;
+mod onedrive;
 mod platform;
+mod remote;
 mod secrets;
 mod state;
 mod storage;
@@ -95,8 +99,71 @@ pub fn run() {
                 ),
             }
 
-            let auth = Arc::new(auth::AuthManager::new(http.clone(), secret_store.clone()));
-            let drive = Arc::new(drive::DriveClient::new(http, auth.clone(), db.clone()));
+            // Constrói o provedor (e o AuthManager, se OAuth) a partir da config
+            // persistida. Nenhum provedor escolhido ainda (primeiro uso) = os
+            // dois ficam vazios; a UI mostra o seletor e `connect_*`/
+            // `connect_local_folder` os preenchem em tempo de execução (ver
+            // `commands.rs`) — sem precisar reiniciar o app.
+            let stored_provider = db
+                .with_conn_blocking(storage::settings::storage_provider)
+                .ok()
+                .flatten();
+            let (auth, remote_provider): (
+                Option<Arc<auth::AuthManager>>,
+                Option<Arc<dyn remote::RemoteProvider>>,
+            ) = match stored_provider {
+                Some(kind @ remote::ProviderKind::GoogleDrive) => {
+                    let auth = Arc::new(auth::AuthManager::new_for(
+                        kind,
+                        http.clone(),
+                        secret_store.clone(),
+                    ));
+                    let client = Arc::new(drive::DriveClient::new(
+                        http.clone(),
+                        auth.clone(),
+                        db.clone(),
+                    ));
+                    (Some(auth), Some(client))
+                }
+                Some(kind @ remote::ProviderKind::Dropbox) => {
+                    let auth = Arc::new(auth::AuthManager::new_for(
+                        kind,
+                        http.clone(),
+                        secret_store.clone(),
+                    ));
+                    let client = Arc::new(dropbox::DropboxClient::new(http.clone(), auth.clone()));
+                    (Some(auth), Some(client))
+                }
+                Some(kind @ remote::ProviderKind::OneDrive) => {
+                    let auth = Arc::new(auth::AuthManager::new_for(
+                        kind,
+                        http.clone(),
+                        secret_store.clone(),
+                    ));
+                    let client =
+                        Arc::new(onedrive::OneDriveClient::new(http.clone(), auth.clone()));
+                    (Some(auth), Some(client))
+                }
+                Some(remote::ProviderKind::LocalFolder) => {
+                    let path = db
+                        .with_conn_blocking(storage::settings::folder_provider_path)
+                        .ok()
+                        .flatten();
+                    match path {
+                        Some(p) => (
+                            None,
+                            Some(
+                                Arc::new(folder::FolderProvider::new(std::path::PathBuf::from(p)))
+                                    as Arc<dyn remote::RemoteProvider>,
+                            ),
+                        ),
+                        // Config inconsistente (settings corrompidas) — trata como
+                        // não configurado; a UI volta a mostrar o seletor.
+                        None => (None, None),
+                    }
+                }
+                None => (None, None),
+            };
 
             // Storage local: filesystem no desktop; plugin nativo (SAF/bookmarks)
             // no mobile, montado a partir da ponte registrada pelo plugin acima.
@@ -107,21 +174,22 @@ pub fn run() {
 
             let engine = Arc::new(sync::SyncEngine::new(
                 db.clone(),
-                drive,
-                auth.clone(),
+                remote_provider,
                 app.handle().clone(),
                 last_sync.clone(),
                 data_dir.join(constants::LOCAL_BACKUP_DIR),
                 storage.clone(),
-                secret_store,
+                secret_store.clone(),
             ));
 
             app.manage(AppState {
-                auth,
+                auth: std::sync::RwLock::new(auth),
                 db: db.clone(),
                 engine: engine.clone(),
                 last_sync,
                 storage,
+                http,
+                secrets: secret_store,
             });
 
             // Bandeja, janela escondível, autostart e process watcher são
@@ -227,8 +295,11 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::health_check,
             commands::connect_google_drive,
+            commands::connect_dropbox,
+            commands::connect_onedrive,
+            commands::connect_local_folder,
             commands::get_auth_status,
-            commands::disconnect_google_drive,
+            commands::disconnect_provider,
             commands::detect_emulator,
             commands::add_emulator,
             commands::add_emulator_manual,

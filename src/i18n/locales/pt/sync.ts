@@ -14,9 +14,9 @@ export const sync: Localized<typeof SyncEn> = {
     lastSync: "Último sync {{when}}",
     never: "Nenhuma sincronização ainda",
     backupBanner_one:
-      "{{count}} arquivo local foi salvo em backup antes do primeiro sync (o Drive venceu).",
+      "{{count}} arquivo local foi salvo em backup antes do primeiro sync (a versão remota venceu).",
     backupBanner_other:
-      "{{count}} arquivos locais foram salvos em backup antes do primeiro sync (o Drive venceu).",
+      "{{count}} arquivos locais foram salvos em backup antes do primeiro sync (a versão remota venceu).",
     openBackupFolder: "Abrir pasta de backup",
     lastSyncError: "Falha no último sync{{emulator}}: {{message}}",
     autoPreGame: "Baixando saves frescos antes do jogo…",
@@ -56,11 +56,11 @@ export const sync: Localized<typeof SyncEn> = {
   conflict: {
     title: "Conflito — {{emulator}}",
     intro:
-      "Estes arquivos mudaram neste dispositivo e no Drive desde o último sync. Escolha qual versão manter — o sync deste emulador está pausado até a resolução. A versão descartada localmente é salva em backup.",
+      "Estes arquivos mudaram neste dispositivo e no armazenamento remoto desde o último sync. Escolha qual versão manter — o sync deste emulador está pausado até a resolução. A versão descartada localmente é salva em backup.",
     thisDevice: "Este dispositivo",
-    drive: "Drive",
+    remote: "Remoto",
     openCopy: "Mostrar cópia local na pasta",
     keepLocal: "Manter local",
-    keepDrive: "Manter do Drive",
+    keepRemote: "Manter remoto",
   },
 };

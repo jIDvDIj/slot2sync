@@ -21,16 +21,15 @@ use super::conflict::{SyncAction, TIMESTAMP_TOLERANCE_MS};
 use super::diff::{self, CategoryPlan, LocalFile, PlannedOp};
 use super::storage::{FileLoc, LocalStorage};
 use super::{SyncCategory, SyncDirection, SyncProgress, SyncTarget};
-use crate::auth::AuthManager;
 use crate::constants::{
     DRIVE_BATCH_MAX_OPS, DRIVE_BATCH_MIN_OPS, DRIVE_MANIFEST_FILE, DRIVE_MAX_CONCURRENT_TRANSFERS,
     DRIVE_SIMPLE_UPLOAD_MAX_BYTES,
 };
-use crate::drive::{BatchUploadOp, DeviceTag, DriveApi};
 use crate::error::{AppError, AppResult};
 use crate::events::{
     EVT_SYNC_COMPLETED, EVT_SYNC_CONFLICT, EVT_SYNC_ERROR, EVT_SYNC_PROGRESS, EVT_SYNC_STARTED,
 };
+use crate::remote::{BatchUploadOp, DeviceTag, RemoteProvider};
 use crate::storage::conflicts::{self, Conflict};
 use crate::storage::db::Db;
 use crate::storage::manifest::{self, ManifestEntry};
@@ -115,10 +114,10 @@ enum OpOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ConflictResolution {
-    /// Manter a versão local e enviá-la ao Drive.
+    /// Manter a versão local e enviá-la ao provedor remoto.
     Local,
-    /// Manter a versão do Drive e baixá-la (com backup do local).
-    Drive,
+    /// Manter a versão remota e baixá-la (com backup do local).
+    Remote,
 }
 
 struct CategoryCtx {
@@ -154,12 +153,13 @@ struct CategoryCtx {
 
 /// Genérico sobre o runtime do Tauri para ser testável: em produção é o `Wry`
 /// (default); nos testes de cenário (`sync::scenarios`), o `MockRuntime` do
-/// `tauri::test`. O Drive entra pelo trait [`DriveApi`] — `DriveClient` real
-/// ou `MockDrive` em memória.
+/// `tauri::test`. O storage remoto entra pelo trait [`RemoteProvider`] —
+/// `DriveClient`/`DropboxClient`/`OneDriveClient`/`FolderProvider` reais ou
+/// `MockDrive` em memória. Trocável em tempo de execução (troca de provedor
+/// sem reiniciar o app): `None` antes da primeira conexão.
 pub struct SyncEngine<R: Runtime = Wry> {
     db: Db,
-    drive: Arc<dyn DriveApi>,
-    auth: Arc<AuthManager>,
+    remote_provider: std::sync::RwLock<Option<Arc<dyn RemoteProvider>>>,
     app: AppHandle<R>,
     last_sync: LastSyncStore,
     /// Raiz dos backups locais (`<app_data>/backups`).
@@ -181,11 +181,12 @@ pub struct SyncEngine<R: Runtime = Wry> {
 
 impl<R: Runtime> SyncEngine<R> {
     // Construtor de injeção: recebe o wiring completo do app montado no setup.
+    // `remote_provider` entra vazio quando nenhum provedor foi configurado
+    // ainda (primeira execução) — preenchido depois via `set_remote_provider`.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         db: Db,
-        drive: Arc<dyn DriveApi>,
-        auth: Arc<AuthManager>,
+        remote_provider: Option<Arc<dyn RemoteProvider>>,
         app: AppHandle<R>,
         last_sync: LastSyncStore,
         backup_dir: PathBuf,
@@ -194,8 +195,7 @@ impl<R: Runtime> SyncEngine<R> {
     ) -> Self {
         Self {
             db,
-            drive,
-            auth,
+            remote_provider: std::sync::RwLock::new(remote_provider),
             app,
             last_sync,
             versioner: Arc::new(crate::versioning::FsVersioner::new(backup_dir.clone())),
@@ -205,6 +205,23 @@ impl<R: Runtime> SyncEngine<R> {
             running: Mutex::new(()),
             recent_downloads: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
+    }
+
+    /// Troca o provedor de storage ativo (conectar pela primeira vez ou mudar
+    /// de provedor) — efetivo imediatamente, sem reiniciar o app. `None`
+    /// desconecta (o próximo sync automático falha graciosamente até um novo
+    /// provedor ser configurado).
+    pub fn set_remote_provider(&self, provider: Option<Arc<dyn RemoteProvider>>) {
+        *self.remote_provider.write().unwrap() = provider;
+    }
+
+    /// Provedor remoto ativo, ou erro se nenhum foi configurado ainda —
+    /// gatilhos automáticos (startup/watcher) caem aqui de forma graciosa
+    /// antes do primeiro login, sem crashar.
+    fn remote(&self) -> AppResult<Arc<dyn RemoteProvider>> {
+        self.remote_provider.read().unwrap().clone().ok_or_else(|| {
+            AppError::Auth("nenhum provedor de storage conectado — sync ignorado".into())
+        })
     }
 
     /// Registra que `loc` acabou de ser gravado por um download (anti-loop do
@@ -252,10 +269,13 @@ impl<R: Runtime> SyncEngine<R> {
         self.sync_filtered(None, direction, trigger).await
     }
 
-    /// Zera o cache de IDs de pasta do Drive (memória + SQLite). Chamado no
-    /// logout para não reaproveitar IDs de outra conta Google.
+    /// Zera o cache de pastas do provedor remoto ativo, se houver (memória +
+    /// SQLite). Chamado no logout para não reaproveitar IDs de outra conta.
     pub async fn clear_folder_cache(&self) {
-        self.drive.clear_folder_cache().await;
+        let remote = self.remote_provider.read().unwrap().clone();
+        if let Some(remote) = remote {
+            remote.clear_folder_cache().await;
+        }
     }
 
     /// Sincroniza um único emulador (gatilhos do process watcher).
@@ -278,12 +298,11 @@ impl<R: Runtime> SyncEngine<R> {
     ) -> AppResult<SyncSummary> {
         let _guard = self.running.lock().await;
 
-        let status = self.auth.status().await?;
-        if !status.connected {
-            return Err(AppError::Auth(
-                "não conectado ao Google Drive — sync ignorado".into(),
-            ));
-        }
+        // Garante cedo (antes de qualquer I/O) que há um provedor conectado —
+        // mesmo erro tipado que as demais operações usam quando chamadas sem
+        // provedor, então os gatilhos automáticos (startup/watcher) já sabem
+        // tratar isso de forma graciosa.
+        self.remote()?;
 
         let notif = self
             .db
@@ -506,8 +525,8 @@ impl<R: Runtime> SyncEngine<R> {
                 continue;
             }
 
-            let mut folder_id = self
-                .drive
+            let remote_provider = self.remote()?;
+            let mut folder_id = remote_provider
                 .ensure_category_folder(&target.label, *category)
                 .await?;
             let folder_key = format!(
@@ -517,24 +536,23 @@ impl<R: Runtime> SyncEngine<R> {
                 category.as_str()
             );
 
-            let remote = match self.drive.list_tree(&folder_id).await {
+            let remote = match remote_provider.list_tree(&folder_id).await {
                 Ok(remote) => remote,
-                Err(AppError::DriveObjectNotFound(detail)) => {
-                    // ID de pasta cacheado ficou obsoleto (pasta movida/apagada
-                    // no Drive). Invalida a subárvore e re-resolve — reencontra a
-                    // existente ou recria.
+                Err(AppError::RemoteObjectNotFound(detail)) => {
+                    // ID/path de pasta cacheado ficou obsoleto (pasta movida/
+                    // apagada no provedor remoto). Invalida a subárvore e
+                    // re-resolve — reencontra a existente ou recria.
                     tracing::warn!(
                         emulador = %target.label,
                         categoria = category.as_str(),
                         %detail,
-                        "pasta da categoria não encontrada no Drive; invalidando cache e re-resolvendo"
+                        "pasta da categoria não encontrada no provedor remoto; invalidando cache e re-resolvendo"
                     );
-                    self.drive.invalidate_folder_path(&folder_key).await;
-                    folder_id = self
-                        .drive
+                    remote_provider.invalidate_folder_path(&folder_key).await;
+                    folder_id = remote_provider
                         .ensure_category_folder(&target.label, *category)
                         .await?;
-                    self.drive.list_tree(&folder_id).await?
+                    remote_provider.list_tree(&folder_id).await?
                 }
                 Err(err) => return Err(err),
             };
@@ -627,7 +645,7 @@ impl<R: Runtime> SyncEngine<R> {
             // tarefas paralelas do mesmo jogo passam juntas pelo "miss" do cache
             // e criam pastas duplicadas no Drive (uma por arquivo concorrente).
             for dir in upload_dirs(&plan) {
-                self.drive
+                remote_provider
                     .ensure_subpath(&folder_id, &folder_key, dir)
                     .await?;
             }
@@ -730,12 +748,17 @@ impl<R: Runtime> SyncEngine<R> {
     ) -> (Vec<PlannedOp>, u32) {
         use std::collections::{HashMap, HashSet};
 
+        // Já verificado pelo gate no início de `sync_filtered`.
+        let remote_provider = self
+            .remote()
+            .expect("provedor remoto verificado no início do sync");
+
         // Órfãos remotos: Download de arquivo sem contraparte local.
         let mut orphans: HashMap<String, usize> = HashMap::new();
         let mut ambiguous: HashSet<String> = HashSet::new();
         for (i, op) in plan.iter().enumerate() {
             if op.action == SyncAction::Download && op.local.is_none() {
-                if let Some(md5) = op.remote.as_ref().and_then(|r| r.md5_checksum.clone()) {
+                if let Some(md5) = op.remote.as_ref().and_then(|r| r.hash.clone()) {
                     if orphans.insert(md5.clone(), i).is_some() {
                         ambiguous.insert(md5);
                     }
@@ -779,16 +802,14 @@ impl<R: Runtime> SyncEngine<R> {
                 Some((None, None))
             } else {
                 let new_parent = match new_dir {
-                    Some(dir) => self
-                        .drive
+                    Some(dir) => remote_provider
                         .ensure_subpath(folder_id, folder_key, dir)
                         .await
                         .ok(),
                     None => Some(folder_id.to_string()),
                 };
                 let old_parent = match old_dir {
-                    Some(dir) => self
-                        .drive
+                    Some(dir) => remote_provider
                         .ensure_subpath(folder_id, folder_key, dir)
                         .await
                         .ok(),
@@ -805,8 +826,7 @@ impl<R: Runtime> SyncEngine<R> {
                 continue;
             };
 
-            match self
-                .drive
+            match remote_provider
                 .rename_file(
                     &remote.id,
                     new_name,
@@ -820,15 +840,15 @@ impl<R: Runtime> SyncEngine<R> {
                         emulador = %emulator,
                         de = %orphan_rel,
                         para = %op.rel_path,
-                        "renomeação detectada por hash; aplicada no Drive sem retransferir"
+                        "renomeação detectada por hash; aplicada no provedor remoto sem retransferir"
                     );
                     let entry = ManifestEntry {
                         emulator: emulator.to_string(),
                         category,
                         rel_path: op.rel_path.clone(),
-                        drive_file_id: Some(updated.id.clone()),
+                        remote_file_id: Some(updated.id.clone()),
                         local_mtime_ms: Some(local.mtime_ms),
-                        drive_mtime_ms: updated.modified_ms(),
+                        remote_mtime_ms: updated.modified_ms,
                         size_bytes: Some(content.len() as i64),
                         last_synced_at_ms: chrono::Utc::now().timestamp_millis(),
                         file_hash: Some(super::sha256_hex(&content)),
@@ -1008,12 +1028,15 @@ impl<R: Runtime> SyncEngine<R> {
             "batch upload de arquivos novos"
         );
 
+        let remote_provider = self
+            .remote()
+            .expect("provedor remoto verificado no início do sync");
         for chunk in prepared.chunks(DRIVE_BATCH_MAX_OPS) {
             let ops: Vec<BatchUploadOp> = chunk.iter().map(|p| p.batch.clone()).collect();
-            match self.drive.upload_batch(ops).await {
+            match remote_provider.upload_batch(ops).await {
                 Ok(files) if files.len() == chunk.len() => {
                     for (p, uploaded) in chunk.iter().zip(files) {
-                        let drive_mtime = uploaded.modified_ms();
+                        let drive_mtime = uploaded.modified_ms;
                         let recorded = self
                             .record_synced(
                                 ctx,
@@ -1099,11 +1122,13 @@ impl<R: Runtime> SyncEngine<R> {
             Err(_) => return Err(op),
         };
 
+        let remote_provider = self
+            .remote()
+            .expect("provedor remoto verificado no início do sync");
         let (dir_part, file_name) = split_rel_path(&op.rel_path);
         let parent_id = match dir_part {
             Some(dir) => {
-                match self
-                    .drive
+                match remote_provider
                     .ensure_subpath(&ctx.folder_id, &ctx.folder_key, dir)
                     .await
                 {
@@ -1135,6 +1160,7 @@ impl<R: Runtime> SyncEngine<R> {
     }
 
     async fn do_upload(&self, ctx: &CategoryCtx, op: &PlannedOp) -> AppResult<()> {
+        let remote_provider = self.remote()?;
         let local = op
             .local
             .as_ref()
@@ -1150,7 +1176,7 @@ impl<R: Runtime> SyncEngine<R> {
         let (dir_part, file_name) = split_rel_path(&op.rel_path);
         let parent_id = match dir_part {
             Some(dir) => {
-                self.drive
+                remote_provider
                     .ensure_subpath(&ctx.folder_id, &ctx.folder_key, dir)
                     .await?
             }
@@ -1165,18 +1191,18 @@ impl<R: Runtime> SyncEngine<R> {
         };
         let uploaded = match op.remote.as_ref() {
             Some(existing) => {
-                self.drive
+                remote_provider
                     .upload_existing(&existing.id, content, mtime_after, tag)
                     .await?
             }
             None => {
-                self.drive
+                remote_provider
                     .upload_new(&parent_id, file_name, content, mtime_after, tag)
                     .await?
             }
         };
 
-        let drive_mtime = uploaded.modified_ms();
+        let drive_mtime = uploaded.modified_ms;
         self.record_synced(
             ctx,
             &op.rel_path,
@@ -1258,11 +1284,7 @@ impl<R: Runtime> SyncEngine<R> {
 
         // Checa o espaço livre no volume de destino ANTES de baixar (margem de
         // 10%). Sem medição disponível (mobile/volume desconhecido), segue.
-        let expected_size: u64 = remote
-            .size
-            .as_deref()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0);
+        let expected_size: u64 = remote.size_bytes.map(|s| s.max(0) as u64).unwrap_or(0);
         if expected_size > 0 {
             if let Some(available) = self.storage.available_space(&dest).await {
                 let needed = expected_size + expected_size / 10;
@@ -1275,16 +1297,19 @@ impl<R: Runtime> SyncEngine<R> {
             }
         }
 
-        let content = self.drive.download(&remote.id).await?;
+        let content = self.remote()?.download(&remote.id).await?;
 
-        // Verificação de integridade: o MD5 do que chegou precisa bater com o
-        // `md5Checksum` que o próprio Drive calculou. Divergência = transferência
-        // corrompida → falha retryable (vai para a fila offline).
-        if let Some(expected) = remote.md5_checksum.as_deref() {
-            let got = super::md5_hex(&content);
-            if !got.eq_ignore_ascii_case(expected) {
+        // Verificação de integridade: o tamanho do que chegou precisa bater com
+        // o que a listagem reportou. Divergência = transferência corrompida/
+        // truncada → falha retryable (vai para a fila offline). Checagem por
+        // tamanho (não por hash) porque cada provedor usa um algoritmo próprio
+        // (MD5 no Drive, `content_hash` no Dropbox, `quickXorHash` no OneDrive)
+        // — não comparável entre si nem contra o SHA-256 que o app calcula.
+        if let Some(expected) = remote.size_bytes {
+            let got = content.len() as i64;
+            if got != expected {
                 return Err(AppError::Integrity(format!(
-                    "{}: md5 divergente após download (esperado {expected}, obtido {got})",
+                    "{}: tamanho divergente após download (esperado {expected} bytes, obtido {got})",
                     op.rel_path
                 )));
             }
@@ -1293,13 +1318,13 @@ impl<R: Runtime> SyncEngine<R> {
         // Versionamento: arquiva a versão local vigente ANTES de sobrescrever
         // (só em downloads comuns — o primeiro sync já tem seu próprio backup
         // dedicado). Best-effort: falha de arquivamento não bloqueia o sync,
-        // pois a versão anterior já esteve no Drive em algum momento.
+        // pois a versão anterior já esteve no provedor remoto em algum momento.
         if op.action == SyncAction::Download {
             self.archive_previous_version(ctx, op).await;
         }
 
-        // mtime local = modifiedTime do Drive, para o diff convergir.
-        let drive_mtime = remote.modified_ms();
+        // mtime local = mtime remoto, para o diff convergir.
+        let drive_mtime = remote.modified_ms;
         let size_bytes = content.len() as i64;
         let content_hash = super::sha256_hex(&content);
         self.storage
@@ -1344,14 +1369,10 @@ impl<R: Runtime> SyncEngine<R> {
             local_mtime_ms: local.mtime_ms,
             local_size: local.size_bytes,
             local_device: ctx.device.clone(),
-            drive_mtime_ms: remote.modified_ms().unwrap_or(0),
-            drive_size: remote
-                .size
-                .as_deref()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0),
-            drive_device: remote.device().map(str::to_string),
-            drive_file_id: remote.id.clone(),
+            remote_mtime_ms: remote.modified_ms.unwrap_or(0),
+            remote_size: remote.size_bytes.unwrap_or(0),
+            remote_device: remote.device_name.clone(),
+            remote_file_id: remote.id.clone(),
             local_abs_path: self.storage.loc_to_stored(&local.loc),
             detected_at_ms: chrono::Utc::now().timestamp_millis(),
             backup_path,
@@ -1421,9 +1442,9 @@ impl<R: Runtime> SyncEngine<R> {
         &self,
         ctx: &CategoryCtx,
         rel_path: &str,
-        drive_file_id: String,
+        remote_file_id: String,
         local_mtime_ms: i64,
-        drive_mtime_ms: Option<i64>,
+        remote_mtime_ms: Option<i64>,
         size_bytes: i64,
         file_hash: Option<String>,
     ) -> AppResult<()> {
@@ -1431,9 +1452,9 @@ impl<R: Runtime> SyncEngine<R> {
             emulator: ctx.emulator.clone(),
             category: ctx.category,
             rel_path: rel_path.to_string(),
-            drive_file_id: Some(drive_file_id),
+            remote_file_id: Some(remote_file_id),
             local_mtime_ms: Some(local_mtime_ms),
-            drive_mtime_ms,
+            remote_mtime_ms,
             size_bytes: Some(size_bytes),
             last_synced_at_ms: chrono::Utc::now().timestamp_millis(),
             file_hash,
@@ -1449,12 +1470,15 @@ impl<R: Runtime> SyncEngine<R> {
     /// este arquivo de volta — a fonte de verdade operacional é a tabela
     /// `sync_manifest` no SQLite local.
     async fn publish_manifest_snapshot(&self) -> AppResult<()> {
+        let remote_provider = self.remote()?;
         let entries = self.db.with(manifest::list_all).await?;
         let device = self.db.with(crate::storage::settings::device_name).await?;
         let device_id = crate::device::current(self.secrets.clone()).await;
         let now_ms = chrono::Utc::now().timestamp_millis();
         let doc = serde_json::json!({
-            "generatedAt": crate::drive::ms_to_rfc3339(now_ms),
+            "generatedAt": chrono::DateTime::<chrono::Utc>::from_timestamp_millis(now_ms)
+                .unwrap_or_else(chrono::Utc::now)
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
             "device": device,
             "deviceId": device_id,
             "entries": entries,
@@ -1465,15 +1489,18 @@ impl<R: Runtime> SyncEngine<R> {
             id: device_id.as_deref(),
         };
 
-        let root_id = self.drive.ensure_root().await?;
-        match self.drive.find_child(&root_id, DRIVE_MANIFEST_FILE).await? {
+        let root_id = remote_provider.ensure_root().await?;
+        match remote_provider
+            .find_child(&root_id, DRIVE_MANIFEST_FILE)
+            .await?
+        {
             Some(existing) => {
-                self.drive
+                remote_provider
                     .upload_existing(&existing.id, bytes, now_ms, tag)
                     .await?;
             }
             None => {
-                self.drive
+                remote_provider
                     .upload_new(&root_id, DRIVE_MANIFEST_FILE, bytes, now_ms, tag)
                     .await?;
             }
@@ -1497,7 +1524,7 @@ impl<R: Runtime> SyncEngine<R> {
             .ok_or_else(|| AppError::Other("conflito não encontrado".into()))?;
 
         match keep {
-            ConflictResolution::Drive => self.resolve_keep_drive(&conflict).await?,
+            ConflictResolution::Remote => self.resolve_keep_remote(&conflict).await?,
             ConflictResolution::Local => self.resolve_keep_local(&conflict).await?,
         }
 
@@ -1509,8 +1536,9 @@ impl<R: Runtime> SyncEngine<R> {
         Ok(())
     }
 
-    /// Mantém o Drive: faz backup do local e baixa a versão remota por cima.
-    async fn resolve_keep_drive(&self, c: &Conflict) -> AppResult<()> {
+    /// Mantém a versão remota: faz backup do local e baixa por cima.
+    async fn resolve_keep_remote(&self, c: &Conflict) -> AppResult<()> {
+        let remote_provider = self.remote()?;
         let dest = self.storage.loc_from_stored(&c.local_abs_path);
         if self.storage.exists(&dest).await {
             let stamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
@@ -1522,31 +1550,32 @@ impl<R: Runtime> SyncEngine<R> {
             );
             let backup_dest = self.storage.join(&backup_base, &c.rel_path);
             self.storage.copy_to(&dest, &backup_dest).await?;
-            tracing::info!(arquivo = %c.rel_path, backup = %backup_dest, "backup local antes de resolver conflito (manter Drive)");
+            tracing::info!(arquivo = %c.rel_path, backup = %backup_dest, "backup local antes de resolver conflito (manter versão remota)");
         }
 
-        let content = self.drive.download(&c.drive_file_id).await?;
+        let content = remote_provider.download(&c.remote_file_id).await?;
         let size_bytes = content.len() as i64;
         let content_hash = super::sha256_hex(&content);
-        let drive_mtime = c.drive_mtime_ms;
+        let remote_mtime = c.remote_mtime_ms;
         self.storage
-            .write_atomic(&dest, &content, Some(drive_mtime))
+            .write_atomic(&dest, &content, Some(remote_mtime))
             .await?;
         self.mark_recent_download(&dest);
 
         self.upsert_resolved_manifest(
             c,
-            drive_mtime,
-            Some(drive_mtime),
+            remote_mtime,
+            Some(remote_mtime),
             size_bytes,
-            &c.drive_file_id,
+            &c.remote_file_id,
             Some(content_hash),
         )
         .await
     }
 
-    /// Mantém o local: envia a versão local por cima da do Drive.
+    /// Mantém o local: envia a versão local por cima da remota.
     async fn resolve_keep_local(&self, c: &Conflict) -> AppResult<()> {
+        let remote_provider = self.remote()?;
         let src = self.storage.loc_from_stored(&c.local_abs_path);
         let content = self.storage.read(&src).await?;
         let size_bytes = content.len() as i64;
@@ -1563,16 +1592,15 @@ impl<R: Runtime> SyncEngine<R> {
             id: device_id.as_deref(),
         };
 
-        let uploaded = self
-            .drive
-            .upload_existing(&c.drive_file_id, content, local_mtime, tag)
+        let uploaded = remote_provider
+            .upload_existing(&c.remote_file_id, content, local_mtime, tag)
             .await?;
-        let drive_mtime = uploaded.modified_ms();
+        let remote_mtime = uploaded.modified_ms;
 
         self.upsert_resolved_manifest(
             c,
             local_mtime,
-            drive_mtime,
+            remote_mtime,
             size_bytes,
             &uploaded.id,
             Some(content_hash),
@@ -1584,18 +1612,18 @@ impl<R: Runtime> SyncEngine<R> {
         &self,
         c: &Conflict,
         local_mtime_ms: i64,
-        drive_mtime_ms: Option<i64>,
+        remote_mtime_ms: Option<i64>,
         size_bytes: i64,
-        drive_file_id: &str,
+        remote_file_id: &str,
         file_hash: Option<String>,
     ) -> AppResult<()> {
         let entry = ManifestEntry {
             emulator: c.emulator.clone(),
             category: c.category,
             rel_path: c.rel_path.clone(),
-            drive_file_id: Some(drive_file_id.to_string()),
+            remote_file_id: Some(remote_file_id.to_string()),
             local_mtime_ms: Some(local_mtime_ms),
-            drive_mtime_ms,
+            remote_mtime_ms,
             size_bytes: Some(size_bytes),
             last_synced_at_ms: chrono::Utc::now().timestamp_millis(),
             file_hash,
@@ -1631,8 +1659,8 @@ fn op_bytes(op: &PlannedOp) -> u64 {
         SyncAction::Download | SyncAction::DownloadWithBackup => op
             .remote
             .as_ref()
-            .and_then(|r| r.size.as_deref())
-            .and_then(|s| s.parse::<u64>().ok())
+            .and_then(|r| r.size_bytes)
+            .map(|s| s.max(0) as u64)
             .unwrap_or(0),
         SyncAction::Conflict | SyncAction::NoOp => 0,
     }
