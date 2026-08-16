@@ -198,7 +198,20 @@ impl Db {
     }
 
     fn from_connection(conn: Connection) -> AppResult<Self> {
+        // journal_mode=WAL: leituras não bloqueiam a escrita em andamento.
+        // foreign_keys: nenhuma FK é declarada hoje, mas protege migrações futuras.
+        // synchronous=NORMAL: seguro em WAL (só fsync no checkpoint), evita o
+        // custo de FULL a cada commit sem abrir mão de durabilidade após crash.
+        // auto_vacuum=INCREMENTAL: só tem efeito num banco novo (SQLite exige
+        // VACUUM para aplicar retroativamente); para bancos existentes é um
+        // no-op inofensivo — não vale forçar um VACUUM de uma tabela grande
+        // só por causa disso.
         let _: String = conn.query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0))?;
+        conn.execute_batch(
+            "PRAGMA foreign_keys = ON;
+             PRAGMA synchronous = NORMAL;
+             PRAGMA auto_vacuum = INCREMENTAL;",
+        )?;
         migrate(&conn)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
