@@ -15,7 +15,7 @@ use futures::stream::{self, StreamExt};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Runtime, Wry};
 use tauri_plugin_notification::NotificationExt;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Semaphore};
 
 use super::conflict::{SyncAction, TIMESTAMP_TOLERANCE_MS};
 use super::diff::{self, CategoryPlan, LocalFile, PlannedOp};
@@ -23,7 +23,7 @@ use super::storage::{FileLoc, LocalStorage};
 use super::{SyncCategory, SyncDirection, SyncProgress, SyncTarget};
 use crate::constants::{
     DRIVE_BATCH_MAX_OPS, DRIVE_BATCH_MIN_OPS, DRIVE_MANIFEST_FILE, DRIVE_MAX_CONCURRENT_TRANSFERS,
-    DRIVE_SIMPLE_UPLOAD_MAX_BYTES,
+    DRIVE_SIMPLE_UPLOAD_MAX_BYTES, MAX_BYTES_IN_FLIGHT,
 };
 use crate::error::{AppError, AppResult};
 use crate::events::{
@@ -697,10 +697,26 @@ impl<R: Runtime> SyncEngine<R> {
             // e o que o batch não conseguir seguem pelo caminho per-file abaixo.
             let plan = self.batch_new_uploads(&ctx, plan, &mut summary).await;
 
-            let outcomes = stream::iter(plan.into_iter().map(|op| self.execute_op(&ctx, op)))
-                .buffer_unordered(DRIVE_MAX_CONCURRENT_TRANSFERS)
-                .collect::<Vec<_>>()
-                .await;
+            // Além do teto de contagem do `buffer_unordered` abaixo, um
+            // semáforo ponderado por bytes evita que poucos arquivos grandes
+            // (savestates) monopolizem as vagas de um jeito que um monte de
+            // saves pequenos jamais faria — cada op só roda depois de
+            // reservar seu peso em bytes (até o teto do semáforo inteiro).
+            let bytes_semaphore = Semaphore::new(MAX_BYTES_IN_FLIGHT as usize);
+            let outcomes = stream::iter(plan.into_iter().map(|op| {
+                let (bytes_semaphore, ctx) = (&bytes_semaphore, &ctx);
+                async move {
+                    let weight = op_bytes(&op).max(1).min(MAX_BYTES_IN_FLIGHT as u64) as u32;
+                    let _permit = bytes_semaphore
+                        .acquire_many(weight)
+                        .await
+                        .expect("semáforo de bytes em trânsito nunca é fechado");
+                    self.execute_op(ctx, op).await
+                }
+            }))
+            .buffer_unordered(DRIVE_MAX_CONCURRENT_TRANSFERS)
+            .collect::<Vec<_>>()
+            .await;
 
             // Uma transação por categoria para todas as entradas sincronizadas
             // com sucesso, em vez de um `upsert` por arquivo transferido.

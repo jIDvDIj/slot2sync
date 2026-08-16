@@ -66,6 +66,11 @@ pub const DRIVE_MAX_RETRIES: u32 = 3;
 /// `send_with_retry` absorve eventuais 429/rateLimit com backoff.
 pub const DRIVE_MAX_CONCURRENT_TRANSFERS: usize = 6;
 
+/// Teto de bytes em trânsito simultaneamente numa categoria, além do limite
+/// de contagem acima — um savestate de 500 MB não deve ocupar a mesma "vaga"
+/// que um save de 1 KB e deixar memória/banda livres para os demais.
+pub const MAX_BYTES_IN_FLIGHT: u32 = 64 * 1024 * 1024;
+
 /// Acima deste tamanho o upload usa sessão resumable; abaixo, multipart — e o
 /// arquivo é elegível ao batch (a Batch API não suporta resumable).
 pub const DRIVE_SIMPLE_UPLOAD_MAX_BYTES: usize = 5 * 1024 * 1024;
