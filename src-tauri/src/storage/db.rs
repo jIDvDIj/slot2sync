@@ -189,6 +189,14 @@ const SCHEMA_V15: &str = "
 ALTER TABLE sync_manifest ADD COLUMN inaccessible INTEGER NOT NULL DEFAULT 0;
 ";
 
+/// v16 — remanescente sub-milissegundo (ns) do `local_mtime_ms` na âncora do
+/// manifest, quando o filesystem local oferece essa precisão. `0` = sem dado
+/// (entradas antigas, plataformas sem precisão sub-ms, ou âncora vinda de
+/// download). Ver `storage::manifest` e `sync::diff::system_time_subsec_ns_remainder`.
+const SCHEMA_V16: &str = "
+ALTER TABLE sync_manifest ADD COLUMN mtime_ns INTEGER NOT NULL DEFAULT 0;
+";
+
 /// Intervalo mínimo entre manutenções (7 dias) — não vale a pena rodar em
 /// todo shutdown, só quando o banco já cresceu o suficiente para o planner
 /// ficar desatualizado.
@@ -366,6 +374,10 @@ fn migrate(conn: &Connection) -> AppResult<()> {
     if version < 15 {
         conn.execute_batch(SCHEMA_V15)?;
         version = 15;
+    }
+    if version < 16 {
+        conn.execute_batch(SCHEMA_V16)?;
+        version = 16;
     }
     conn.pragma_update(None, "user_version", version)?;
 

@@ -21,6 +21,15 @@ pub struct LocalFile {
     /// Locador opaco do arquivo no armazenamento local (ver [`FileLoc`]).
     pub loc: FileLoc,
     pub mtime_ms: i64,
+    /// Remanescente sub-milissegundo do mtime (0..999_999 ns), quando o SO/
+    /// filesystem oferece essa precisão. `0` em plataformas que não oferecem
+    /// (mobile via SAF) ou quando o próprio mtime é `0`. Refina a detecção de
+    /// "arquivo tocado" em [`crate::sync::engine::SyncEngine::hash_touched_files`]
+    /// dentro da janela de tolerância de [`super::conflict::TIMESTAMP_TOLERANCE_MS`]
+    /// — duas escritas reais quase nunca compartilham o mesmo remanescente,
+    /// então ele distingue "conteúdo idêntico" de "escrita rápida sucessiva
+    /// que a tolerância de 2s teria mascarado".
+    pub mtime_ns: i64,
     #[allow(dead_code)]
     pub size_bytes: i64,
     /// SHA-256 (hex) do conteúdo atual. Calculado pelo engine SOMENTE quando o
@@ -91,10 +100,12 @@ fn walk(
         }
 
         let metadata = entry.metadata()?;
+        let modified = metadata.modified()?;
         out.push(LocalFile {
             rel_path,
             loc: FileLoc::from_path(path),
-            mtime_ms: system_time_ms(metadata.modified()?),
+            mtime_ms: system_time_ms(modified),
+            mtime_ns: system_time_subsec_ns_remainder(modified),
             size_bytes: metadata.len() as i64,
             hash: None,
         });
@@ -106,6 +117,16 @@ fn walk(
 pub fn system_time_ms(time: SystemTime) -> i64 {
     time.duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// Nanossegundos restantes dentro do milissegundo atual de `time` (0..999_999).
+/// Complementa [`system_time_ms`] com a precisão sub-milissegundo que o SO
+/// eventualmente oferece (ext4, NTFS) e que o `as_millis()` trunca.
+#[cfg_attr(not(desktop), allow(dead_code))]
+pub fn system_time_subsec_ns_remainder(time: SystemTime) -> i64 {
+    time.duration_since(UNIX_EPOCH)
+        .map(|d| (d.subsec_nanos() % 1_000_000) as i64)
         .unwrap_or(0)
 }
 
@@ -169,6 +190,7 @@ pub fn build_plan(
                 if file.hash.is_some() && file.hash == entry.file_hash {
                     let mut refreshed = entry.clone();
                     refreshed.local_mtime_ms = Some(file.mtime_ms);
+                    refreshed.mtime_ns = file.mtime_ns;
                     mtime_refreshes.push(refreshed);
                     skipped += 1;
                     continue;
@@ -213,11 +235,26 @@ mod tests {
 
     const T: i64 = 1_700_000_000_000;
 
+    #[test]
+    fn system_time_subsec_ns_remainder_extrai_so_o_resto_sub_ms() {
+        let t = UNIX_EPOCH + std::time::Duration::new(1_700_000_000, 123_456_789);
+        assert_eq!(system_time_ms(t), 1_700_000_000_123);
+        // 123_456_789 ns % 1_000_000 = 456_789 (resto dentro do milissegundo).
+        assert_eq!(system_time_subsec_ns_remainder(t), 456_789);
+    }
+
+    #[test]
+    fn system_time_subsec_ns_remainder_e_zero_em_fronteira_de_ms() {
+        let t = UNIX_EPOCH + std::time::Duration::new(1_700_000_000, 5_000_000);
+        assert_eq!(system_time_subsec_ns_remainder(t), 0);
+    }
+
     fn local_file(rel: &str, mtime: i64) -> LocalFile {
         LocalFile {
             rel_path: rel.to_string(),
             loc: FileLoc::from_path(PathBuf::from("/tmp").join(rel)),
             mtime_ms: mtime,
+            mtime_ns: 0,
             size_bytes: 100,
             hash: None,
         }
@@ -255,6 +292,7 @@ mod tests {
             file_hash: None,
             flags: 0,
             inaccessible: false,
+            mtime_ns: 0,
         }
     }
 

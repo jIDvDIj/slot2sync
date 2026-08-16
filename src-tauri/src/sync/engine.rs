@@ -737,12 +737,28 @@ impl<R: Runtime> SyncEngine<R> {
             .iter()
             .map(|e| (e.rel_path.as_str(), (&e.file_hash, e.local_mtime_ms)))
             .collect();
+        // Remanescente sub-ms da âncora, à parte para não mexer no padrão de
+        // desreferência acima. `0` = sem precisão sub-ms conhecida.
+        let ns_anchors: HashMap<&str, i64> = manifest
+            .iter()
+            .map(|e| (e.rel_path.as_str(), e.mtime_ns))
+            .collect();
 
         for file in &mut local {
             let Some((known_hash, Some(anchor))) = anchors.get(file.rel_path.as_str()) else {
                 continue;
             };
-            if known_hash.is_none() || (file.mtime_ms - anchor).abs() <= TIMESTAMP_TOLERANCE_MS {
+            if known_hash.is_none() {
+                continue;
+            }
+            let ms_within_tolerance = (file.mtime_ms - anchor).abs() <= TIMESTAMP_TOLERANCE_MS;
+            // Dentro da tolerância em ms, mas o remanescente sub-ms diverge de
+            // um valor conhecido dos dois lados: escrita real diferente que a
+            // tolerância de 2s teria mascarado (ex.: duas gravações do
+            // emulador a menos de 2s uma da outra).
+            let anchor_ns = ns_anchors.get(file.rel_path.as_str()).copied().unwrap_or(0);
+            let ns_disagrees = anchor_ns != 0 && file.mtime_ns != 0 && anchor_ns != file.mtime_ns;
+            if ms_within_tolerance && !ns_disagrees {
                 continue;
             }
             if let Ok(content) = self.storage.read(&file.loc).await {
@@ -873,6 +889,7 @@ impl<R: Runtime> SyncEngine<R> {
                         file_hash: Some(super::sha256_hex(&content)),
                         flags: 0,
                         inaccessible: false,
+                        mtime_ns: local.mtime_ns,
                     };
                     let (emu, old_rel) = (emulator.to_string(), orphan_rel);
                     let _ = self
@@ -1102,11 +1119,13 @@ impl<R: Runtime> SyncEngine<R> {
                 Ok(files) if files.len() == chunk.len() => {
                     for (p, uploaded) in chunk.iter().zip(files) {
                         let drive_mtime = uploaded.modified_ms;
+                        let local_mtime_ns = p.op.local.as_ref().map(|l| l.mtime_ns).unwrap_or(0);
                         synced.push(self.record_synced(
                             ctx,
                             &p.rel_path,
                             uploaded.id,
                             p.mtime_ms,
+                            local_mtime_ns,
                             drive_mtime,
                             p.size_bytes,
                             Some(p.content_hash.clone()),
@@ -1269,11 +1288,15 @@ impl<R: Runtime> SyncEngine<R> {
         };
 
         let drive_mtime = uploaded.modified_ms;
+        // Remanescente sub-ms do scan original — a estabilidade do arquivo já
+        // foi confirmada acima (mtime_before == mtime_after em ms).
+        let local_mtime_ns = local.mtime_ns;
         Ok(self.record_synced(
             ctx,
             &op.rel_path,
             uploaded.id,
             mtime_after,
+            local_mtime_ns,
             drive_mtime,
             size_bytes,
             Some(content_hash),
@@ -1406,6 +1429,8 @@ impl<R: Runtime> SyncEngine<R> {
             &op.rel_path,
             remote.id.clone(),
             drive_mtime.unwrap_or(0),
+            // Sem precisão sub-ms real: mtime local vem do modifiedTime remoto.
+            0,
             drive_mtime,
             size_bytes,
             Some(content_hash),
@@ -1516,12 +1541,17 @@ impl<R: Runtime> SyncEngine<R> {
     /// Monta a entrada do manifest para um upload/download bem-sucedido. Não
     /// grava no SQLite — quem chama coleta as entradas da categoria e grava
     /// em lote (ver `sync_target`), em vez de um `upsert` por arquivo.
+    /// `local_mtime_ns`: remanescente sub-ms do mtime local, quando a
+    /// chamada tiver um `LocalFile` fresco à mão (upload); `0` para download,
+    /// já que o mtime local nesse caso é derivado do `modifiedTime` remoto
+    /// (sem precisão sub-ms real).
     fn record_synced(
         &self,
         ctx: &CategoryCtx,
         rel_path: &str,
         remote_file_id: String,
         local_mtime_ms: i64,
+        local_mtime_ns: i64,
         remote_mtime_ms: Option<i64>,
         size_bytes: i64,
         file_hash: Option<String>,
@@ -1540,6 +1570,7 @@ impl<R: Runtime> SyncEngine<R> {
             // mais a esta versão do arquivo.
             flags: 0,
             inaccessible: false,
+            mtime_ns: local_mtime_ns,
         }
     }
 
@@ -1709,6 +1740,8 @@ impl<R: Runtime> SyncEngine<R> {
             // Conflito resolvido: a versão escolhida não está mais em conflito nem travada.
             flags: 0,
             inaccessible: false,
+            // Sem `LocalFile` fresco nesta trilha (leitura direta via `storage.read`).
+            mtime_ns: 0,
         };
         self.db
             .with(move |conn| manifest::upsert(conn, &entry))

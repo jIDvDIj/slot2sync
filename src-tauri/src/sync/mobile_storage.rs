@@ -232,6 +232,8 @@ impl<B: PluginBridge> LocalStorage for MobileStorage<B> {
                     }),
                     rel_path: e.rel,
                     mtime_ms: e.mtime_ms,
+                    // SAF (`DocumentsContract`) só expõe `lastModified` em ms.
+                    mtime_ns: 0,
                     size_bytes: e.size,
                     hash: None,
                 });

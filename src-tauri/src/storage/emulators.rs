@@ -230,6 +230,7 @@ mod tests {
                 file_hash: None,
                 flags: 0,
                 inaccessible: false,
+                mtime_ns: 0,
             },
         )
     }

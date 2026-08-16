@@ -33,6 +33,9 @@ pub struct ManifestEntry {
     /// em vez de entrar no backoff exponencial de `pending_ops`. Zerado no
     /// próximo sync bem-sucedido do arquivo.
     pub inaccessible: bool,
+    /// Remanescente sub-milissegundo (ns) de `local_mtime_ms`, quando
+    /// disponível. Ver `sync::diff::LocalFile::mtime_ns`.
+    pub mtime_ns: i64,
 }
 
 /// Conflito pendente para este arquivo (ver `storage::conflicts`).
@@ -49,7 +52,7 @@ pub const FLAG_HASH_MISMATCH: i64 = 8;
 
 const COLS: &str = "emulator, category, rel_path, remote_file_id, local_mtime_ms, \
                     remote_mtime_ms, size_bytes, last_synced_at_ms, file_hash, flags, \
-                    inaccessible";
+                    inaccessible, mtime_ns";
 
 fn from_row(row: &Row) -> rusqlite::Result<ManifestEntry> {
     let category_str: String = row.get(1)?;
@@ -72,6 +75,7 @@ fn from_row(row: &Row) -> rusqlite::Result<ManifestEntry> {
         file_hash: row.get(8)?,
         flags: row.get(9)?,
         inaccessible: row.get(10)?,
+        mtime_ns: row.get(11)?,
     })
 }
 
@@ -79,8 +83,8 @@ pub fn upsert(conn: &Connection, entry: &ManifestEntry) -> AppResult<()> {
     conn.prepare_cached(
         "INSERT OR REPLACE INTO sync_manifest (emulator, category, rel_path, remote_file_id, \
          local_mtime_ms, remote_mtime_ms, size_bytes, last_synced_at_ms, file_hash, flags, \
-         inaccessible) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+         inaccessible, mtime_ns) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
     )?
     .execute(params![
         entry.emulator,
@@ -94,6 +98,7 @@ pub fn upsert(conn: &Connection, entry: &ManifestEntry) -> AppResult<()> {
         entry.file_hash,
         entry.flags,
         entry.inaccessible,
+        entry.mtime_ns,
     ])?;
     Ok(())
 }
@@ -251,6 +256,7 @@ mod tests {
             file_hash: Some("ab".repeat(32)),
             flags: 0,
             inaccessible: false,
+            mtime_ns: 0,
         }
     }
 
@@ -264,6 +270,20 @@ mod tests {
             let loaded = get(conn, "PPSSPP", SyncCategory::Saves, "GAME123/SAVE.bin")?
                 .expect("entrada deveria existir");
             assert_eq!(loaded, entry);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn mtime_ns_sobrevive_ao_roundtrip() {
+        let db = Db::open_in_memory().unwrap();
+        db.with_sync(|conn| {
+            let mut entry = sample_entry();
+            entry.mtime_ns = 456_789;
+            upsert(conn, &entry)?;
+
+            let loaded = get(conn, "PPSSPP", SyncCategory::Saves, "GAME123/SAVE.bin")?.unwrap();
+            assert_eq!(loaded.mtime_ns, 456_789);
             Ok(())
         });
     }
