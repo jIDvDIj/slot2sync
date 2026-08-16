@@ -71,6 +71,15 @@ pub const DRIVE_MAX_CONCURRENT_TRANSFERS: usize = 6;
 /// que um save de 1 KB e deixar memória/banda livres para os demais.
 pub const MAX_BYTES_IN_FLIGHT: u32 = 64 * 1024 * 1024;
 
+/// Chamadas de rede (upload/download) simultâneas com o provedor remoto —
+/// separado do limite de I/O de disco (`MAX_DISK_WRITES`): são recursos
+/// diferentes, um não deveria esperar o outro.
+pub const MAX_NETWORK_OPS: usize = 4;
+/// Leituras/escritas de disco local simultâneas. Menor que `MAX_NETWORK_OPS`
+/// de propósito — em HDD, I/O paralelo demais vira thrashing de cabeça de
+/// leitura/escrita; sequencial (ou quase) é mais rápido.
+pub const MAX_DISK_WRITES: usize = 2;
+
 /// Acima deste tamanho o upload usa sessão resumable; abaixo, multipart — e o
 /// arquivo é elegível ao batch (a Batch API não suporta resumable).
 pub const DRIVE_SIMPLE_UPLOAD_MAX_BYTES: usize = 5 * 1024 * 1024;

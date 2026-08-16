@@ -23,7 +23,7 @@ use super::storage::{FileLoc, LocalStorage};
 use super::{SyncCategory, SyncDirection, SyncProgress, SyncTarget};
 use crate::constants::{
     DRIVE_BATCH_MAX_OPS, DRIVE_BATCH_MIN_OPS, DRIVE_MANIFEST_FILE, DRIVE_MAX_CONCURRENT_TRANSFERS,
-    DRIVE_SIMPLE_UPLOAD_MAX_BYTES, MAX_BYTES_IN_FLIGHT,
+    DRIVE_SIMPLE_UPLOAD_MAX_BYTES, MAX_BYTES_IN_FLIGHT, MAX_DISK_WRITES, MAX_NETWORK_OPS,
 };
 use crate::error::{AppError, AppResult};
 use crate::events::{
@@ -179,6 +179,15 @@ pub struct SyncEngine<R: Runtime = Wry> {
     /// O watcher de filesystem consulta para não reagir às próprias escritas
     /// do sync (anti-loop). Entradas expiram após `RECENT_DOWNLOAD_TTL_SECS`.
     recent_downloads: std::sync::Mutex<std::collections::HashMap<PathBuf, Instant>>,
+    /// Limita chamadas de rede simultâneas (upload/download com o provedor
+    /// remoto), separado do limite de I/O de disco — são recursos diferentes
+    /// e não faz sentido que uma escrita local lenta seja bloqueada por uma
+    /// chamada de API em andamento, nem o contrário.
+    network_ops: Semaphore,
+    /// Limita I/O de disco local simultâneo (leitura em `do_upload`, escrita
+    /// em `do_download`). Em HDD, escritas sequenciais são mais rápidas que
+    /// paralelas — um teto baixo evita thrashing de cabeça de leitura/escrita.
+    disk_io: Semaphore,
 }
 
 impl<R: Runtime> SyncEngine<R> {
@@ -206,6 +215,8 @@ impl<R: Runtime> SyncEngine<R> {
             secrets,
             running: Mutex::new(()),
             recent_downloads: std::sync::Mutex::new(std::collections::HashMap::new()),
+            network_ops: Semaphore::new(MAX_NETWORK_OPS),
+            disk_io: Semaphore::new(MAX_DISK_WRITES),
         }
     }
 
@@ -1279,39 +1290,54 @@ impl<R: Runtime> SyncEngine<R> {
             .as_ref()
             .ok_or_else(|| AppError::Other("upload planejado sem arquivo local".into()))?;
 
-        let mtime_before = self.storage.mtime_ms(&local.loc).await?;
-        let content = self.storage.read(&local.loc).await?;
-        let mtime_after = self.storage.mtime_ms(&local.loc).await?;
-        if mtime_before != mtime_after {
-            return Err(AppError::FileBusy(local.rel_path.clone()));
-        }
-
-        let (dir_part, file_name) = split_rel_path(&op.rel_path);
-        let parent_id = match dir_part {
-            Some(dir) => {
-                remote_provider
-                    .ensure_subpath(&ctx.folder_id, &ctx.folder_key, dir)
-                    .await?
+        let (content, mtime_after) = {
+            // I/O de disco local: teto separado do de rede abaixo (ver
+            // `disk_io`/`MAX_DISK_WRITES`) — em HDD, ler vários arquivos ao
+            // mesmo tempo é mais lento que ler em sequência.
+            let _permit = self.disk_io.acquire().await.expect("disk_io não fecha");
+            let mtime_before = self.storage.mtime_ms(&local.loc).await?;
+            let content = self.storage.read(&local.loc).await?;
+            let mtime_after = self.storage.mtime_ms(&local.loc).await?;
+            if mtime_before != mtime_after {
+                return Err(AppError::FileBusy(local.rel_path.clone()));
             }
-            None => ctx.folder_id.clone(),
+            (content, mtime_after)
         };
 
         let size_bytes = content.len() as i64;
         let content_hash = super::sha256_hex(&content);
-        let tag = DeviceTag {
-            name: ctx.device.as_deref(),
-            id: ctx.device_id.as_deref(),
-        };
-        let uploaded = match op.remote.as_ref() {
-            Some(existing) => {
-                remote_provider
-                    .upload_existing(&existing.id, content, mtime_after, tag)
-                    .await?
-            }
-            None => {
-                remote_provider
-                    .upload_new(&parent_id, file_name, content, mtime_after, tag)
-                    .await?
+        let uploaded = {
+            // Chamadas de rede: teto separado do de disco acima (ver
+            // `network_ops`/`MAX_NETWORK_OPS`).
+            let _permit = self
+                .network_ops
+                .acquire()
+                .await
+                .expect("network_ops não fecha");
+            let (dir_part, file_name) = split_rel_path(&op.rel_path);
+            let parent_id = match dir_part {
+                Some(dir) => {
+                    remote_provider
+                        .ensure_subpath(&ctx.folder_id, &ctx.folder_key, dir)
+                        .await?
+                }
+                None => ctx.folder_id.clone(),
+            };
+            let tag = DeviceTag {
+                name: ctx.device.as_deref(),
+                id: ctx.device_id.as_deref(),
+            };
+            match op.remote.as_ref() {
+                Some(existing) => {
+                    remote_provider
+                        .upload_existing(&existing.id, content, mtime_after, tag)
+                        .await?
+                }
+                None => {
+                    remote_provider
+                        .upload_new(&parent_id, file_name, content, mtime_after, tag)
+                        .await?
+                }
             }
         };
 
@@ -1417,7 +1443,14 @@ impl<R: Runtime> SyncEngine<R> {
             }
         }
 
-        let content = self.remote()?.download(&remote.id).await?;
+        let content = {
+            let _permit = self
+                .network_ops
+                .acquire()
+                .await
+                .expect("network_ops não fecha");
+            self.remote()?.download(&remote.id).await?
+        };
 
         // Verificação de integridade: o tamanho do que chegou precisa bater com
         // o que a listagem reportou. Divergência = transferência corrompida/
@@ -1435,21 +1468,27 @@ impl<R: Runtime> SyncEngine<R> {
             }
         }
 
-        // Versionamento: arquiva a versão local vigente ANTES de sobrescrever
-        // (só em downloads comuns — o primeiro sync já tem seu próprio backup
-        // dedicado). Best-effort: falha de arquivamento não bloqueia o sync,
-        // pois a versão anterior já esteve no provedor remoto em algum momento.
-        if op.action == SyncAction::Download {
-            self.archive_previous_version(ctx, op).await;
-        }
-
         // mtime local = mtime remoto, para o diff convergir.
         let drive_mtime = remote.modified_ms;
         let size_bytes = content.len() as i64;
         let content_hash = super::sha256_hex(&content);
-        self.storage
-            .write_atomic(&dest, &content, drive_mtime)
-            .await?;
+        {
+            // I/O de disco local: teto separado do de rede acima (ver
+            // `disk_io`/`MAX_DISK_WRITES`) — em HDD, escritas paralelas
+            // demais viram thrashing de cabeça de leitura/escrita.
+            let _permit = self.disk_io.acquire().await.expect("disk_io não fecha");
+            // Versionamento: arquiva a versão local vigente ANTES de
+            // sobrescrever (só em downloads comuns — o primeiro sync já tem
+            // seu próprio backup dedicado). Best-effort: falha de
+            // arquivamento não bloqueia o sync, pois a versão anterior já
+            // esteve no provedor remoto em algum momento.
+            if op.action == SyncAction::Download {
+                self.archive_previous_version(ctx, op).await;
+            }
+            self.storage
+                .write_atomic(&dest, &content, drive_mtime)
+                .await?;
+        }
         self.mark_recent_download(&dest);
 
         Ok(self.record_synced(
