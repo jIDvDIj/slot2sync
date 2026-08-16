@@ -159,6 +159,29 @@ pub trait LocalStorage: Send + Sync {
     }
 }
 
+/// `rename(tmp, dest)` com uma retentativa no Windows quando `dest` está
+/// marcado somente-leitura (herdado de um save trazido de outro sistema, ou
+/// atributo definido pelo próprio emulador) — o NTFS recusa sobrescrever um
+/// destino assim com `PermissionDenied`. Em outras plataformas o erro só é
+/// propagado; não há atributo somente-leitura equivalente bloqueando rename.
+#[cfg(desktop)]
+async fn rename_dest(tmp: &Path, dest: &Path) -> AppResult<()> {
+    match tokio::fs::rename(tmp, dest).await {
+        Ok(()) => Ok(()),
+        #[cfg(windows)]
+        Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
+            if let Ok(meta) = tokio::fs::metadata(dest).await {
+                let mut perms = meta.permissions();
+                perms.set_readonly(false);
+                let _ = tokio::fs::set_permissions(dest, perms).await;
+            }
+            tokio::fs::rename(tmp, dest).await?;
+            Ok(())
+        }
+        Err(err) => Err(err.into()),
+    }
+}
+
 /// `true` se `path` existe e é um diretório (não propaga erro — ausência,
 /// permissão negada ou "não é pasta" viram `false`).
 #[cfg(desktop)]
@@ -239,16 +262,44 @@ impl LocalStorage for DesktopStorage {
         mtime_ms: Option<i64>,
     ) -> AppResult<()> {
         let dest = require_path(dest)?;
-        if let Some(parent) = dest.parent() {
+        let parent = dest.parent();
+        if let Some(parent) = parent {
             tokio::fs::create_dir_all(parent).await?;
         }
+        // Preserva as permissões do arquivo substituído, se já existir (ex.:
+        // um save trazido de outro sistema com bits diferentes do padrão).
+        let existing_permissions = tokio::fs::metadata(dest)
+            .await
+            .ok()
+            .map(|m| m.permissions());
+
         // Gravação atômica: temp + rename evita save corrompido se cair no meio.
         let tmp = dest.with_file_name(format!(
             "{}{TMP_SUFFIX}",
             dest.file_name().unwrap_or_default().to_string_lossy()
         ));
         tokio::fs::write(&tmp, bytes).await?;
-        tokio::fs::rename(&tmp, dest).await?;
+        // fsync do conteúdo antes do rename: sem isso, o rename pode ficar
+        // durável no journal do filesystem antes dos dados do arquivo em si,
+        // e uma queda logo depois deixaria o destino apontando para um
+        // arquivo truncado/vazio.
+        tokio::fs::File::open(&tmp).await?.sync_all().await?;
+
+        if let Some(permissions) = existing_permissions {
+            let _ = tokio::fs::set_permissions(&tmp, permissions).await;
+        }
+
+        rename_dest(&tmp, dest).await?;
+
+        // fsync do diretório pai: garante que a entrada renomeada sobrevive a
+        // uma queda logo após o rename. Best-effort e só em Unix — abrir um
+        // diretório como arquivo não é suportado pela API padrão no Windows.
+        #[cfg(unix)]
+        if let Some(parent) = parent {
+            if let Ok(dir) = tokio::fs::File::open(parent).await {
+                let _ = dir.sync_all().await;
+            }
+        }
 
         if let Some(ms) = mtime_ms {
             let ft =
@@ -344,6 +395,26 @@ mod tests {
         assert_eq!(s.mtime_ms(&dest).await.unwrap(), 1_700_000_000_000);
         // Não deixa o temporário para trás.
         assert!(!tmp.path().join("sub/dir/save.bin.slot2sync-tmp").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn write_atomic_preserva_permissoes_do_arquivo_substituido() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let s = DesktopStorage;
+        let dest = FileLoc::from_path(tmp.path().join("save.bin"));
+
+        s.write_atomic(&dest, b"v1", None).await.unwrap();
+        let path = dest.as_path().unwrap().to_path_buf();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+
+        s.write_atomic(&dest, b"v2 maior", None).await.unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o640);
+        assert_eq!(s.read(&dest).await.unwrap(), b"v2 maior");
     }
 
     #[tokio::test]
