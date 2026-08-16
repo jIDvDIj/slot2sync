@@ -663,3 +663,50 @@ async fn direcao_drive_to_local_baixa_sem_subir() {
     );
     assert_eq!(h.read_local("remoto.bin"), b"desce");
 }
+
+/// Sem provedor configurado (`set_remote_provider(None)`), `sync_all` falha
+/// de forma limpa com um erro tipado — os gatilhos automáticos (startup/
+/// watcher) sabem tratar isso sem crashar, só logam/pulam.
+#[tokio::test]
+async fn sync_sem_provedor_configurado_falha_limpo() {
+    let h = Harness::new().await;
+    h.engine.set_remote_provider(None);
+
+    let err = h
+        .engine
+        .sync_all(SyncDirection::Bidirectional, "teste")
+        .await
+        .unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        matches!(err, crate::error::AppError::Auth(_)) && msg.contains("nenhum provedor"),
+        "erro inesperado: {msg}"
+    );
+}
+
+/// Trocar o provedor em runtime via `set_remote_provider` é efetivo
+/// imediatamente — o sync seguinte já opera contra o novo provedor, sem
+/// reiniciar o engine/app.
+#[tokio::test]
+async fn set_remote_provider_troca_o_provedor_ativo_sem_restart() {
+    let h = Harness::new().await;
+    h.seed_remote("a.bin", b"do-provedor-antigo", T, None);
+    h.sync().await;
+    assert_eq!(h.read_local("a.bin"), b"do-provedor-antigo");
+
+    let novo_drive = Arc::new(MockDrive::new());
+    novo_drive.seed_category_file(
+        EMU,
+        SyncCategory::Saves,
+        "b.bin",
+        b"do-provedor-novo",
+        T,
+        None,
+    );
+    h.engine
+        .set_remote_provider(Some(novo_drive.clone() as Arc<dyn RemoteProvider>));
+
+    let summary = h.sync().await;
+    assert_eq!(summary.downloaded, 1, "baixa b.bin do provedor novo");
+    assert_eq!(h.read_local("b.bin"), b"do-provedor-novo");
+}
