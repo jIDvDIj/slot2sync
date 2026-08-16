@@ -348,9 +348,16 @@ pub fn run() {
 
 /// Logs em stdout (dev) e em arquivo diário no diretório de logs do app
 /// (`%LOCALAPPDATA%/com.slot2sync.app/logs` no Windows).
+/// Dias de retenção dos arquivos de log rotacionados (`prune_old_logs`).
+/// Fixo por ora — mesmo racional de outras constantes de retenção do app que
+/// não viraram configuração de usuário (evita expandir a boundary IPC por uma
+/// issue de manutenção interna).
+const LOG_RETENTION_DAYS: u32 = 7;
+
 fn init_logging(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let log_dir = locations::AppPath::LogDir.resolve(app)?;
     std::fs::create_dir_all(&log_dir)?;
+    prune_old_logs(&log_dir, LOG_RETENTION_DAYS);
     let file_appender = tracing_appender::rolling::daily(&log_dir, "slot2sync.log");
 
     tracing_subscriber::registry()
@@ -360,4 +367,68 @@ fn init_logging(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>
         .init();
 
     Ok(())
+}
+
+/// Remove de `log_dir` os arquivos de log (rotação diária do
+/// `tracing-appender`) cujo mtime é mais antigo que `retention_days` — sem
+/// isso, o diretório de logs cresce indefinidamente ao longo do uso do app.
+/// Roda antes do subscriber ser inicializado, então erros aqui só vão para
+/// stderr (não há `tracing` disponível ainda).
+fn prune_old_logs(log_dir: &std::path::Path, retention_days: u32) {
+    let cutoff = std::time::SystemTime::now()
+        .checked_sub(std::time::Duration::from_secs(
+            u64::from(retention_days) * 24 * 60 * 60,
+        ))
+        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+
+    let Ok(entries) = std::fs::read_dir(log_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let is_old_log = entry.file_type().is_ok_and(|t| t.is_file())
+            && entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .is_ok_and(|modified| modified < cutoff);
+        if is_old_log {
+            if let Err(err) = std::fs::remove_file(entry.path()) {
+                eprintln!(
+                    "falha ao remover log antigo {}: {err}",
+                    entry.path().display()
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod prune_old_logs_tests {
+    use super::prune_old_logs;
+
+    fn touch_with_age(path: &std::path::Path, days_old: u64) {
+        std::fs::write(path, b"log").unwrap();
+        let old_time = filetime::FileTime::from_system_time(
+            std::time::SystemTime::now() - std::time::Duration::from_secs(days_old * 24 * 60 * 60),
+        );
+        filetime::set_file_mtime(path, old_time).unwrap();
+    }
+
+    #[test]
+    fn remove_apenas_logs_mais_antigos_que_a_retencao() {
+        let tmp = tempfile::tempdir().unwrap();
+        let old_log = tmp.path().join("slot2sync.log.2020-01-01");
+        let recent_log = tmp.path().join("slot2sync.log.2026-01-01");
+        touch_with_age(&old_log, 30);
+        touch_with_age(&recent_log, 1);
+
+        prune_old_logs(tmp.path(), 7);
+
+        assert!(!old_log.exists());
+        assert!(recent_log.exists());
+    }
+
+    #[test]
+    fn diretorio_ausente_nao_causa_panico() {
+        prune_old_logs(std::path::Path::new("/nao/existe/mesmo"), 7);
+    }
 }
