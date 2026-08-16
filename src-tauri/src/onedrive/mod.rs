@@ -523,4 +523,367 @@ mod tests {
         assert_eq!(tree.len(), 1);
         assert_eq!(tree[0].rel_path, "save.bin");
     }
+
+    #[tokio::test]
+    async fn ensure_root_e_no_op_e_retorna_caminho_vazio() {
+        // A approot já existe por definição — não faz nenhuma chamada HTTP.
+        let server = MockServer::start().await;
+        let client = client_against(&server).await;
+        assert_eq!(client.ensure_root().await.unwrap(), "");
+    }
+
+    #[tokio::test]
+    async fn ensure_category_folder_cria_emulador_e_categoria() {
+        let server = MockServer::start().await;
+        let client = client_against(&server).await;
+
+        Mock::given(method("GET"))
+            .and(path_regex(r".*/approot.*"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/children$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "id:folder", "name": "saves", "folder": {},
+            })))
+            .mount(&server)
+            .await;
+
+        let category_path = client
+            .ensure_category_folder("PPSSPP", SyncCategory::Saves)
+            .await
+            .unwrap();
+        assert_eq!(category_path, "PPSSPP/saves");
+    }
+
+    #[tokio::test]
+    async fn ensure_folder_tolera_corrida_de_criacao() {
+        let server = MockServer::start().await;
+        let client = client_against(&server).await;
+
+        Mock::given(method("GET"))
+            .and(path_regex(r".*/approot.*"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/children$"))
+            .respond_with(
+                ResponseTemplate::new(409).set_body_string(
+                    r#"{"error": {"code": "nameAlreadyExists", "message": "..."}}"#,
+                ),
+            )
+            .mount(&server)
+            .await;
+
+        let category_path = client
+            .ensure_category_folder("PPSSPP", SyncCategory::Saves)
+            .await
+            .unwrap();
+        assert_eq!(category_path, "PPSSPP/saves");
+    }
+
+    #[tokio::test]
+    async fn ensure_subpath_cria_a_cadeia_de_subpastas() {
+        let server = MockServer::start().await;
+        let client = client_against(&server).await;
+
+        Mock::given(method("GET"))
+            .and(path_regex(r".*/approot.*"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/children$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "id:folder", "name": "x", "folder": {},
+            })))
+            .mount(&server)
+            .await;
+
+        let leaf = client
+            .ensure_subpath("PPSSPP/saves", "", "jogo/slot1")
+            .await
+            .unwrap();
+        assert_eq!(leaf, "PPSSPP/saves/jogo/slot1");
+    }
+
+    #[tokio::test]
+    async fn find_child_retorna_none_quando_nao_encontrado() {
+        let server = MockServer::start().await;
+        let client = client_against(&server).await;
+
+        Mock::given(method("GET"))
+            .and(path_regex(r".*/approot.*"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        let found = client.find_child("PPSSPP/saves", "save.bin").await.unwrap();
+        assert!(found.is_none());
+    }
+
+    #[tokio::test]
+    async fn find_child_ignora_pastas_com_o_mesmo_nome() {
+        let server = MockServer::start().await;
+        let client = client_against(&server).await;
+
+        Mock::given(method("GET"))
+            .and(path_regex(r".*/approot.*"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "id:folder1", "name": "jogo", "folder": {},
+            })))
+            .mount(&server)
+            .await;
+
+        let found = client.find_child("PPSSPP/saves", "jogo").await.unwrap();
+        assert!(found.is_none());
+    }
+
+    #[tokio::test]
+    async fn find_child_retorna_o_arquivo_quando_encontrado() {
+        let server = MockServer::start().await;
+        let client = client_against(&server).await;
+
+        Mock::given(method("GET"))
+            .and(path_regex(r".*/approot.*"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "id:file1", "name": "save.bin", "size": 10,
+            })))
+            .mount(&server)
+            .await;
+
+        let found = client
+            .find_child("PPSSPP/saves", "save.bin")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.id, "id:file1");
+        assert_eq!(found.rel_path, "save.bin");
+    }
+
+    #[tokio::test]
+    async fn upload_existing_atualiza_conteudo_e_mtime() {
+        let server = MockServer::start().await;
+        let client = client_against(&server).await;
+
+        Mock::given(method("PUT"))
+            .and(path_regex(r".*/content$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "id:file1", "name": "save.bin", "size": 6,
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("PATCH"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "id:file1",
+                "name": "save.bin",
+                "size": 6,
+                "fileSystemInfo": {"lastModifiedDateTime": "2023-11-14T22:13:20Z"},
+            })))
+            .mount(&server)
+            .await;
+
+        let file = client
+            .upload_existing(
+                "PPSSPP/saves/save.bin",
+                b"novos!".to_vec(),
+                1_700_000_000_000,
+                DeviceTag::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(file.id, "id:file1");
+        assert_eq!(file.modified_ms, Some(1_700_000_000_000));
+    }
+
+    #[tokio::test]
+    async fn upload_new_com_device_tag_atualiza_o_indice_sem_erro() {
+        let server = MockServer::start().await;
+        let client = client_against(&server).await;
+
+        Mock::given(method("PUT"))
+            .and(path_regex(r".*/content$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "id:new1", "name": "save.bin", "size": 5,
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("PATCH"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "id:new1", "name": "save.bin", "size": 5,
+            })))
+            .mount(&server)
+            .await;
+        // `stamp_device` primeiro tenta baixar o índice existente.
+        Mock::given(method("GET"))
+            .and(path_regex(r".*/content$"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        let file = client
+            .upload_new(
+                "PPSSPP/saves",
+                "save.bin",
+                b"dados".to_vec(),
+                1_700_000_000_000,
+                DeviceTag {
+                    name: Some("PC-1"),
+                    id: Some("dev-1"),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(file.id, "id:new1");
+    }
+
+    #[tokio::test]
+    async fn upload_batch_envia_cada_item_e_preserva_a_ordem() {
+        let server = MockServer::start().await;
+        let client = client_against(&server).await;
+
+        Mock::given(method("PUT"))
+            .and(path_regex(r".*/content$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "id:batch", "name": "x", "size": 1,
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("PATCH"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "id:batch", "name": "x", "size": 1,
+            })))
+            .mount(&server)
+            .await;
+
+        let ops = vec![
+            BatchUploadOp {
+                parent_id: "PPSSPP/saves".into(),
+                name: "a.bin".into(),
+                content: b"a".to_vec(),
+                mtime_ms: 1,
+                device_name: None,
+                device_id: None,
+            },
+            BatchUploadOp {
+                parent_id: "PPSSPP/saves".into(),
+                name: "b.bin".into(),
+                content: b"b".to_vec(),
+                mtime_ms: 2,
+                device_name: None,
+                device_id: None,
+            },
+        ];
+        let files = client.upload_batch(ops).await.unwrap();
+        assert_eq!(files.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn rename_file_atualiza_o_indice_e_devolve_o_novo_nome() {
+        let server = MockServer::start().await;
+        let client = client_against(&server).await;
+
+        Mock::given(method("PATCH"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "id:renamed", "name": "save2.bin", "size": 5,
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path_regex(r".*/content$"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path_regex(r".*/content$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "id:index", "name": INDEX_FILE_NAME, "size": 2,
+            })))
+            .mount(&server)
+            .await;
+
+        let file = client
+            .rename_file("PPSSPP/saves/save.bin", "save2.bin", None, None)
+            .await
+            .unwrap();
+        assert_eq!(file.id, "id:renamed");
+        assert_eq!(file.rel_path, "save2.bin");
+    }
+
+    #[test]
+    fn ms_to_rfc3339_formata_timestamp_em_utc() {
+        assert_eq!(ms_to_rfc3339(1_700_000_000_000), "2023-11-14T22:13:20Z");
+    }
+
+    fn item(
+        folder: bool,
+        fsi: Option<FileSystemInfo>,
+        parent: Option<ParentReference>,
+    ) -> GraphItem {
+        GraphItem {
+            id: "id:1".into(),
+            name: "save.bin".into(),
+            size: Some(10),
+            folder: folder.then(|| serde_json::json!({})),
+            file_system_info: fsi,
+            hashes: None,
+            parent_reference: parent,
+        }
+    }
+
+    #[test]
+    fn graph_item_is_folder_reflete_o_campo_folder() {
+        assert!(!item(false, None, None).is_folder());
+        assert!(item(true, None, None).is_folder());
+    }
+
+    #[test]
+    fn graph_item_modified_ms_le_o_file_system_info() {
+        assert_eq!(item(false, None, None).modified_ms(), None);
+        let with_fsi = item(
+            false,
+            Some(FileSystemInfo {
+                last_modified_date_time: Some("2023-11-14T22:13:20Z".into()),
+            }),
+            None,
+        );
+        assert_eq!(with_fsi.modified_ms(), Some(1_700_000_000_000));
+    }
+
+    #[test]
+    fn graph_item_path_key_none_sem_parent_reference() {
+        assert_eq!(item(false, None, None).path_key(), None);
+    }
+
+    #[test]
+    fn graph_item_path_key_reconstroi_o_caminho_quando_o_marcador_approot_esta_presente() {
+        let with_parent = item(
+            false,
+            None,
+            Some(ParentReference {
+                path: Some("/drive/special/approot:/PPSSPP/saves".into()),
+            }),
+        );
+        assert_eq!(
+            with_parent.path_key().as_deref(),
+            Some("PPSSPP/saves/save.bin")
+        );
+    }
+
+    #[test]
+    fn graph_item_path_key_degrada_para_o_nome_sem_o_marcador_approot() {
+        // Comportamento real observado (ver `list_tree_ignora_o_indice_de_dispositivo`):
+        // quando o path do Graph não contém "approot" literalmente, a função
+        // degrada para só o nome do item.
+        let with_parent = item(
+            false,
+            None,
+            Some(ParentReference {
+                path: Some("/drive/root:/Aplicativos/Slot2Sync/PPSSPP/saves".into()),
+            }),
+        );
+        assert_eq!(with_parent.path_key().as_deref(), Some("save.bin"));
+    }
 }
