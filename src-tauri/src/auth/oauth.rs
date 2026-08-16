@@ -222,22 +222,7 @@ pub async fn authorize_interactive(
     let port = listener.local_addr()?.port();
     let redirect_uri = format!("http://{LOOPBACK_HOST}:{port}");
 
-    let mut auth_url = url::Url::parse(&config.auth_endpoint)
-        .map_err(|e| AppError::Auth(format!("URL de autorização inválida: {e}")))?;
-    {
-        let mut query = auth_url.query_pairs_mut();
-        query
-            .append_pair("client_id", &config.client_id)
-            .append_pair("redirect_uri", &redirect_uri)
-            .append_pair("response_type", "code")
-            .append_pair("scope", &config.scope)
-            .append_pair("code_challenge", &pkce.challenge)
-            .append_pair("code_challenge_method", "S256")
-            .append_pair("state", &state);
-        for (key, value) in config.extra_auth_params {
-            query.append_pair(key, value);
-        }
-    }
+    let auth_url = build_auth_url(config, &redirect_uri, &pkce.challenge, &state)?;
 
     open::that_detached(auth_url.as_str())
         .map_err(|e| AppError::Auth(format!("não foi possível abrir o navegador: {e}")))?;
@@ -281,22 +266,7 @@ pub async fn authorize_interactive_mobile<R: tauri::Runtime>(
     let pkce = generate_pkce();
     let state = random_state();
 
-    let mut auth_url = url::Url::parse(&config.auth_endpoint)
-        .map_err(|e| AppError::Auth(format!("URL de autorização inválida: {e}")))?;
-    {
-        let mut query = auth_url.query_pairs_mut();
-        query
-            .append_pair("client_id", &config.client_id)
-            .append_pair("redirect_uri", &redirect_uri)
-            .append_pair("response_type", "code")
-            .append_pair("scope", &config.scope)
-            .append_pair("code_challenge", &pkce.challenge)
-            .append_pair("code_challenge_method", "S256")
-            .append_pair("state", &state);
-        for (key, value) in config.extra_auth_params {
-            query.append_pair(key, value);
-        }
-    }
+    let auth_url = build_auth_url(config, &redirect_uri, &pkce.challenge, &state)?;
 
     app.opener()
         .open_url(auth_url.as_str(), None::<&str>)
@@ -339,6 +309,35 @@ pub async fn authorize_interactive_mobile<R: tauri::Runtime>(
     let code = code.ok_or_else(|| AppError::Auth("deep link sem authorization code".into()))?;
 
     exchange_code(http, config, &code, &pkce.verifier, &redirect_uri).await
+}
+
+/// Monta a URL de consentimento OAuth2+PKCE, com os parâmetros extras de cada
+/// provedor (ver `OAuthConfig::extra_auth_params`). Compartilhada pelas
+/// variantes desktop e mobile de `authorize_interactive*` — só a origem do
+/// `redirect_uri` (loopback local vs. Worker) muda entre elas.
+fn build_auth_url(
+    config: &OAuthConfig,
+    redirect_uri: &str,
+    challenge: &str,
+    state: &str,
+) -> AppResult<url::Url> {
+    let mut auth_url = url::Url::parse(&config.auth_endpoint)
+        .map_err(|e| AppError::Auth(format!("URL de autorização inválida: {e}")))?;
+    {
+        let mut query = auth_url.query_pairs_mut();
+        query
+            .append_pair("client_id", &config.client_id)
+            .append_pair("redirect_uri", redirect_uri)
+            .append_pair("response_type", "code")
+            .append_pair("scope", &config.scope)
+            .append_pair("code_challenge", challenge)
+            .append_pair("code_challenge_method", "S256")
+            .append_pair("state", state);
+        for (key, value) in config.extra_auth_params {
+            query.append_pair(key, value);
+        }
+    }
+    Ok(auth_url)
 }
 
 /// Aceita conexões no listener até receber o redirect do OAuth (ignorando
@@ -656,12 +655,155 @@ mod tests {
     }
 
     #[test]
+    fn build_auth_url_inclui_pkce_state_e_parametros_extras() {
+        let config = OAuthConfig {
+            client_id: "client-teste".into(),
+            auth_endpoint: DROPBOX_AUTH_ENDPOINT.to_string(),
+            token_endpoint: DROPBOX_TOKEN_ENDPOINT.to_string(),
+            scope: DROPBOX_SCOPE.to_string(),
+            userinfo: UserinfoStrategy::DropboxAccount,
+            token_proxy_url: None,
+            proxy_secret: None,
+            client_secret: None,
+            extra_auth_params: &[("token_access_type", "offline")],
+        };
+        let url = build_auth_url(
+            &config,
+            "http://127.0.0.1:9999",
+            "challenge-xyz",
+            "state-abc",
+        )
+        .unwrap();
+
+        let pairs: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();
+        assert_eq!(pairs.get("client_id").unwrap(), "client-teste");
+        assert_eq!(pairs.get("redirect_uri").unwrap(), "http://127.0.0.1:9999");
+        assert_eq!(pairs.get("response_type").unwrap(), "code");
+        assert_eq!(pairs.get("scope").unwrap(), DROPBOX_SCOPE);
+        assert_eq!(pairs.get("code_challenge").unwrap(), "challenge-xyz");
+        assert_eq!(pairs.get("code_challenge_method").unwrap(), "S256");
+        assert_eq!(pairs.get("state").unwrap(), "state-abc");
+        assert_eq!(pairs.get("token_access_type").unwrap(), "offline");
+    }
+
+    #[test]
+    fn build_auth_url_rejeita_endpoint_invalido() {
+        let config = OAuthConfig {
+            client_id: "x".into(),
+            auth_endpoint: "://endpoint-invalido".into(),
+            token_endpoint: "://endpoint-invalido".into(),
+            scope: "x".into(),
+            userinfo: UserinfoStrategy::GoogleOidc,
+            token_proxy_url: None,
+            proxy_secret: None,
+            client_secret: None,
+            extra_auth_params: &[],
+        };
+        let err = build_auth_url(&config, "http://127.0.0.1:1", "c", "s").unwrap_err();
+        assert!(matches!(err, AppError::Auth(msg) if msg.contains("URL de autorização inválida")));
+    }
+
+    #[test]
     fn random_state_gera_valores_unicos_com_tamanho_esperado() {
         let a = random_state();
         let b = random_state();
         assert_ne!(a, b);
         // 32 bytes em base64url sem padding = 43 caracteres.
         assert_eq!(a.len(), 43);
+    }
+
+    /// `option_env!` embute em build-time (via `.env`, ver `build.rs`); o
+    /// `.env` deste repo não define `SLOT2SYNC_*`, então em qualquer ambiente
+    /// de teste normal esses testes exercitam o fallback `std::env::var` em
+    /// runtime. Cada teste só toca as env vars do seu próprio provedor —
+    /// nomes não se sobrepõem entre testes, então rodar em paralelo é seguro.
+    #[test]
+    fn from_env_google_le_proxy_e_client_secret_da_env_var_de_runtime() {
+        use crate::remote::ProviderKind;
+
+        std::env::remove_var("SLOT2SYNC_GOOGLE_CLIENT_ID");
+        std::env::remove_var("SLOT2SYNC_TOKEN_PROXY_URL");
+        std::env::remove_var("SLOT2SYNC_PROXY_SECRET");
+        std::env::remove_var("SLOT2SYNC_GOOGLE_CLIENT_SECRET");
+        assert!(OAuthConfig::from_env(ProviderKind::GoogleDrive).is_none());
+
+        std::env::set_var("SLOT2SYNC_GOOGLE_CLIENT_ID", "google-client-teste");
+        std::env::set_var("SLOT2SYNC_TOKEN_PROXY_URL", "https://proxy.teste");
+        std::env::set_var("SLOT2SYNC_PROXY_SECRET", "s3gredo");
+        std::env::set_var("SLOT2SYNC_GOOGLE_CLIENT_SECRET", "client-secret-dev");
+        let config = OAuthConfig::from_env(ProviderKind::GoogleDrive).unwrap();
+        assert_eq!(config.client_id, "google-client-teste");
+        assert_eq!(config.auth_endpoint, GOOGLE_AUTH_ENDPOINT);
+        assert_eq!(config.token_endpoint, GOOGLE_TOKEN_ENDPOINT);
+        assert_eq!(config.scope, GOOGLE_SCOPE);
+        assert!(matches!(config.userinfo, UserinfoStrategy::GoogleOidc));
+        assert_eq!(
+            config.token_proxy_url.as_deref(),
+            Some("https://proxy.teste")
+        );
+        assert_eq!(config.proxy_secret.as_deref(), Some("s3gredo"));
+        assert_eq!(config.client_secret.as_deref(), Some("client-secret-dev"));
+        assert_eq!(
+            config.extra_auth_params,
+            &[("access_type", "offline"), ("prompt", "consent")]
+        );
+
+        std::env::remove_var("SLOT2SYNC_GOOGLE_CLIENT_ID");
+        std::env::remove_var("SLOT2SYNC_TOKEN_PROXY_URL");
+        std::env::remove_var("SLOT2SYNC_PROXY_SECRET");
+        std::env::remove_var("SLOT2SYNC_GOOGLE_CLIENT_SECRET");
+    }
+
+    #[test]
+    fn from_env_dropbox_usa_env_var_de_runtime_como_fallback() {
+        use crate::remote::ProviderKind;
+
+        std::env::remove_var("SLOT2SYNC_DROPBOX_CLIENT_ID");
+        std::env::remove_var("SLOT2SYNC_DROPBOX_TOKEN_PROXY_URL");
+        assert!(OAuthConfig::from_env(ProviderKind::Dropbox).is_none());
+
+        std::env::set_var("SLOT2SYNC_DROPBOX_CLIENT_ID", "dropbox-client-teste");
+        std::env::set_var("SLOT2SYNC_DROPBOX_TOKEN_PROXY_URL", "https://proxy.teste");
+        let config = OAuthConfig::from_env(ProviderKind::Dropbox).unwrap();
+        assert_eq!(config.client_id, "dropbox-client-teste");
+        assert_eq!(config.token_endpoint, DROPBOX_TOKEN_ENDPOINT);
+        assert_eq!(config.scope, DROPBOX_SCOPE);
+        assert!(matches!(config.userinfo, UserinfoStrategy::DropboxAccount));
+        assert_eq!(
+            config.token_proxy_url.as_deref(),
+            Some("https://proxy.teste")
+        );
+        assert!(config.client_secret.is_none());
+        assert!(config.proxy_secret.is_none());
+
+        std::env::remove_var("SLOT2SYNC_DROPBOX_CLIENT_ID");
+        std::env::remove_var("SLOT2SYNC_DROPBOX_TOKEN_PROXY_URL");
+    }
+
+    #[test]
+    fn from_env_onedrive_usa_env_var_de_runtime_como_fallback() {
+        use crate::remote::ProviderKind;
+
+        std::env::remove_var("SLOT2SYNC_ONEDRIVE_CLIENT_ID");
+        assert!(OAuthConfig::from_env(ProviderKind::OneDrive).is_none());
+
+        std::env::set_var("SLOT2SYNC_ONEDRIVE_CLIENT_ID", "onedrive-client-teste");
+        let config = OAuthConfig::from_env(ProviderKind::OneDrive).unwrap();
+        assert_eq!(config.client_id, "onedrive-client-teste");
+        assert_eq!(config.token_endpoint, MICROSOFT_TOKEN_ENDPOINT);
+        assert_eq!(config.scope, MICROSOFT_SCOPE);
+        assert!(matches!(config.userinfo, UserinfoStrategy::MicrosoftGraph));
+        assert!(config.extra_auth_params.is_empty());
+
+        std::env::remove_var("SLOT2SYNC_ONEDRIVE_CLIENT_ID");
+    }
+
+    #[test]
+    fn from_env_local_folder_e_sempre_none() {
+        use crate::remote::ProviderKind;
+
+        // Não usa OAuth — nenhuma env var faz diferença.
+        assert!(OAuthConfig::from_env(ProviderKind::LocalFolder).is_none());
     }
 
     #[tokio::test]
@@ -787,6 +929,110 @@ mod tests {
                 client_secret: None,
                 extra_auth_params: &[],
             }
+        }
+
+        /// Sem `token_proxy_url`: bate direto no `token_endpoint` do provedor,
+        /// como Dropbox/OneDrive fazem em produção (PKCE puro, sem Worker).
+        fn direct_config(token_endpoint: &str, client_secret: Option<&str>) -> OAuthConfig {
+            OAuthConfig {
+                client_id: "client-teste".into(),
+                auth_endpoint: DROPBOX_AUTH_ENDPOINT.to_string(),
+                token_endpoint: token_endpoint.to_string(),
+                scope: DROPBOX_SCOPE.to_string(),
+                userinfo: UserinfoStrategy::DropboxAccount,
+                token_proxy_url: None,
+                proxy_secret: None,
+                client_secret: client_secret.map(str::to_string),
+                extra_auth_params: &[],
+            }
+        }
+
+        #[tokio::test]
+        async fn exchange_code_direto_sem_proxy_retorna_tokens() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/oauth2/token"))
+                .and(body_string_contains("grant_type=authorization_code"))
+                .and(body_string_contains("code=auth-code"))
+                .and(body_string_contains("code_verifier=verifier-xyz"))
+                .and(body_string_contains("client_id=client-teste"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "access_token": "tok-direto",
+                    "expires_in": 3600,
+                    "refresh_token": "refresh-direto",
+                })))
+                .mount(&server)
+                .await;
+
+            let config = direct_config(&format!("{}/oauth2/token", server.uri()), None);
+            let http = reqwest::Client::new();
+            let tokens = exchange_code(
+                &http,
+                &config,
+                "auth-code",
+                "verifier-xyz",
+                "http://127.0.0.1:9999",
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(tokens.access_token, "tok-direto");
+            assert_eq!(tokens.refresh_token.as_deref(), Some("refresh-direto"));
+        }
+
+        #[tokio::test]
+        async fn exchange_code_direto_inclui_client_secret_quando_configurado() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/oauth2/token"))
+                .and(body_string_contains("client_secret=segredo-dev"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "access_token": "tok-com-secret",
+                    "expires_in": 3600,
+                })))
+                .mount(&server)
+                .await;
+
+            let config = direct_config(
+                &format!("{}/oauth2/token", server.uri()),
+                Some("segredo-dev"),
+            );
+            let http = reqwest::Client::new();
+            exchange_code(
+                &http,
+                &config,
+                "auth-code",
+                "verifier-xyz",
+                "http://redirect",
+            )
+            .await
+            .unwrap();
+        }
+
+        #[tokio::test]
+        async fn exchange_code_direto_propaga_erro_http() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/oauth2/token"))
+                .respond_with(ResponseTemplate::new(400).set_body_string("invalid_grant"))
+                .mount(&server)
+                .await;
+
+            let config = direct_config(&format!("{}/oauth2/token", server.uri()), None);
+            let http = reqwest::Client::new();
+            let err = exchange_code(
+                &http,
+                &config,
+                "auth-code",
+                "verifier-xyz",
+                "http://redirect",
+            )
+            .await
+            .unwrap_err();
+
+            assert!(
+                matches!(err, AppError::Auth(msg) if msg.contains("400") && msg.contains("invalid_grant"))
+            );
         }
 
         #[tokio::test]
@@ -935,6 +1181,29 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn refresh_access_token_direto_sem_proxy_retorna_tokens() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/oauth2/token"))
+                .and(body_string_contains("grant_type=refresh_token"))
+                .and(body_string_contains("refresh_token=refresh-xyz"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "access_token": "tok-refresh-direto",
+                    "expires_in": 3600,
+                })))
+                .mount(&server)
+                .await;
+
+            let config = direct_config(&format!("{}/oauth2/token", server.uri()), None);
+            let http = reqwest::Client::new();
+            let tokens = refresh_access_token(&http, &config, "refresh-xyz")
+                .await
+                .unwrap();
+
+            assert_eq!(tokens.access_token, "tok-refresh-direto");
+        }
+
+        #[tokio::test]
         async fn fetch_user_email_at_retorna_email_quando_sucesso() {
             let server = MockServer::start().await;
             Mock::given(method("GET"))
@@ -986,6 +1255,106 @@ mod tests {
             let http = reqwest::Client::new();
             let endpoint = format!("{}/userinfo", server.uri());
             let email = fetch_user_email_at(&http, &endpoint, "tok-abc")
+                .await
+                .unwrap();
+
+            assert_eq!(email, None);
+        }
+
+        #[tokio::test]
+        async fn fetch_dropbox_email_at_faz_post_com_corpo_vazio() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/account"))
+                .and(header("Authorization", "Bearer tok-abc"))
+                .and(body_string_contains("{}"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(serde_json::json!({ "email": "dropbox@example.com" })),
+                )
+                .mount(&server)
+                .await;
+
+            let http = reqwest::Client::new();
+            let endpoint = format!("{}/account", server.uri());
+            let email = fetch_dropbox_email_at(&http, &endpoint, "tok-abc")
+                .await
+                .unwrap();
+
+            assert_eq!(email.as_deref(), Some("dropbox@example.com"));
+        }
+
+        #[tokio::test]
+        async fn fetch_dropbox_email_at_retorna_none_quando_http_falha() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/account"))
+                .respond_with(ResponseTemplate::new(401))
+                .mount(&server)
+                .await;
+
+            let http = reqwest::Client::new();
+            let endpoint = format!("{}/account", server.uri());
+            let email = fetch_dropbox_email_at(&http, &endpoint, "tok-invalido")
+                .await
+                .unwrap();
+
+            assert_eq!(email, None);
+        }
+
+        #[tokio::test]
+        async fn fetch_microsoft_email_at_prefere_o_campo_mail() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/me"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "mail": "ms@example.com",
+                    "userPrincipalName": "fallback@example.com",
+                })))
+                .mount(&server)
+                .await;
+
+            let http = reqwest::Client::new();
+            let endpoint = format!("{}/me", server.uri());
+            let email = fetch_microsoft_email_at(&http, &endpoint, "tok-abc")
+                .await
+                .unwrap();
+
+            assert_eq!(email.as_deref(), Some("ms@example.com"));
+        }
+
+        #[tokio::test]
+        async fn fetch_microsoft_email_at_cai_para_user_principal_name() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/me"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "userPrincipalName": "fallback@example.com",
+                })))
+                .mount(&server)
+                .await;
+
+            let http = reqwest::Client::new();
+            let endpoint = format!("{}/me", server.uri());
+            let email = fetch_microsoft_email_at(&http, &endpoint, "tok-abc")
+                .await
+                .unwrap();
+
+            assert_eq!(email.as_deref(), Some("fallback@example.com"));
+        }
+
+        #[tokio::test]
+        async fn fetch_microsoft_email_at_retorna_none_quando_http_falha() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/me"))
+                .respond_with(ResponseTemplate::new(401))
+                .mount(&server)
+                .await;
+
+            let http = reqwest::Client::new();
+            let endpoint = format!("{}/me", server.uri());
+            let email = fetch_microsoft_email_at(&http, &endpoint, "tok-invalido")
                 .await
                 .unwrap();
 
