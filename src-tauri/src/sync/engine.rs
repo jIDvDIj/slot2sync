@@ -783,7 +783,11 @@ impl<R: Runtime> SyncEngine<R> {
             .map(|e| (e.rel_path.as_str(), e.mtime_ns))
             .collect();
 
-        for file in &mut local {
+        // 1ª passada: decide quais arquivos precisam de hash (I/O assíncrono,
+        // sequencial) e junta o conteúdo lido — o hash em si (CPU-bound) é
+        // calculado à parte, em paralelo, depois desta passada.
+        let mut to_hash: Vec<(usize, Vec<u8>)> = Vec::new();
+        for (idx, file) in local.iter().enumerate() {
             let Some((known_hash, Some(anchor))) = anchors.get(file.rel_path.as_str()) else {
                 continue;
             };
@@ -801,8 +805,31 @@ impl<R: Runtime> SyncEngine<R> {
                 continue;
             }
             if let Ok(content) = self.storage.read(&file.loc).await {
-                file.hash = Some(super::sha256_hex(&content));
+                to_hash.push((idx, content));
             }
+        }
+
+        if to_hash.is_empty() {
+            return local;
+        }
+
+        // 2ª passada: SHA-256 de cada arquivo tocado em paralelo via rayon —
+        // savestates grandes tocados na mesma categoria não esperam uns pelos
+        // outros. `spawn_blocking` tira o cálculo do executor async: o join
+        // do rayon dentro dele bloqueia a thread, mas é uma thread dedicada a
+        // isso, não uma worker do tokio.
+        let hashed = tokio::task::spawn_blocking(move || {
+            use rayon::prelude::*;
+            to_hash
+                .into_par_iter()
+                .map(|(idx, content)| (idx, super::sha256_hex(&content)))
+                .collect::<Vec<_>>()
+        })
+        .await
+        .unwrap_or_default();
+
+        for (idx, hash) in hashed {
+            local[idx].hash = Some(hash);
         }
         local
     }

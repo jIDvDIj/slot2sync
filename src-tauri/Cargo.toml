@@ -47,6 +47,7 @@ dirs = "6"
 futures = "0.3"
 filetime = "0.2"
 sha2 = "0.11"
+rayon = "1"
 globset = "0.4"
 # Confere o conteúdo baixado contra o `md5Checksum` devolvido pela API do Drive.
 md-5 = "0.11"
