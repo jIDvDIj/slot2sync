@@ -671,6 +671,7 @@ mod http_tests {
 
     use super::SIMPLE_UPLOAD_MAX_BYTES;
     use crate::drive::test_support::client_against as test_client;
+    use crate::error::AppError;
     use crate::remote::DeviceTag;
 
     #[tokio::test]
@@ -926,5 +927,124 @@ mod http_tests {
             .unwrap();
 
         assert_eq!(file.id, "big-1");
+    }
+
+    #[tokio::test]
+    async fn upload_batch_envia_todas_as_operacoes_e_preserva_a_ordem() {
+        use crate::remote::BatchUploadOp;
+
+        let server = MockServer::start().await;
+        let client = test_client(&server).await;
+
+        let response_boundary = "respBOUNDARY";
+        let body = format!(
+            "--{b}\r\n\
+             Content-Type: application/http\r\n\
+             Content-ID: <response-item-1>\r\n\r\n\
+             HTTP/1.1 200 OK\r\n\
+             Content-Type: application/json; charset=UTF-8\r\n\r\n\
+             {{\"id\":\"id-B\",\"name\":\"b.bin\"}}\r\n\
+             --{b}\r\n\
+             Content-Type: application/http\r\n\
+             Content-ID: <response-item-0>\r\n\r\n\
+             HTTP/1.1 200 OK\r\n\
+             Content-Type: application/json; charset=UTF-8\r\n\r\n\
+             {{\"id\":\"id-A\",\"name\":\"a.bin\"}}\r\n\
+             --{b}--\r\n",
+            b = response_boundary
+        );
+
+        Mock::given(method("POST"))
+            .and(path("/batch/drive/v3"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(
+                body,
+                &format!("multipart/mixed; boundary={response_boundary}"),
+            ))
+            .mount(&server)
+            .await;
+
+        let ops = vec![
+            BatchUploadOp {
+                parent_id: "parent-1".into(),
+                name: "a.bin".into(),
+                content: b"aaa".to_vec(),
+                mtime_ms: 1_700_000_000_000,
+                device_name: Some("PC".into()),
+                device_id: Some("dev-1".into()),
+            },
+            BatchUploadOp {
+                parent_id: "parent-1".into(),
+                name: "b.bin".into(),
+                content: b"bbb".to_vec(),
+                mtime_ms: 1_700_000_000_000,
+                device_name: Some("PC".into()),
+                device_id: Some("dev-1".into()),
+            },
+        ];
+        let files = client.upload_batch(ops).await.unwrap();
+
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].id, "id-A");
+        assert_eq!(files[0].rel_path, "a.bin");
+        assert_eq!(files[1].id, "id-B");
+        assert_eq!(files[1].rel_path, "b.bin");
+    }
+
+    #[tokio::test]
+    async fn upload_batch_vazio_nao_faz_chamada_http() {
+        let server = MockServer::start().await;
+        let client = test_client(&server).await;
+        // Nenhum mock montado: qualquer requisição faria o teste falhar.
+        assert!(client.upload_batch(Vec::new()).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn upload_batch_falha_quando_contagem_de_respostas_diverge() {
+        use crate::remote::BatchUploadOp;
+
+        let server = MockServer::start().await;
+        let client = test_client(&server).await;
+
+        let response_boundary = "respBOUNDARY";
+        let body = format!(
+            "--{b}\r\n\
+             Content-Type: application/http\r\n\
+             Content-ID: <response-item-0>\r\n\r\n\
+             HTTP/1.1 200 OK\r\n\
+             Content-Type: application/json; charset=UTF-8\r\n\r\n\
+             {{\"id\":\"id-A\",\"name\":\"a.bin\"}}\r\n\
+             --{b}--\r\n",
+            b = response_boundary
+        );
+
+        Mock::given(method("POST"))
+            .and(path("/batch/drive/v3"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(
+                body,
+                &format!("multipart/mixed; boundary={response_boundary}"),
+            ))
+            .mount(&server)
+            .await;
+
+        let ops = vec![
+            BatchUploadOp {
+                parent_id: "parent-1".into(),
+                name: "a.bin".into(),
+                content: b"aaa".to_vec(),
+                mtime_ms: 1_700_000_000_000,
+                device_name: None,
+                device_id: None,
+            },
+            BatchUploadOp {
+                parent_id: "parent-1".into(),
+                name: "b.bin".into(),
+                content: b"bbb".to_vec(),
+                mtime_ms: 1_700_000_000_000,
+                device_name: None,
+                device_id: None,
+            },
+        ];
+        let err = client.upload_batch(ops).await.unwrap_err();
+        assert!(matches!(err, AppError::Other(msg) if msg.contains("respostas para 2 operações")));
     }
 }
