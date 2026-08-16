@@ -294,15 +294,18 @@ impl LocalStorage for DesktopStorage {
         bytes: &[u8],
         mtime_ms: Option<i64>,
     ) -> AppResult<()> {
-        let dest = require_path(dest)?;
-        reject_symlinked_dest(dest).await?;
+        // Prefixo \\?\ no Windows: sem isso, coleções de save profundamente
+        // aninhadas (PPSSPP/PCSX2) estouram o MAX_PATH de 260 caracteres em
+        // silêncio. No-op nas demais plataformas.
+        let dest = diff::to_long_path(require_path(dest)?);
+        reject_symlinked_dest(&dest).await?;
         let parent = dest.parent();
         if let Some(parent) = parent {
             tokio::fs::create_dir_all(parent).await?;
         }
         // Preserva as permissões do arquivo substituído, se já existir (ex.:
         // um save trazido de outro sistema com bits diferentes do padrão).
-        let existing_permissions = tokio::fs::metadata(dest)
+        let existing_permissions = tokio::fs::metadata(&dest)
             .await
             .ok()
             .map(|m| m.permissions());
@@ -322,7 +325,7 @@ impl LocalStorage for DesktopStorage {
             let _ = tokio::fs::set_permissions(&tmp, permissions).await;
         }
 
-        rename_dest(&tmp, dest).await?;
+        rename_dest(&tmp, &dest).await?;
 
         // fsync do diretório pai: garante que a entrada renomeada sobrevive a
         // uma queda logo após o rename. Best-effort e só em Unix — abrir um
@@ -337,7 +340,7 @@ impl LocalStorage for DesktopStorage {
         if let Some(ms) = mtime_ms {
             let ft =
                 filetime::FileTime::from_unix_time(ms / 1000, ((ms % 1000) * 1_000_000) as u32);
-            filetime::set_file_mtime(dest, ft)?;
+            filetime::set_file_mtime(&dest, ft)?;
         }
         Ok(())
     }

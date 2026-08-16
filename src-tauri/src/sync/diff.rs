@@ -96,7 +96,7 @@ pub fn scan_local_bases(root: &Path, bases: &[PathBuf]) -> AppResult<Vec<LocalFi
     let mut seen = HashSet::new();
     let mut out = Vec::new();
     for base in bases {
-        let base_abs = root.join(base);
+        let base_abs = to_long_path(&root.join(base));
         if base_abs.is_dir() {
             walk(&base_abs, &base_abs, &mut seen, &mut out)?;
         }
@@ -159,6 +159,33 @@ pub fn system_time_ms(time: SystemTime) -> i64 {
     time.duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+/// No Windows, prefixa um caminho absoluto com `\\?\` (`\\?\UNC\` para
+/// caminhos de rede) para contornar o limite de 260 caracteres do `MAX_PATH`
+/// — necessário para coleções de save profundamente aninhadas (ex.:
+/// `PPSSPP/PSP/SAVEDATA/<id longo>/<arquivo>`). O prefixo desliga a
+/// normalização de `.`/`..` do Win32, então só é aplicado a caminhos que já
+/// são absolutos. No-op nas demais plataformas e em caminhos relativos.
+#[cfg_attr(not(desktop), allow(dead_code))]
+pub fn to_long_path(path: &Path) -> PathBuf {
+    if !cfg!(windows) || !path.is_absolute() {
+        return path.to_path_buf();
+    }
+    windows_long_path_prefix(path)
+}
+
+/// Lógica pura do prefixo — separada de [`to_long_path`] só para ser testável
+/// em qualquer plataforma (é string, não chama nenhuma API do Windows).
+fn windows_long_path_prefix(path: &Path) -> PathBuf {
+    let s = path.as_os_str().to_string_lossy();
+    if s.starts_with(r"\\?\") {
+        return path.to_path_buf();
+    }
+    match s.strip_prefix(r"\\") {
+        Some(unc) => PathBuf::from(format!(r"\\?\UNC\{unc}")),
+        None => PathBuf::from(format!(r"\\?\{s}")),
+    }
 }
 
 /// Nanossegundos restantes dentro do milissegundo atual de `time` (0..999_999).
@@ -288,6 +315,42 @@ mod tests {
     fn system_time_subsec_ns_remainder_e_zero_em_fronteira_de_ms() {
         let t = UNIX_EPOCH + std::time::Duration::new(1_700_000_000, 5_000_000);
         assert_eq!(system_time_subsec_ns_remainder(t), 0);
+    }
+
+    #[test]
+    fn to_long_path_e_no_op_fora_do_windows_ou_em_caminho_relativo() {
+        // cfg!(windows) é false neste host, mesmo para um caminho absoluto
+        // (segundo as regras Unix) — cobre o passthrough real da função.
+        assert_eq!(
+            to_long_path(Path::new("/home/user/PPSSPP/save.bin")),
+            PathBuf::from("/home/user/PPSSPP/save.bin")
+        );
+        assert_eq!(
+            to_long_path(Path::new("relativo/save.bin")),
+            PathBuf::from("relativo/save.bin")
+        );
+    }
+
+    #[test]
+    fn windows_long_path_prefix_prefixa_caminho_de_drive() {
+        assert_eq!(
+            windows_long_path_prefix(Path::new(r"C:\Games\PPSSPP\save.bin")),
+            PathBuf::from(r"\\?\C:\Games\PPSSPP\save.bin")
+        );
+    }
+
+    #[test]
+    fn windows_long_path_prefix_usa_unc_para_caminho_de_rede() {
+        assert_eq!(
+            windows_long_path_prefix(Path::new(r"\\servidor\compartilhado\save.bin")),
+            PathBuf::from(r"\\?\UNC\servidor\compartilhado\save.bin")
+        );
+    }
+
+    #[test]
+    fn windows_long_path_prefix_e_idempotente() {
+        let already = PathBuf::from(r"\\?\C:\Games\save.bin");
+        assert_eq!(windows_long_path_prefix(&already), already);
     }
 
     #[test]
