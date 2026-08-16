@@ -70,7 +70,7 @@ impl PendingOp {
 
 /// Todas as pendências, mais antigas primeiro — a UI agrupa por emulador.
 pub fn list_all(conn: &Connection) -> AppResult<Vec<PendingOp>> {
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare_cached(
         "SELECT emulator, category, rel_path, direction, enqueued_at_ms, attempts, last_error, \
          next_retry_at_ms FROM pending_ops ORDER BY enqueued_at_ms ASC",
     )?;
@@ -130,24 +130,26 @@ pub fn enqueue(
     error: &str,
 ) -> AppResult<()> {
     let now = chrono::Utc::now().timestamp_millis();
-    conn.execute(
+    conn.prepare_cached(
         "INSERT INTO pending_ops (emulator, category, rel_path, direction, enqueued_at_ms, attempts, last_error) \
          VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6) \
          ON CONFLICT (emulator, category, rel_path, direction) \
          DO UPDATE SET attempts = attempts + 1, last_error = excluded.last_error",
-        params![
-            emulator,
-            category.as_str(),
-            rel_path,
-            direction.as_str(),
-            now,
-            error,
-        ],
-    )?;
+    )?
+    .execute(params![
+        emulator,
+        category.as_str(),
+        rel_path,
+        direction.as_str(),
+        now,
+        error,
+    ])?;
 
-    let attempts: u32 = conn.query_row(
+    let attempts: u32 = conn.prepare_cached(
         "SELECT attempts FROM pending_ops \
          WHERE emulator = ?1 AND category = ?2 AND rel_path = ?3 AND direction = ?4",
+    )?
+    .query_row(
         params![emulator, category.as_str(), rel_path, direction.as_str()],
         |row| row.get(0),
     )?;
@@ -156,17 +158,17 @@ pub fn enqueue(
     } else {
         Some(now + backoff_ms(attempts))
     };
-    conn.execute(
+    conn.prepare_cached(
         "UPDATE pending_ops SET next_retry_at_ms = ?5 \
          WHERE emulator = ?1 AND category = ?2 AND rel_path = ?3 AND direction = ?4",
-        params![
-            emulator,
-            category.as_str(),
-            rel_path,
-            direction.as_str(),
-            next_retry,
-        ],
-    )?;
+    )?
+    .execute(params![
+        emulator,
+        category.as_str(),
+        rel_path,
+        direction.as_str(),
+        next_retry,
+    ])?;
     Ok(())
 }
 
@@ -179,7 +181,7 @@ pub fn deferred_rel_paths(
     category: SyncCategory,
     now_ms: i64,
 ) -> AppResult<HashSet<String>> {
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare_cached(
         "SELECT rel_path FROM pending_ops \
          WHERE emulator = ?1 AND category = ?2 \
          AND (next_retry_at_ms IS NULL OR next_retry_at_ms > ?3)",
@@ -202,11 +204,11 @@ pub fn retry_now(
     category: SyncCategory,
     rel_path: &str,
 ) -> AppResult<()> {
-    conn.execute(
+    conn.prepare_cached(
         "UPDATE pending_ops SET attempts = 0, next_retry_at_ms = 0 \
          WHERE emulator = ?1 AND category = ?2 AND rel_path = ?3",
-        params![emulator, category.as_str(), rel_path],
-    )?;
+    )?
+    .execute(params![emulator, category.as_str(), rel_path])?;
     Ok(())
 }
 
@@ -217,24 +219,24 @@ pub fn resolve(
     category: SyncCategory,
     rel_path: &str,
 ) -> AppResult<()> {
-    conn.execute(
+    conn.prepare_cached(
         "DELETE FROM pending_ops WHERE emulator = ?1 AND category = ?2 AND rel_path = ?3",
-        params![emulator, category.as_str(), rel_path],
-    )?;
+    )?
+    .execute(params![emulator, category.as_str(), rel_path])?;
     Ok(())
 }
 
 pub fn remove_for_emulator(conn: &Connection, emulator: &str) -> AppResult<()> {
-    conn.execute(
-        "DELETE FROM pending_ops WHERE emulator = ?1",
-        params![emulator],
-    )?;
+    conn.prepare_cached("DELETE FROM pending_ops WHERE emulator = ?1")?
+        .execute(params![emulator])?;
     Ok(())
 }
 
 #[allow(dead_code)]
 pub fn count(conn: &Connection) -> AppResult<i64> {
-    let count = conn.query_row("SELECT COUNT(*) FROM pending_ops", [], |row| row.get(0))?;
+    let count = conn
+        .prepare_cached("SELECT COUNT(*) FROM pending_ops")?
+        .query_row([], |row| row.get(0))?;
     Ok(count)
 }
 

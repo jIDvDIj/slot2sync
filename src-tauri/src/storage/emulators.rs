@@ -36,18 +36,17 @@ impl Default for SyncCategories {
 /// se nunca foi configurado. `config` é sempre forçado a `false`.
 pub fn get_categories(conn: &Connection, emulator: &str) -> AppResult<SyncCategories> {
     let cats = conn
-        .query_row(
+        .prepare_cached(
             "SELECT saves_enabled, savestates_enabled, config_enabled \
              FROM emulator_settings WHERE emulator = ?1",
-            params![emulator],
-            |row| {
-                Ok(SyncCategories {
-                    saves: row.get::<_, i64>(0)? != 0,
-                    savestates: row.get::<_, i64>(1)? != 0,
-                    config: row.get::<_, i64>(2)? != 0,
-                })
-            },
-        )
+        )?
+        .query_row(params![emulator], |row| {
+            Ok(SyncCategories {
+                saves: row.get::<_, i64>(0)? != 0,
+                savestates: row.get::<_, i64>(1)? != 0,
+                config: row.get::<_, i64>(2)? != 0,
+            })
+        })
         .optional()?;
     let mut cats = cats.unwrap_or_default();
     cats.config = false;
@@ -57,33 +56,36 @@ pub fn get_categories(conn: &Connection, emulator: &str) -> AppResult<SyncCatego
 /// Grava as categorias habilitadas. `cats.config` é ignorado — sempre
 /// persistido como desativado, mesmo que o chamador envie `true`.
 pub fn set_categories(conn: &Connection, emulator: &str, cats: &SyncCategories) -> AppResult<()> {
-    conn.execute(
+    conn.prepare_cached(
         "INSERT OR REPLACE INTO emulator_settings \
          (emulator, saves_enabled, savestates_enabled, config_enabled) VALUES (?1, ?2, ?3, ?4)",
-        params![emulator, cats.saves as i64, cats.savestates as i64, 0],
-    )?;
+    )?
+    .execute(params![
+        emulator,
+        cats.saves as i64,
+        cats.savestates as i64,
+        0
+    ])?;
     Ok(())
 }
 
 pub fn remove_categories(conn: &Connection, emulator: &str) -> AppResult<()> {
-    conn.execute(
-        "DELETE FROM emulator_settings WHERE emulator = ?1",
-        params![emulator],
-    )?;
+    conn.prepare_cached("DELETE FROM emulator_settings WHERE emulator = ?1")?
+        .execute(params![emulator])?;
     Ok(())
 }
 
 pub fn upsert(conn: &Connection, profile: &EmulatorProfile) -> AppResult<()> {
-    conn.execute(
+    conn.prepare_cached(
         "INSERT OR REPLACE INTO emulators (name, root_path, profile_json, added_at_ms) \
          VALUES (?1, ?2, ?3, ?4)",
-        params![
-            profile.name,
-            profile.root_path.to_string_lossy(),
-            serde_json::to_string(profile)?,
-            chrono::Utc::now().timestamp_millis(),
-        ],
-    )?;
+    )?
+    .execute(params![
+        profile.name,
+        profile.root_path.to_string_lossy(),
+        serde_json::to_string(profile)?,
+        chrono::Utc::now().timestamp_millis(),
+    ])?;
     Ok(())
 }
 
@@ -104,11 +106,8 @@ pub fn upsert_resetting_on_path_change(
     profile: &EmulatorProfile,
 ) -> AppResult<bool> {
     let previous_root: Option<String> = conn
-        .query_row(
-            "SELECT root_path FROM emulators WHERE name = ?1",
-            params![profile.name],
-            |row| row.get(0),
-        )
+        .prepare_cached("SELECT root_path FROM emulators WHERE name = ?1")?
+        .query_row(params![profile.name], |row| row.get(0))
         .optional()?;
 
     let new_root = profile.root_path.to_string_lossy().into_owned();
@@ -129,11 +128,8 @@ pub fn upsert_resetting_on_path_change(
 /// estado de sync — excluir um arquivo não invalida as âncoras dos demais.
 pub fn set_exclude_patterns(conn: &Connection, name: &str, patterns: &[String]) -> AppResult<()> {
     let json: Option<String> = conn
-        .query_row(
-            "SELECT profile_json FROM emulators WHERE name = ?1",
-            params![name],
-            |row| row.get(0),
-        )
+        .prepare_cached("SELECT profile_json FROM emulators WHERE name = ?1")?
+        .query_row(params![name], |row| row.get(0))
         .optional()?;
     let Some(json) = json else {
         return Err(crate::error::AppError::Other(format!(
@@ -147,16 +143,14 @@ pub fn set_exclude_patterns(conn: &Connection, name: &str, patterns: &[String]) 
 
 /// `true` se já existe um emulador registrado com este nome (auto ou manual).
 pub fn exists(conn: &Connection, name: &str) -> AppResult<bool> {
-    let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM emulators WHERE name = ?1",
-        params![name],
-        |row| row.get(0),
-    )?;
+    let count: i64 = conn
+        .prepare_cached("SELECT COUNT(*) FROM emulators WHERE name = ?1")?
+        .query_row(params![name], |row| row.get(0))?;
     Ok(count > 0)
 }
 
 pub fn list(conn: &Connection) -> AppResult<Vec<EmulatorProfile>> {
-    let mut stmt = conn.prepare("SELECT profile_json FROM emulators ORDER BY name")?;
+    let mut stmt = conn.prepare_cached("SELECT profile_json FROM emulators ORDER BY name")?;
     let raw = stmt
         .query_map([], |row| row.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -168,7 +162,8 @@ pub fn list(conn: &Connection) -> AppResult<Vec<EmulatorProfile>> {
 }
 
 pub fn remove(conn: &Connection, name: &str) -> AppResult<()> {
-    conn.execute("DELETE FROM emulators WHERE name = ?1", params![name])?;
+    conn.prepare_cached("DELETE FROM emulators WHERE name = ?1")?
+        .execute(params![name])?;
     Ok(())
 }
 

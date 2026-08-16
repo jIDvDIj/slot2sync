@@ -51,22 +51,22 @@ fn from_row(row: &Row) -> rusqlite::Result<ManifestEntry> {
 }
 
 pub fn upsert(conn: &Connection, entry: &ManifestEntry) -> AppResult<()> {
-    conn.execute(
+    conn.prepare_cached(
         "INSERT OR REPLACE INTO sync_manifest (emulator, category, rel_path, remote_file_id, \
          local_mtime_ms, remote_mtime_ms, size_bytes, last_synced_at_ms, file_hash) \
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-        params![
-            entry.emulator,
-            entry.category.as_str(),
-            entry.rel_path,
-            entry.remote_file_id,
-            entry.local_mtime_ms,
-            entry.remote_mtime_ms,
-            entry.size_bytes,
-            entry.last_synced_at_ms,
-            entry.file_hash,
-        ],
-    )?;
+    )?
+    .execute(params![
+        entry.emulator,
+        entry.category.as_str(),
+        entry.rel_path,
+        entry.remote_file_id,
+        entry.local_mtime_ms,
+        entry.remote_mtime_ms,
+        entry.size_bytes,
+        entry.last_synced_at_ms,
+        entry.file_hash,
+    ])?;
     Ok(())
 }
 
@@ -78,14 +78,11 @@ pub fn get(
     rel_path: &str,
 ) -> AppResult<Option<ManifestEntry>> {
     let entry = conn
-        .query_row(
-            &format!(
-                "SELECT {COLS} FROM sync_manifest \
-                 WHERE emulator = ?1 AND category = ?2 AND rel_path = ?3"
-            ),
-            params![emulator, category.as_str(), rel_path],
-            from_row,
-        )
+        .prepare_cached(&format!(
+            "SELECT {COLS} FROM sync_manifest \
+             WHERE emulator = ?1 AND category = ?2 AND rel_path = ?3"
+        ))?
+        .query_row(params![emulator, category.as_str(), rel_path], from_row)
         .optional()?;
     Ok(entry)
 }
@@ -95,7 +92,7 @@ pub fn list_for_category(
     emulator: &str,
     category: SyncCategory,
 ) -> AppResult<Vec<ManifestEntry>> {
-    let mut stmt = conn.prepare(&format!(
+    let mut stmt = conn.prepare_cached(&format!(
         "SELECT {COLS} FROM sync_manifest \
          WHERE emulator = ?1 AND category = ?2 ORDER BY rel_path"
     ))?;
@@ -107,7 +104,7 @@ pub fn list_for_category(
 
 /// Todas as entradas — base do snapshot `sync_manifest.json` publicado no provedor remoto.
 pub fn list_all(conn: &Connection) -> AppResult<Vec<ManifestEntry>> {
-    let mut stmt = conn.prepare(&format!(
+    let mut stmt = conn.prepare_cached(&format!(
         "SELECT {COLS} FROM sync_manifest ORDER BY emulator, category, rel_path"
     ))?;
     let entries = stmt
@@ -124,18 +121,16 @@ pub fn remove_entry(
     category: SyncCategory,
     rel_path: &str,
 ) -> AppResult<()> {
-    conn.execute(
+    conn.prepare_cached(
         "DELETE FROM sync_manifest WHERE emulator = ?1 AND category = ?2 AND rel_path = ?3",
-        params![emulator, category.as_str(), rel_path],
-    )?;
+    )?
+    .execute(params![emulator, category.as_str(), rel_path])?;
     Ok(())
 }
 
 pub fn remove_for_emulator(conn: &Connection, emulator: &str) -> AppResult<()> {
-    conn.execute(
-        "DELETE FROM sync_manifest WHERE emulator = ?1",
-        params![emulator],
-    )?;
+    conn.prepare_cached("DELETE FROM sync_manifest WHERE emulator = ?1")?
+        .execute(params![emulator])?;
     Ok(())
 }
 
