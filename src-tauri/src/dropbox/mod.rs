@@ -558,4 +558,333 @@ mod tests {
 
         assert_eq!(client.ensure_root().await.unwrap(), "/Slot2Sync");
     }
+
+    #[tokio::test]
+    async fn ensure_category_folder_monta_o_caminho_completo() {
+        let server = MockServer::start().await;
+        let client = client_against(&server).await;
+
+        Mock::given(method("POST"))
+            .and(path("/files/create_folder_v2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "metadata": {} })))
+            .mount(&server)
+            .await;
+
+        let category_path = client
+            .ensure_category_folder("PPSSPP", SyncCategory::Saves)
+            .await
+            .unwrap();
+        assert_eq!(category_path, "/Slot2Sync/PPSSPP/saves");
+    }
+
+    #[tokio::test]
+    async fn ensure_subpath_cria_a_cadeia_de_subpastas() {
+        let server = MockServer::start().await;
+        let client = client_against(&server).await;
+
+        Mock::given(method("POST"))
+            .and(path("/files/create_folder_v2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "metadata": {} })))
+            .mount(&server)
+            .await;
+
+        let leaf = client
+            .ensure_subpath("/Slot2Sync/PPSSPP/saves", "", "jogo/slot1")
+            .await
+            .unwrap();
+        assert_eq!(leaf, "/Slot2Sync/PPSSPP/saves/jogo/slot1");
+    }
+
+    #[tokio::test]
+    async fn find_child_retorna_none_quando_nao_encontrado() {
+        let server = MockServer::start().await;
+        let client = client_against(&server).await;
+
+        Mock::given(method("POST"))
+            .and(path("/files/get_metadata"))
+            .respond_with(ResponseTemplate::new(409).set_body_string(
+                r#"{"error_summary": "path/not_found/...", "error": {".tag": "path", "path": {".tag": "not_found"}}}"#,
+            ))
+            .mount(&server)
+            .await;
+
+        let found = client
+            .find_child("/Slot2Sync/PPSSPP/saves", "save.bin")
+            .await
+            .unwrap();
+        assert!(found.is_none());
+    }
+
+    #[tokio::test]
+    async fn find_child_ignora_pastas_com_o_mesmo_nome() {
+        let server = MockServer::start().await;
+        let client = client_against(&server).await;
+
+        Mock::given(method("POST"))
+            .and(path("/files/get_metadata"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                ".tag": "folder",
+                "id": "id:folder1",
+                "name": "jogo",
+            })))
+            .mount(&server)
+            .await;
+
+        let found = client
+            .find_child("/Slot2Sync/PPSSPP/saves", "jogo")
+            .await
+            .unwrap();
+        assert!(found.is_none());
+    }
+
+    #[tokio::test]
+    async fn find_child_retorna_o_arquivo_quando_encontrado() {
+        let server = MockServer::start().await;
+        let client = client_against(&server).await;
+
+        Mock::given(method("POST"))
+            .and(path("/files/get_metadata"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                ".tag": "file",
+                "id": "id:file1",
+                "name": "save.bin",
+                "path_display": "/Slot2Sync/PPSSPP/saves/save.bin",
+                "size": 10,
+                "content_hash": "hash1",
+            })))
+            .mount(&server)
+            .await;
+
+        let found = client
+            .find_child("/Slot2Sync/PPSSPP/saves", "save.bin")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.id, "id:file1");
+        assert_eq!(found.rel_path, "save.bin");
+        assert_eq!(found.hash.as_deref(), Some("hash1"));
+    }
+
+    #[tokio::test]
+    async fn upload_existing_reenvia_conteudo_no_mesmo_path() {
+        let server = MockServer::start().await;
+        let client = client_against(&server).await;
+
+        Mock::given(method("POST"))
+            .and(path("/files/upload"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                ".tag": "file",
+                "id": "id:file1",
+                "name": "save.bin",
+                "path_display": "/Slot2Sync/PPSSPP/saves/save.bin",
+                "size": 6,
+                "content_hash": "def456",
+            })))
+            .mount(&server)
+            .await;
+
+        let file = client
+            .upload_existing(
+                "/Slot2Sync/PPSSPP/saves/save.bin",
+                b"novos!".to_vec(),
+                1_700_000_100_000,
+                DeviceTag::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(file.id, "id:file1");
+        assert_eq!(file.hash.as_deref(), Some("def456"));
+    }
+
+    #[tokio::test]
+    async fn upload_new_com_device_tag_atualiza_o_indice_sem_erro() {
+        let server = MockServer::start().await;
+        let client = client_against(&server).await;
+
+        // Mesma resposta serve tanto o upload do arquivo quanto o upload do
+        // índice de dispositivo disparado por `stamp_device` — ambos batem em
+        // `/files/upload`, e o corpo do segundo não é interpretado.
+        Mock::given(method("POST"))
+            .and(path("/files/upload"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                ".tag": "file",
+                "id": "id:new1",
+                "name": "save.bin",
+                "path_display": "/Slot2Sync/PPSSPP/saves/save.bin",
+                "size": 5,
+            })))
+            .mount(&server)
+            .await;
+        // `stamp_device` primeiro tenta baixar o índice existente.
+        Mock::given(method("POST"))
+            .and(path("/files/download"))
+            .respond_with(ResponseTemplate::new(409).set_body_string(
+                r#"{"error_summary": "path/not_found/...", "error": {".tag": "path", "path": {".tag": "not_found"}}}"#,
+            ))
+            .mount(&server)
+            .await;
+
+        let file = client
+            .upload_new(
+                "/Slot2Sync/PPSSPP/saves",
+                "save.bin",
+                b"dados".to_vec(),
+                1_700_000_000_000,
+                DeviceTag {
+                    name: Some("PC-1"),
+                    id: Some("dev-1"),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(file.id, "id:new1");
+    }
+
+    #[tokio::test]
+    async fn upload_batch_envia_cada_item_e_preserva_a_ordem() {
+        let server = MockServer::start().await;
+        let client = client_against(&server).await;
+
+        Mock::given(method("POST"))
+            .and(path("/files/upload"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                ".tag": "file",
+                "id": "id:batch",
+                "name": "x",
+                "size": 1,
+            })))
+            .mount(&server)
+            .await;
+
+        let ops = vec![
+            BatchUploadOp {
+                parent_id: "/Slot2Sync/PPSSPP/saves".into(),
+                name: "a.bin".into(),
+                content: b"a".to_vec(),
+                mtime_ms: 1,
+                device_name: None,
+                device_id: None,
+            },
+            BatchUploadOp {
+                parent_id: "/Slot2Sync/PPSSPP/saves".into(),
+                name: "b.bin".into(),
+                content: b"b".to_vec(),
+                mtime_ms: 2,
+                device_name: None,
+                device_id: None,
+            },
+        ];
+        let files = client.upload_batch(ops).await.unwrap();
+        assert_eq!(files.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn rename_file_move_atualiza_o_indice_e_devolve_o_novo_nome() {
+        let server = MockServer::start().await;
+        let client = client_against(&server).await;
+
+        Mock::given(method("POST"))
+            .and(path("/files/move_v2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "metadata": {
+                    ".tag": "file",
+                    "id": "id:renamed",
+                    "name": "save2.bin",
+                    "path_display": "/Slot2Sync/PPSSPP/saves/save2.bin",
+                    "size": 5,
+                }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/files/download"))
+            .respond_with(ResponseTemplate::new(409).set_body_string(
+                r#"{"error_summary": "path/not_found/...", "error": {".tag": "path", "path": {".tag": "not_found"}}}"#,
+            ))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/files/upload"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                ".tag": "file",
+                "id": "id:index",
+                "name": INDEX_FILE_NAME,
+                "size": 2,
+            })))
+            .mount(&server)
+            .await;
+
+        let file = client
+            .rename_file("/Slot2Sync/PPSSPP/saves/save.bin", "save2.bin", None, None)
+            .await
+            .unwrap();
+        assert_eq!(file.id, "id:renamed");
+        assert_eq!(file.rel_path, "save2.bin");
+    }
+
+    #[test]
+    fn ms_to_rfc3339_formata_timestamp_em_utc() {
+        assert_eq!(ms_to_rfc3339(1_700_000_000_000), "2023-11-14T22:13:20Z");
+    }
+
+    #[test]
+    fn dropbox_entry_client_modified_ms_ida_e_volta() {
+        let entry = DropboxEntry {
+            tag: "file".into(),
+            id: "id:1".into(),
+            name: "x".into(),
+            path_display: None,
+            path_lower: None,
+            client_modified: Some("2023-11-14T22:13:20Z".into()),
+            size: None,
+            content_hash: None,
+        };
+        assert_eq!(entry.client_modified_ms(), Some(1_700_000_000_000));
+    }
+
+    #[test]
+    fn dropbox_entry_client_modified_ms_none_quando_ausente_ou_invalido() {
+        let mut entry = DropboxEntry {
+            tag: "file".into(),
+            id: "id:1".into(),
+            name: "x".into(),
+            path_display: None,
+            path_lower: None,
+            client_modified: None,
+            size: None,
+            content_hash: None,
+        };
+        assert_eq!(entry.client_modified_ms(), None);
+
+        entry.client_modified = Some("não é uma data".into());
+        assert_eq!(entry.client_modified_ms(), None);
+    }
+
+    #[test]
+    fn dropbox_entry_path_lower_or_prefere_lower_depois_display_depois_fallback() {
+        let entry = DropboxEntry {
+            tag: "file".into(),
+            id: "id:1".into(),
+            name: "x".into(),
+            path_display: Some("/Display/x".into()),
+            path_lower: Some("/lower/x".into()),
+            client_modified: None,
+            size: None,
+            content_hash: None,
+        };
+        assert_eq!(entry.path_lower_or("fallback"), "/lower/x");
+
+        let entry_sem_lower = DropboxEntry {
+            path_lower: None,
+            ..entry.clone()
+        };
+        assert_eq!(entry_sem_lower.path_lower_or("fallback"), "/Display/x");
+
+        let entry_so_fallback = DropboxEntry {
+            path_lower: None,
+            path_display: None,
+            ..entry
+        };
+        assert_eq!(entry_so_fallback.path_lower_or("fallback"), "fallback");
+    }
 }
