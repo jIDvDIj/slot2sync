@@ -9,7 +9,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use futures::stream::{self, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -195,6 +195,10 @@ struct CategoryCtx {
     /// progresso em bytes, velocidade e ETA (não só contagem de arquivos).
     bytes_total: u64,
     bytes_done: AtomicU64,
+    /// Nome do último arquivo concluído — lido pelo ticker de progresso
+    /// (`emit_progress_snapshot`), já que múltiplas transferências rodam
+    /// concorrentemente e não há um "arquivo atual" único a qualquer momento.
+    last_file: std::sync::Mutex<String>,
 }
 
 /// Genérico sobre o runtime do Tauri para ser testável: em produção é o `Wry`
@@ -792,6 +796,7 @@ impl<R: Runtime> SyncEngine<R> {
                 completed: AtomicU32::new(0),
                 bytes_total: plan.iter().map(op_bytes).sum(),
                 bytes_done: AtomicU64::new(0),
+                last_file: std::sync::Mutex::new(String::new()),
             };
 
             // Uploads de arquivos NOVOS e pequenos vão em lote (Batch API),
@@ -806,7 +811,7 @@ impl<R: Runtime> SyncEngine<R> {
             // saves pequenos jamais faria — cada op só roda depois de
             // reservar seu peso em bytes (até o teto do semáforo inteiro).
             let bytes_semaphore = Semaphore::new(MAX_BYTES_IN_FLIGHT as usize);
-            let outcomes = stream::iter(plan.into_iter().map(|op| {
+            let transfers = stream::iter(plan.into_iter().map(|op| {
                 let (bytes_semaphore, ctx) = (&bytes_semaphore, &ctx);
                 async move {
                     let weight = op_bytes(&op).max(1).min(MAX_BYTES_IN_FLIGHT as u64) as u32;
@@ -818,8 +823,32 @@ impl<R: Runtime> SyncEngine<R> {
                 }
             }))
             .buffer_unordered(DRIVE_MAX_CONCURRENT_TRANSFERS)
-            .collect::<Vec<_>>()
-            .await;
+            .collect::<Vec<_>>();
+
+            // Retrato consolidado a cada 500ms em vez de um evento por
+            // arquivo — um sync de 200 arquivos não devia inundar o frontend
+            // com 200 eventos. O ticker roda até o `select!` resolver pelo
+            // outro lado (transferências concluídas), quando é cancelado.
+            let mut last_emitted: u32 = ctx.completed.load(Ordering::Relaxed);
+            let ticker = async {
+                let mut interval = tokio::time::interval(Duration::from_millis(500));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                loop {
+                    interval.tick().await;
+                    let completed = ctx.completed.load(Ordering::Relaxed);
+                    if completed != last_emitted {
+                        last_emitted = completed;
+                        self.emit_progress_snapshot(&ctx);
+                    }
+                }
+            };
+            let outcomes = tokio::select! {
+                outcomes = transfers => outcomes,
+                _ = ticker => unreachable!("o ticker nunca termina sozinho"),
+            };
+            // Retrato final garantido (completed == total) mesmo que o
+            // último arquivo tenha terminado entre dois ticks do timer.
+            self.emit_progress_snapshot(&ctx);
 
             // Uma transação por categoria para todas as entradas sincronizadas
             // com sucesso, em vez de um `upsert` por arquivo transferido.
@@ -1092,7 +1121,7 @@ impl<R: Runtime> SyncEngine<R> {
             SyncAction::NoOp => Ok(None),
         };
 
-        self.emit_progress(ctx, &rel_path, bytes);
+        self.record_progress(ctx, &rel_path, bytes);
 
         match result {
             Ok(entry) => {
@@ -1209,16 +1238,31 @@ impl<R: Runtime> SyncEngine<R> {
         }
     }
 
-    /// Emite o evento de progresso e avança os contadores (arquivos e bytes)
-    /// de concluídos da categoria.
-    fn emit_progress(&self, ctx: &CategoryCtx, rel_path: &str, bytes: u64) {
-        let completed = ctx.completed.fetch_add(1, Ordering::Relaxed) + 1;
-        let bytes_done = ctx.bytes_done.fetch_add(bytes, Ordering::Relaxed) + bytes;
+    /// Avança os contadores (arquivos e bytes) de concluídos da categoria e
+    /// registra o nome do arquivo — sem emitir evento. A emissão é
+    /// responsabilidade do ticker periódico em `sync_target`
+    /// ([`Self::emit_progress_snapshot`]), não de cada arquivo individual.
+    fn record_progress(&self, ctx: &CategoryCtx, rel_path: &str, bytes: u64) {
+        ctx.completed.fetch_add(1, Ordering::Relaxed);
+        ctx.bytes_done.fetch_add(bytes, Ordering::Relaxed);
+        if let Ok(mut last) = ctx.last_file.lock() {
+            *last = rel_path.to_string();
+        }
+    }
+
+    /// Emite um retrato consolidado do progresso da categoria a partir dos
+    /// contadores atômicos. Chamado periodicamente (não por arquivo) por um
+    /// `tokio::time::interval` em `sync_target`, para não inundar o frontend
+    /// num sync de muitos arquivos.
+    fn emit_progress_snapshot(&self, ctx: &CategoryCtx) {
+        let completed = ctx.completed.load(Ordering::Relaxed);
+        let bytes_done = ctx.bytes_done.load(Ordering::Relaxed);
+        let current_file = ctx.last_file.lock().map(|s| s.clone()).unwrap_or_default();
         let _ = self.app.emit(
             EVT_SYNC_PROGRESS,
             &SyncProgress {
                 emulator: ctx.emulator.clone(),
-                current_file: rel_path.to_string(),
+                current_file,
                 completed,
                 total: ctx.total,
                 bytes_done,
@@ -1303,7 +1347,7 @@ impl<R: Runtime> SyncEngine<R> {
                             .await;
                         summary.uploaded += 1;
 
-                        self.emit_progress(ctx, &p.rel_path, p.size_bytes.max(0) as u64);
+                        self.record_progress(ctx, &p.rel_path, p.size_bytes.max(0) as u64);
                     }
                 }
                 result => {

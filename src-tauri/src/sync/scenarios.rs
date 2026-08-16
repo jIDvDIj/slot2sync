@@ -281,6 +281,37 @@ async fn conflito_bloqueia_emulador_e_resolucao_desbloqueia() {
 /// Este teste DOCUMENTA a limitação atual; quando o hash entrar, ele deve
 /// passar a falhar e ser invertido.
 #[tokio::test]
+async fn progresso_emite_retrato_final_com_completed_igual_a_total() {
+    use std::sync::{Arc, Mutex};
+    use tauri::Listener;
+
+    let h = Harness::new().await;
+    h.write_local("a.bin", b"1", T);
+    h.write_local("b.bin", b"2", T);
+    h.write_local("c.bin", b"3", T);
+
+    let last_progress: Arc<Mutex<Option<serde_json::Value>>> = Arc::new(Mutex::new(None));
+    let captured = last_progress.clone();
+    h._app
+        .handle()
+        .listen(crate::events::EVT_SYNC_PROGRESS, move |event| {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(event.payload()) {
+                *captured.lock().unwrap() = Some(v);
+            }
+        });
+
+    h.sync().await;
+
+    let last = last_progress
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("deveria ter emitido ao menos um sync:progress (o retrato final garantido)");
+    assert_eq!(last["completed"], last["total"]);
+    assert_eq!(last["total"], 3);
+}
+
+#[tokio::test]
 async fn sync_state_comeca_e_termina_ocioso() {
     let h = Harness::new().await;
     assert_eq!(h.engine.current_sync_state(), (SyncState::Idle, None));
