@@ -156,6 +156,16 @@ pub const SETTING_FOLDER_PROVIDER_PATH: &str = "folder_provider_path";
 /// disso a escolha do usuário prevalece, inclusive se ele desativar.
 pub const SETTING_AUTOSTART_INITIALIZED: &str = "autostart_initialized";
 
+/// Versionamento lógico do *formato dos dados* guardados em `app_settings` e
+/// `sync_manifest` (chaves, encoding de valores) — distinto do `PRAGMA
+/// user_version` em `storage::db`, que versiona o schema físico (tabelas/
+/// colunas). Sobe quando uma migração muda como os dados são interpretados,
+/// não quando uma coluna nasce. Ver `storage::schema_version`.
+pub const SCHEMA_COMPONENT_SETTINGS: &str = "settings";
+pub const SCHEMA_COMPONENT_MANIFEST: &str = "sync_manifest";
+pub const SETTINGS_SCHEMA_VERSION: i64 = 1;
+pub const MANIFEST_SCHEMA_VERSION: i64 = 1;
+
 /// Label da janela principal (definida pelo Tauri quando não há `label`).
 pub const MAIN_WINDOW_LABEL: &str = "main";
 

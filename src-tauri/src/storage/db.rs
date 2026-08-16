@@ -161,6 +161,15 @@ CREATE TABLE IF NOT EXISTS internal_kv (
 );
 ";
 
+/// v13 — versionamento lógico do formato de dados por componente. Ver
+/// `storage::schema_version`.
+const SCHEMA_V13: &str = "
+CREATE TABLE IF NOT EXISTS schema_version (
+    component TEXT PRIMARY KEY,
+    version   INTEGER NOT NULL
+);
+";
+
 /// Intervalo mínimo entre manutenções (7 dias) — não vale a pena rodar em
 /// todo shutdown, só quando o banco já cresceu o suficiente para o planner
 /// ficar desatualizado.
@@ -317,7 +326,22 @@ fn migrate(conn: &Connection) -> AppResult<()> {
         conn.execute_batch(SCHEMA_V12)?;
         version = 12;
     }
+    if version < 13 {
+        conn.execute_batch(SCHEMA_V13)?;
+        version = 13;
+    }
     conn.pragma_update(None, "user_version", version)?;
+
+    crate::storage::schema_version::ensure_current(
+        conn,
+        crate::constants::SCHEMA_COMPONENT_SETTINGS,
+        crate::constants::SETTINGS_SCHEMA_VERSION,
+    )?;
+    crate::storage::schema_version::ensure_current(
+        conn,
+        crate::constants::SCHEMA_COMPONENT_MANIFEST,
+        crate::constants::MANIFEST_SCHEMA_VERSION,
+    )?;
     Ok(())
 }
 
