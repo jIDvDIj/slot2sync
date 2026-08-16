@@ -6,13 +6,15 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
 use crate::auth::AuthManager;
 use crate::constants::DRIVE_MAX_RETRIES;
 use crate::error::AppResult;
 use crate::remote::http::{send_with_retry, RateLimiter};
+use crate::remote::RemoteFile;
 use crate::storage::db::Db;
 use crate::storage::drive_folders;
 
@@ -32,6 +34,13 @@ pub struct DriveClient {
     pub(crate) batch_base: String,
     /// Throttle global de banda (limites lidos das settings a cada operação).
     pub(crate) limiter: RateLimiter,
+    /// Cache de `list_tree` por `folder_id`, TTL de 30s (`LISTING_CACHE_TTL`).
+    /// Zerado por inteiro após qualquer upload/rename bem-sucedido — mais
+    /// simples e sempre correto do que rastrear qual pasta cada operação
+    /// afetou. Só evita refazer a listagem quando dois syncs da mesma
+    /// categoria caem dentro da mesma janela de 30s (ex.: watcher disparando
+    /// logo depois de um sync manual) sem nada ter mudado nesse meio-tempo.
+    pub(crate) listing_cache: Mutex<HashMap<String, (Vec<RemoteFile>, Instant)>>,
 }
 
 impl DriveClient {
@@ -59,7 +68,15 @@ impl DriveClient {
             upload_base: super::DRIVE_UPLOAD_BASE.to_string(),
             batch_base: super::DRIVE_BATCH_BASE.to_string(),
             limiter: RateLimiter::default(),
+            listing_cache: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Zera o cache de `list_tree` inteiro. Chamado depois de qualquer upload
+    /// (novo, em lote ou substituição) ou rename bem-sucedido — a listagem
+    /// cacheada de qualquer pasta pode ter ficado desatualizada.
+    pub(crate) async fn invalidate_listing_cache(&self) {
+        self.listing_cache.lock().await.clear();
     }
 
     /// Aplica o limite de upload configurado antes de enviar `bytes`.
@@ -118,6 +135,7 @@ impl DriveClient {
     /// Google e ficam inválidos ao autenticar com outra).
     pub async fn clear_folder_cache(&self) {
         self.folder_cache.write().await.clear();
+        self.listing_cache.lock().await.clear();
         if let Err(err) = self.db.with(drive_folders::clear).await {
             tracing::warn!(error = %err, "falha ao limpar cache de pastas no SQLite");
         }
