@@ -246,6 +246,7 @@ export interface AppErrorPayload {
     | "insufficient_disk_space"
     | "integrity"
     | "folder_not_mounted"
+    | "case_conflict"
     | "other";
   message: string;
   /** Detalhe técnico sem o prefixo (caminho, nome, msg da lib). O frontend

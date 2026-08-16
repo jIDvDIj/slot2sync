@@ -1444,6 +1444,32 @@ impl<R: Runtime> SyncEngine<R> {
         }
     }
 
+    /// Windows apenas: `dest` colide (case-insensitive) com outro nome já
+    /// presente na mesma pasta? Compara só o componente final do caminho —
+    /// escaneia a pasta-pai, não a árvore inteira.
+    #[cfg(target_os = "windows")]
+    async fn check_case_collision(&self, dest: &FileLoc) -> AppResult<()> {
+        let Some(path) = dest.as_native_path() else {
+            return Ok(());
+        };
+        let (Some(parent), Some(incoming)) = (path.parent(), path.file_name()) else {
+            return Ok(());
+        };
+        let incoming = incoming.to_string_lossy().into_owned();
+        let incoming_lower = incoming.to_lowercase();
+
+        let Ok(mut entries) = tokio::fs::read_dir(parent).await else {
+            return Ok(());
+        };
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let existing = entry.file_name().to_string_lossy().into_owned();
+            if existing != incoming && existing.to_lowercase() == incoming_lower {
+                return Err(AppError::CaseConflict { existing, incoming });
+            }
+        }
+        Ok(())
+    }
+
     async fn do_download(&self, ctx: &CategoryCtx, op: &PlannedOp) -> AppResult<ManifestEntry> {
         let remote = op
             .remote
@@ -1454,6 +1480,14 @@ impl<R: Runtime> SyncEngine<R> {
             Some(local) => local.loc.clone(),
             None => self.storage.join(&ctx.download_base, &op.rel_path),
         };
+
+        // NTFS é case-preserving mas case-insensitive: "Save.bin" e "save.bin"
+        // são o MESMO arquivo pro Windows, mas o motor de sync (rel_path exato)
+        // os trata como dois arquivos distintos. Sem essa checagem, baixar o
+        // segundo sobrescreveria o primeiro em silêncio — cada lado acha que
+        // sincronizou o seu, e um deles some do disco sem aviso.
+        #[cfg(target_os = "windows")]
+        self.check_case_collision(&dest).await?;
 
         // Checa o espaço livre no volume de destino ANTES de baixar (margem de
         // 10%). Sem medição disponível (mobile/volume desconhecido), segue.

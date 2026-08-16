@@ -54,6 +54,14 @@ pub enum AppError {
     #[error("pasta não encontrada: {0} — dispositivo desconectado ou pasta removida?")]
     FolderNotMounted(String),
 
+    /// Windows apenas: dois arquivos com nomes diferindo só em
+    /// maiúsculas/minúsculas colidiriam no mesmo destino (NTFS é
+    /// case-insensitive). Ver `SyncEngine::check_case_collision`.
+    #[error(
+        "colisão de maiúsculas/minúsculas: já existe \"{existing}\" (baixando \"{incoming}\")"
+    )]
+    CaseConflict { existing: String, incoming: String },
+
     #[error("{0}")]
     Other(String),
 }
@@ -75,6 +83,7 @@ impl AppError {
             AppError::InsufficientDiskSpace { .. } => "insufficient_disk_space",
             AppError::Integrity(_) => "integrity",
             AppError::FolderNotMounted(_) => "folder_not_mounted",
+            AppError::CaseConflict { .. } => "case_conflict",
             AppError::Other(_) => "other",
         }
     }
@@ -94,6 +103,9 @@ impl AppError {
                 needed_mb,
                 available_mb,
             } => format!("necessário {needed_mb} MB, disponível {available_mb} MB"),
+            AppError::CaseConflict { existing, incoming } => {
+                format!("existente: {existing}, chegando: {incoming}")
+            }
             AppError::Auth(s)
             | AppError::EmulatorNotDetected(s)
             | AppError::EmulatorExists(s)
@@ -179,6 +191,16 @@ mod tests {
         let v = payload(AppError::FolderNotMounted("/media/usb/PPSSPP".into()));
         assert_eq!(v["code"], "folder_not_mounted");
         assert_eq!(v["detail"], "/media/usb/PPSSPP");
+    }
+
+    #[test]
+    fn case_conflict_serializa_code_e_detail() {
+        let v = payload(AppError::CaseConflict {
+            existing: "Save.bin".into(),
+            incoming: "save.bin".into(),
+        });
+        assert_eq!(v["code"], "case_conflict");
+        assert_eq!(v["detail"], "existente: Save.bin, chegando: save.bin");
     }
 
     #[test]
