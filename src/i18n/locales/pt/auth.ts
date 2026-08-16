@@ -11,6 +11,7 @@ export const auth: Localized<typeof AuthEn> = {
     connect: "Conectar ao {{provider}}",
     providerLabel: "Provedor de storage",
     providerLocalFolder: "Pasta local/rede",
+    comingSoon: "em breve",
     folderPathLabel: "Caminho da pasta",
     folderPathPlaceholder: "ex.: D:\\Slot2Sync ou \\\\servidor\\compartilhamento",
     selectFolder: "Selecionar pasta…",
