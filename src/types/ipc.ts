@@ -224,6 +224,13 @@ export interface SyncErrorEvent {
   message: string;
 }
 
+/** `sync::ErrorEntry` — item de `get_recent_errors` */
+export interface ErrorEntry {
+  atMs: number;
+  emulator: string | null;
+  message: string;
+}
+
 /** `watcher::EmulatorStatusEvent` — payload do evento `emulator:status` */
 export interface EmulatorStatusEvent {
   emulator: string;

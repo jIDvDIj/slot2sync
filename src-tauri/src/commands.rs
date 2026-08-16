@@ -943,6 +943,19 @@ pub async fn dismiss_notice(state: State<'_, AppState>, id: String) -> AppResult
         .await
 }
 
+/// Histórico de erros em memória desde o último reinício (mais antigo
+/// primeiro) — alimenta uma futura aba de diagnóstico na UI.
+#[tauri::command]
+pub fn get_recent_errors(state: State<'_, AppState>) -> Vec<crate::sync::ErrorEntry> {
+    state.engine.recent_errors()
+}
+
+/// Limpa o histórico de erros em memória.
+#[tauri::command]
+pub fn clear_errors(state: State<'_, AppState>) {
+    state.engine.clear_errors();
+}
+
 /// Versões arquivadas de um arquivo no histórico pré-download
 /// (`<backups>/<emulador>/history/<categoria>/…`), mais recentes primeiro.
 #[tauri::command]

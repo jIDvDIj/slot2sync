@@ -71,6 +71,11 @@ pub const DRIVE_MAX_CONCURRENT_TRANSFERS: usize = 6;
 /// que um save de 1 KB e deixar memória/banda livres para os demais.
 pub const MAX_BYTES_IN_FLIGHT: u32 = 64 * 1024 * 1024;
 
+/// Máximo de entradas no histórico de erros em memória
+/// (`SyncEngine::recent_errors`) — as mais antigas caem conforme novas
+/// chegam.
+pub const MAX_RECENT_ERRORS: usize = 100;
+
 /// Chamadas de rede (upload/download) simultâneas com o provedor remoto —
 /// separado do limite de I/O de disco (`MAX_DISK_WRITES`): são recursos
 /// diferentes, um não deveria esperar o outro.

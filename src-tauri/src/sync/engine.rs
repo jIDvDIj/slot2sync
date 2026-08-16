@@ -129,6 +129,16 @@ pub struct SyncError {
     pub message: String,
 }
 
+/// Entrada do histórico de erros em memória (`SyncEngine::recent_errors`),
+/// exposto via `get_recent_errors`. (→ ipc.ts)
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ErrorEntry {
+    pub at_ms: i64,
+    pub emulator: Option<String>,
+    pub message: String,
+}
+
 /// Resumo do último sync concluído, exposto à UI via `get_last_sync` (e
 /// atualizado ao vivo pelo evento `sync:completed`). (→ ipc.ts)
 #[derive(Debug, Clone, Serialize)]
@@ -238,6 +248,10 @@ pub struct SyncEngine<R: Runtime = Wry> {
     disk_io: Semaphore,
     /// Estado corrente exposto ao frontend (ver [`SyncState`]).
     current_state: std::sync::Mutex<(SyncState, Option<String>)>,
+    /// Histórico de erros em memória (mais recente por último), exposto via
+    /// `get_recent_errors`/`clear_errors`. Perdido a cada reinício do app —
+    /// não é persistido, é só um retrato rápido pra diagnóstico.
+    recent_errors: std::sync::Mutex<std::collections::VecDeque<ErrorEntry>>,
 }
 
 impl<R: Runtime> SyncEngine<R> {
@@ -268,7 +282,32 @@ impl<R: Runtime> SyncEngine<R> {
             network_ops: Semaphore::new(MAX_NETWORK_OPS),
             disk_io: Semaphore::new(MAX_DISK_WRITES),
             current_state: std::sync::Mutex::new((SyncState::Idle, None)),
+            recent_errors: std::sync::Mutex::new(std::collections::VecDeque::new()),
         }
+    }
+
+    /// Retrato do histórico de erros em memória, mais antigo primeiro.
+    pub fn recent_errors(&self) -> Vec<ErrorEntry> {
+        self.recent_errors.lock().unwrap().iter().cloned().collect()
+    }
+
+    /// Esvazia o histórico de erros (ação "limpar" da UI de diagnóstico).
+    pub fn clear_errors(&self) {
+        self.recent_errors.lock().unwrap().clear();
+    }
+
+    /// Registra uma entrada no histórico de erros, descartando a mais antiga
+    /// se já estiver no teto (`MAX_RECENT_ERRORS`).
+    fn record_error(&self, emulator: Option<&str>, message: String) {
+        let mut buf = self.recent_errors.lock().unwrap();
+        if buf.len() >= crate::constants::MAX_RECENT_ERRORS {
+            buf.pop_front();
+        }
+        buf.push_back(ErrorEntry {
+            at_ms: chrono::Utc::now().timestamp_millis(),
+            emulator: emulator.map(str::to_string),
+            message,
+        });
     }
 
     /// Estado corrente do engine e, se houver, o emulador associado — usado
@@ -514,6 +553,7 @@ impl<R: Runtime> SyncEngine<R> {
                     summary.failed += 1;
                     tracing::error!(emulador = %target.label, error = %err, "sync do emulador falhou");
                     self.transition(SyncState::Error(err.to_string()), Some(&target.label));
+                    self.record_error(Some(&target.label), err.to_string());
                     let _ = self.app.emit(
                         EVT_SYNC_ERROR,
                         &SyncError {

@@ -312,6 +312,26 @@ async fn progresso_emite_retrato_final_com_completed_igual_a_total() {
 }
 
 #[tokio::test]
+async fn erro_de_sync_entra_no_historico_e_clear_errors_esvazia() {
+    let h = Harness::new().await;
+    assert!(h.engine.recent_errors().is_empty());
+
+    // Raiz do emulador desaparece (drive removível desconectado) — falha
+    // dura, específica deste emulador, propagada por `sync_target`.
+    let root = h.saves_dir.parent().unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+
+    h.sync().await;
+
+    let errors = h.engine.recent_errors();
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].emulator.as_deref(), Some(EMU));
+
+    h.engine.clear_errors();
+    assert!(h.engine.recent_errors().is_empty());
+}
+
+#[tokio::test]
 async fn sync_state_comeca_e_termina_ocioso() {
     let h = Harness::new().await;
     assert_eq!(h.engine.current_sync_state(), (SyncState::Idle, None));

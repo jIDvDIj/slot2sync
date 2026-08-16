@@ -13,6 +13,7 @@ import type {
   DiscoveredEmulator,
   EmulatorProfile,
   EmulatorStats,
+  ErrorEntry,
   FileVersion,
   HealthStatus,
   LastSync,
@@ -141,6 +142,16 @@ export function getLastSync(): Promise<LastSync | null> {
  * antes da conexão (ex.: reconectar no meio de um sync). */
 export function getSyncState(): Promise<SyncStateSnapshot> {
   return invoke<SyncStateSnapshot>("get_sync_state");
+}
+
+/** Histórico de erros em memória desde o último reinício (mais antigo primeiro). */
+export function getRecentErrors(): Promise<ErrorEntry[]> {
+  return invoke<ErrorEntry[]>("get_recent_errors");
+}
+
+/** Limpa o histórico de erros em memória. */
+export function clearErrors(): Promise<void> {
+  return invoke<void>("clear_errors");
 }
 
 /** Configurações globais do usuário (nome do dispositivo, etc.). */
