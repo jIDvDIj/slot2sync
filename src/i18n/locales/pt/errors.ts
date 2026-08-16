@@ -17,6 +17,7 @@ export const errors: Localized<typeof ErrorsEn> = {
     integrity: "falha na verificação de integridade da transferência",
     folder_not_mounted: "pasta não encontrada — o dispositivo está desconectado?",
     case_conflict: "dois arquivos com o mesmo nome em maiúsculas/minúsculas diferentes colidiriam",
+    zip: "erro ao gerar o zip de diagnóstico",
     unexpected: "erro inesperado ao falar com o backend",
   },
 };

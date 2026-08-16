@@ -3,6 +3,8 @@ mod backups;
 mod commands;
 mod constants;
 mod device;
+#[cfg(desktop)]
+mod diagnostics;
 mod drive;
 mod dropbox;
 mod emulator;
@@ -344,6 +346,7 @@ pub fn run() {
             commands::set_autostart,
             #[cfg(desktop)]
             commands::open_backup_folder,
+            commands::export_diagnostics,
             #[cfg(desktop)]
             commands::reveal_backup_path,
         ])

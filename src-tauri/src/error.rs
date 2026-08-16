@@ -25,6 +25,11 @@ pub enum AppError {
     #[error("erro no cofre de credenciais: {0}")]
     Keyring(#[from] keyring::Error),
 
+    // Export de diagnóstico (`export_diagnostics`) é exclusivo do desktop.
+    #[cfg(desktop)]
+    #[error("erro ao gerar zip: {0}")]
+    Zip(#[from] zip::result::ZipError),
+
     #[error("erro de serialização: {0}")]
     Serialization(#[from] serde_json::Error),
 
@@ -74,6 +79,8 @@ impl AppError {
             AppError::Network(_) => "network",
             #[cfg(desktop)]
             AppError::Keyring(_) => "keyring",
+            #[cfg(desktop)]
+            AppError::Zip(_) => "zip",
             AppError::Serialization(_) => "serialization",
             AppError::Auth(_) => "auth",
             AppError::EmulatorNotDetected(_) => "emulator_not_detected",
@@ -98,6 +105,8 @@ impl AppError {
             AppError::Network(e) => e.to_string(),
             #[cfg(desktop)]
             AppError::Keyring(e) => e.to_string(),
+            #[cfg(desktop)]
+            AppError::Zip(e) => e.to_string(),
             AppError::Serialization(e) => e.to_string(),
             AppError::InsufficientDiskSpace {
                 needed_mb,

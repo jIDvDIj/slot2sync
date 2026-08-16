@@ -92,6 +92,13 @@ export const settings: Localized<typeof SettingsEn> = {
       versionsHint:
         "Antes de um download sobrescrever um save local, a versão vigente é arquivada em history/. Versões além deste limite são removidas, das mais antigas.",
     },
+    diagnostics: {
+      heading: "Diagnóstico",
+      hint: "Empacota configurações, estado do sync e o final do log de hoje num .zip para anexar a um relato de bug. Credenciais nunca saem deste dispositivo — só caminhos de arquivo e metadados de sync entram.",
+      export: "Exportar diagnóstico",
+      exporting: "Exportando…",
+      exported: "Salvo em {{path}}",
+    },
   },
   backupHistory: {
     title: "Histórico de backups",

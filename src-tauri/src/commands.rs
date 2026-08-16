@@ -746,6 +746,42 @@ fn autostart_enabled(_app: &AppHandle) -> AppResult<bool> {
     Ok(false)
 }
 
+/// Gera um `.zip` de diagnóstico na pasta de Downloads do usuário
+/// (configurações com segredos redigidos, manifest, conflitos, fila offline,
+/// informações do app e o final do log de hoje) — para anexar a um relato de
+/// bug. Devolve o caminho do arquivo gerado.
+#[cfg(desktop)]
+#[tauri::command]
+pub async fn export_diagnostics(app: AppHandle, state: State<'_, AppState>) -> AppResult<String> {
+    let downloads_dir = crate::locations::AppPath::DownloadsDir.resolve(&app)?;
+    tokio::fs::create_dir_all(&downloads_dir).await?;
+
+    let settings = state.db.with(settings::load).await?;
+    let manifest = state.db.with(manifest::list_all).await?;
+    let conflicts = state.db.with(conflicts::list_all).await?;
+    let pending_ops = state.db.with(queue::list_all).await?;
+    let log_dir = crate::locations::AppPath::LogDir.resolve(&app)?;
+
+    let dest = downloads_dir.join(crate::diagnostics::file_name());
+    let dest_for_task = dest.clone();
+    let version = env!("CARGO_PKG_VERSION");
+    tokio::task::spawn_blocking(move || {
+        crate::diagnostics::write_zip(
+            &dest_for_task,
+            &settings,
+            &manifest,
+            &conflicts,
+            &pending_ops,
+            version,
+            &log_dir,
+        )
+    })
+    .await
+    .map_err(|e| AppError::Other(format!("tarefa bloqueante abortada: {e}")))??;
+
+    Ok(dest.display().to_string())
+}
+
 /// Abre a pasta de backups locais no gerenciador de arquivos do SO. A pasta é
 /// criada se ainda não existir (recebe os backups do primeiro sync).
 #[cfg(desktop)]

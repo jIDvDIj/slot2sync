@@ -88,6 +88,13 @@ export const settings = {
       versionsHint:
         "Before a download overwrites a local save, the current version is archived under history/. Oldest versions beyond this limit are removed.",
     },
+    diagnostics: {
+      heading: "Diagnostics",
+      hint: "Bundles settings, sync state and the tail of today's log into a .zip you can attach to a bug report. Credentials never leave this device — only file paths and sync metadata are included.",
+      export: "Export diagnostics",
+      exporting: "Exporting…",
+      exported: "Saved to {{path}}",
+    },
   },
   backupHistory: {
     title: "Backup history",

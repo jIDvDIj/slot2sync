@@ -76,6 +76,9 @@ sysinfo = "0.39"
 # gatilho "file-change" — sincroniza sem esperar o emulador fechar.
 notify = "8"
 keyring = { version = "3", features = ["windows-native", "apple-native", "sync-secret-service"] }
+# Empacota o export de diagnóstico (`export_diagnostics`, só desktop) num
+# único .zip.
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 # Dependências exclusivas do mobile.
 # - deep-link: captura o redirect URI `slot2sync://oauth` de volta ao app (OAuth).

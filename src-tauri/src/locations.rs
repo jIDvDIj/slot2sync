@@ -22,6 +22,9 @@ pub enum AppPath {
     /// `Database`/`BackupDir` — o SO não garante que logs e dados do app
     /// fiquem sob o mesmo diretório.
     LogDir,
+    /// Pasta de Downloads do usuário — destino do export de diagnóstico
+    /// (`export_diagnostics`).
+    DownloadsDir,
 }
 
 impl AppPath {
@@ -33,6 +36,10 @@ impl AppPath {
                 .path()
                 .app_log_dir()
                 .map_err(|e| AppError::Other(format!("diretório de logs indisponível: {e}"))),
+            AppPath::DownloadsDir => app
+                .path()
+                .download_dir()
+                .map_err(|e| AppError::Other(format!("pasta de downloads indisponível: {e}"))),
         }
     }
 }

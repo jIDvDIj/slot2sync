@@ -154,6 +154,11 @@ export function clearErrors(): Promise<void> {
   return invoke<void>("clear_errors");
 }
 
+/** Gera o .zip de diagnóstico na pasta de Downloads; resolve com o caminho gerado. */
+export function exportDiagnostics(): Promise<string> {
+  return invoke<string>("export_diagnostics");
+}
+
 /** Configurações globais do usuário (nome do dispositivo, etc.). */
 export function getSettings(): Promise<Settings> {
   return invoke<Settings>("get_settings");
