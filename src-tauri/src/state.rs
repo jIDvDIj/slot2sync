@@ -4,18 +4,23 @@
 
 use std::sync::{Arc, RwLock};
 
+use tauri::{Runtime, Wry};
+
 use crate::auth::AuthManager;
 use crate::secrets::SecretStore;
 use crate::storage::db::Db;
 use crate::sync::{LastSyncStore, LocalStorage, SyncEngine};
 
-pub struct AppState {
+/// Genérico sobre `Runtime` só para permitir testes com `tauri::test::
+/// MockRuntime` (ver `commands::tests`); em produção `R` sempre resolve para
+/// `Wry` por inferência a partir do `App<Wry>` no `setup()`.
+pub struct AppState<R: Runtime = Wry> {
     /// `None` quando nenhum provedor OAuth está configurado (primeiro uso, ou
     /// provedor ativo é `LocalFolder`, que não usa `AuthManager`). Trocável em
     /// tempo de execução — ver `commands::connect_*`/`disconnect_provider`.
     pub auth: RwLock<Option<Arc<AuthManager>>>,
     pub db: Db,
-    pub engine: Arc<SyncEngine>,
+    pub engine: Arc<SyncEngine<R>>,
     pub last_sync: LastSyncStore,
     pub storage: Arc<dyn LocalStorage>,
     /// Cliente HTTP e store de segredos compartilhados — os comandos

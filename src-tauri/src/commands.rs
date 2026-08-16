@@ -10,7 +10,7 @@ use std::sync::Arc;
 use serde::Serialize;
 #[cfg(mobile)]
 use tauri::Listener;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 #[cfg(desktop)]
 use tauri_plugin_autostart::ManagerExt;
 
@@ -120,8 +120,8 @@ fn build_oauth_remote(
 /// efetivo imediatamente, sem reiniciar o app — e persiste qual provedor
 /// ficou ativo. Chamado depois que a conexão (OAuth ou validação de pasta)
 /// já deu certo.
-async fn activate_provider(
-    state: &State<'_, AppState>,
+async fn activate_provider<R: Runtime>(
+    state: &State<'_, AppState<R>>,
     kind: ProviderKind,
     auth: Option<Arc<AuthManager>>,
     remote: Arc<dyn RemoteProvider>,
@@ -165,10 +165,10 @@ pub async fn connect_onedrive(app: AppHandle, state: State<'_, AppState>) -> App
 }
 
 #[cfg(desktop)]
-async fn connect_oauth_desktop(
+async fn connect_oauth_desktop<R: Runtime>(
     kind: ProviderKind,
-    app: &AppHandle,
-    state: &State<'_, AppState>,
+    app: &AppHandle<R>,
+    state: &State<'_, AppState<R>>,
 ) -> AppResult<AuthStatus> {
     let auth = Arc::new(AuthManager::new_for(
         kind,
@@ -207,10 +207,10 @@ pub async fn connect_onedrive(app: AppHandle, state: State<'_, AppState>) -> App
 }
 
 #[cfg(mobile)]
-async fn connect_oauth_mobile(
+async fn connect_oauth_mobile<R: Runtime>(
     kind: ProviderKind,
-    app: AppHandle,
-    state: State<'_, AppState>,
+    app: AppHandle<R>,
+    state: State<'_, AppState<R>>,
 ) -> AppResult<AuthStatus> {
     use std::sync::Mutex;
     use tokio::sync::oneshot;
@@ -260,6 +260,13 @@ pub async fn connect_local_folder(
     state: State<'_, AppState>,
     path: String,
 ) -> AppResult<AuthStatus> {
+    connect_local_folder_impl(&state, path).await
+}
+
+async fn connect_local_folder_impl<R: Runtime>(
+    state: &State<'_, AppState<R>>,
+    path: String,
+) -> AppResult<AuthStatus> {
     let root = PathBuf::from(&path);
     tokio::fs::create_dir_all(&root).await.map_err(|e| {
         AppError::Other(format!(
@@ -273,7 +280,7 @@ pub async fn connect_local_folder(
     let _ = tokio::fs::remove_file(&probe).await;
 
     let remote: Arc<dyn RemoteProvider> = Arc::new(crate::folder::FolderProvider::new(root));
-    activate_provider(&state, ProviderKind::LocalFolder, None, remote).await?;
+    activate_provider(state, ProviderKind::LocalFolder, None, remote).await?;
     let path_to_store = path.clone();
     state
         .db
@@ -293,6 +300,10 @@ pub async fn connect_local_folder(
 /// (primeiro uso): desconectado — a UI mostra o seletor de provedor.
 #[tauri::command]
 pub async fn get_auth_status(state: State<'_, AppState>) -> AppResult<AuthStatus> {
+    get_auth_status_impl(&state).await
+}
+
+async fn get_auth_status_impl<R: Runtime>(state: &State<'_, AppState<R>>) -> AppResult<AuthStatus> {
     let stored = state.db.with(settings::storage_provider).await?;
     match stored {
         None => Ok(AuthStatus::disconnected()),
@@ -327,6 +338,13 @@ pub async fn get_auth_status(state: State<'_, AppState>) -> AppResult<AuthStatus
 pub async fn disconnect_provider(
     app: AppHandle,
     state: State<'_, AppState>,
+) -> AppResult<AuthStatus> {
+    disconnect_provider_impl(&app, &state).await
+}
+
+async fn disconnect_provider_impl<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &State<'_, AppState<R>>,
 ) -> AppResult<AuthStatus> {
     let auth = {
         state
@@ -1019,4 +1037,280 @@ pub async fn list_backups(app: AppHandle) -> AppResult<Vec<crate::backups::Backu
     tokio::task::spawn_blocking(move || crate::backups::list(&dir))
         .await
         .map_err(|e| AppError::Other(format!("tarefa bloqueante abortada: {e}")))?
+}
+
+/// Cobre a lógica de troca/consulta de provedor extraída dos comandos acima
+/// (`activate_provider`, `*_impl`, `build_oauth_remote`) — a parte
+/// unitariamente testável sem uma janela real. O fluxo interativo completo
+/// (`connect_oauth_desktop`/`connect_oauth_mobile`: abrir navegador, esperar
+/// o redirect) fica de fora — mesmo racional do `ignore:` do `codecov.yml`
+/// para bootstrap/orquestração, validado manualmente.
+#[cfg(all(test, desktop, not(windows)))]
+mod tests {
+    use tauri::test::MockRuntime;
+
+    use super::*;
+    use crate::drive::mock::MockDrive;
+    use crate::secrets::{MemSecrets, SecretStore};
+    use crate::sync::{DesktopStorage, LastSyncStore, LocalStorage, SyncEngine};
+
+    /// Monta um `App<MockRuntime>` com um `AppState<MockRuntime>` gerenciado —
+    /// SQLite em memória, `MockDrive` como provedor remoto (não usado
+    /// diretamente por estes testes, só precisa existir para o engine), sem
+    /// provedor/keyring configurado. Devolvido junto com o `TempDir` dos
+    /// backups (precisa sobreviver ao teste).
+    async fn build_app() -> (tauri::App<MockRuntime>, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = Db::open_in_memory().unwrap();
+        let secrets: Arc<dyn SecretStore> = Arc::new(MemSecrets::default());
+        let drive = Arc::new(MockDrive::new());
+        let remote: Arc<dyn RemoteProvider> = drive;
+        let last_sync = LastSyncStore::default();
+
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+
+        let engine = Arc::new(SyncEngine::new(
+            db.clone(),
+            Some(remote),
+            app.handle().clone(),
+            last_sync.clone(),
+            tmp.path().join("backups"),
+            Arc::new(DesktopStorage) as Arc<dyn LocalStorage>,
+            secrets.clone(),
+        ));
+
+        app.manage(AppState::<MockRuntime> {
+            auth: std::sync::RwLock::new(None),
+            db,
+            engine,
+            last_sync,
+            storage: Arc::new(DesktopStorage) as Arc<dyn LocalStorage>,
+            http: reqwest::Client::new(),
+            secrets,
+        });
+
+        (app, tmp)
+    }
+
+    #[tokio::test]
+    async fn health_check_reporta_versao_e_pronto() {
+        let status = health_check().unwrap();
+        assert!(status.ready);
+        assert!(!status.version.is_empty());
+    }
+
+    #[tokio::test]
+    async fn discover_emulators_nao_falha_sem_instalacao_nenhuma() {
+        // Não afirma quantidade (depende da máquina) — só que a tarefa
+        // bloqueante completa e devolve uma lista (possivelmente vazia).
+        discover_emulators().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn build_oauth_remote_constroi_o_cliente_certo_por_provedor() {
+        let db = Db::open_in_memory().unwrap();
+        let secrets: Arc<dyn SecretStore> = Arc::new(MemSecrets::default());
+        let http = reqwest::Client::new();
+
+        for kind in [
+            ProviderKind::GoogleDrive,
+            ProviderKind::Dropbox,
+            ProviderKind::OneDrive,
+        ] {
+            let auth = Arc::new(AuthManager::new_for(kind, http.clone(), secrets.clone()));
+            let _remote = build_oauth_remote(kind, http.clone(), auth, db.clone());
+        }
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "LocalFolder não usa AuthManager/build_oauth_remote")]
+    async fn build_oauth_remote_e_inalcancavel_para_local_folder() {
+        let db = Db::open_in_memory().unwrap();
+        let secrets: Arc<dyn SecretStore> = Arc::new(MemSecrets::default());
+        let http = reqwest::Client::new();
+        let auth = Arc::new(AuthManager::new_for(
+            ProviderKind::GoogleDrive,
+            http.clone(),
+            secrets,
+        ));
+        let _ = build_oauth_remote(ProviderKind::LocalFolder, http, auth, db);
+    }
+
+    #[tokio::test]
+    async fn activate_provider_troca_auth_engine_e_persiste_settings() {
+        let (app, _tmp) = build_app().await;
+        let state = app.state::<AppState<MockRuntime>>();
+
+        let auth = Arc::new(AuthManager::new_for(
+            ProviderKind::Dropbox,
+            state.http.clone(),
+            state.secrets.clone(),
+        ));
+        let remote: Arc<dyn RemoteProvider> = Arc::new(MockDrive::new());
+        activate_provider(&state, ProviderKind::Dropbox, Some(auth), remote)
+            .await
+            .unwrap();
+
+        assert!(state.auth.read().unwrap().is_some());
+        let stored = state.db.with(settings::storage_provider).await.unwrap();
+        assert_eq!(stored, Some(ProviderKind::Dropbox));
+    }
+
+    #[tokio::test]
+    async fn activate_provider_local_folder_sem_auth() {
+        let (app, _tmp) = build_app().await;
+        let state = app.state::<AppState<MockRuntime>>();
+
+        let remote: Arc<dyn RemoteProvider> = Arc::new(MockDrive::new());
+        activate_provider(&state, ProviderKind::LocalFolder, None, remote)
+            .await
+            .unwrap();
+
+        assert!(state.auth.read().unwrap().is_none());
+        let stored = state.db.with(settings::storage_provider).await.unwrap();
+        assert_eq!(stored, Some(ProviderKind::LocalFolder));
+    }
+
+    #[tokio::test]
+    async fn get_auth_status_sem_provedor_escolhido_e_desconectado() {
+        let (app, _tmp) = build_app().await;
+        let state = app.state::<AppState<MockRuntime>>();
+
+        let status = get_auth_status_impl(&state).await.unwrap();
+        assert!(!status.connected);
+        assert!(status.email.is_none());
+    }
+
+    #[tokio::test]
+    async fn get_auth_status_local_folder_reflete_existencia_do_caminho() {
+        let (app, _tmp) = build_app().await;
+        let state = app.state::<AppState<MockRuntime>>();
+
+        let existing = tempfile::tempdir().unwrap();
+        state
+            .db
+            .with({
+                let path = existing.path().display().to_string();
+                move |conn| {
+                    settings::set_storage_provider(conn, ProviderKind::LocalFolder)?;
+                    settings::set_folder_provider_path(conn, &path)
+                }
+            })
+            .await
+            .unwrap();
+        let status = get_auth_status_impl(&state).await.unwrap();
+        assert!(status.connected);
+
+        state
+            .db
+            .with(|conn| {
+                settings::set_folder_provider_path(conn, "/caminho/que/nao/existe/slot2sync-x")
+            })
+            .await
+            .unwrap();
+        let status = get_auth_status_impl(&state).await.unwrap();
+        assert!(!status.connected);
+    }
+
+    #[tokio::test]
+    async fn get_auth_status_oauth_sem_auth_manager_carregado_e_desconectado() {
+        let (app, _tmp) = build_app().await;
+        let state = app.state::<AppState<MockRuntime>>();
+
+        state
+            .db
+            .with(|conn| settings::set_storage_provider(conn, ProviderKind::GoogleDrive))
+            .await
+            .unwrap();
+        // Provedor persistido, mas nenhum AuthManager carregado nesta sessão
+        // (ex.: app reiniciou e ainda não tentou reconectar) — desconectado.
+        let status = get_auth_status_impl(&state).await.unwrap();
+        assert!(!status.connected);
+    }
+
+    #[tokio::test]
+    async fn get_auth_status_oauth_com_auth_manager_delega_ao_keyring() {
+        let (app, _tmp) = build_app().await;
+        let state = app.state::<AppState<MockRuntime>>();
+
+        state
+            .db
+            .with(|conn| settings::set_storage_provider(conn, ProviderKind::GoogleDrive))
+            .await
+            .unwrap();
+        let auth = Arc::new(AuthManager::new_for(
+            ProviderKind::GoogleDrive,
+            state.http.clone(),
+            state.secrets.clone(),
+        ));
+        *state.auth.write().unwrap() = Some(auth);
+
+        // Sem refresh token salvo no keyring em memória: desconectado (não
+        // lança erro nem tenta rede).
+        let status = get_auth_status_impl(&state).await.unwrap();
+        assert!(!status.connected);
+    }
+
+    #[tokio::test]
+    async fn disconnect_provider_zera_estado_e_limpa_settings() {
+        let (app, _tmp) = build_app().await;
+        let state = app.state::<AppState<MockRuntime>>();
+
+        let auth = Arc::new(AuthManager::new_for(
+            ProviderKind::Dropbox,
+            state.http.clone(),
+            state.secrets.clone(),
+        ));
+        let remote: Arc<dyn RemoteProvider> = Arc::new(MockDrive::new());
+        activate_provider(&state, ProviderKind::Dropbox, Some(auth), remote)
+            .await
+            .unwrap();
+
+        let status = disconnect_provider_impl(app.handle(), &state)
+            .await
+            .unwrap();
+        assert!(!status.connected);
+        assert!(state.auth.read().unwrap().is_none());
+        let stored = state.db.with(settings::storage_provider).await.unwrap();
+        assert_eq!(stored, None);
+    }
+
+    #[tokio::test]
+    async fn connect_local_folder_impl_cria_pasta_gravavel_e_persiste_caminho() {
+        let (app, _tmp) = build_app().await;
+        let state = app.state::<AppState<MockRuntime>>();
+
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("nested").join("provider-root");
+        let status = connect_local_folder_impl(&state, target.display().to_string())
+            .await
+            .unwrap();
+
+        assert!(status.connected);
+        assert!(target.is_dir());
+        let stored = state.db.with(settings::storage_provider).await.unwrap();
+        assert_eq!(stored, Some(ProviderKind::LocalFolder));
+        let saved_path = state.db.with(settings::folder_provider_path).await.unwrap();
+        assert_eq!(
+            saved_path.as_deref(),
+            Some(target.display().to_string().as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_local_folder_impl_rejeita_caminho_nao_gravavel() {
+        let (app, _tmp) = build_app().await;
+        let state = app.state::<AppState<MockRuntime>>();
+
+        // Aponta para dentro de um arquivo comum — `create_dir_all` falha
+        // porque um componente do caminho já existe e não é diretório.
+        let blocker = tempfile::NamedTempFile::new().unwrap();
+        let impossible = blocker.path().join("subpasta");
+        let err = connect_local_folder_impl(&state, impossible.display().to_string())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AppError::Other(_)));
+    }
 }
