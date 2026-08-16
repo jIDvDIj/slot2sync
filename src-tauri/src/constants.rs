@@ -82,6 +82,16 @@ pub const DRIVE_BATCH_MIN_OPS: usize = 12;
 /// O scan local ignora arquivos com este sufixo.
 pub const TMP_SUFFIX: &str = ".slot2sync-tmp";
 
+/// Arquivo-marcador gravado na raiz de um emulador ao ser adicionado
+/// (`add_emulator`). Não é lido/checado hoje — `scan_local_bases` detecta
+/// desconexão pela ausência da própria pasta raiz (`AppError::FolderNotMounted`),
+/// que já cobre o caso comum (drive removível desaparece por completo). Um
+/// marcador por si só não distingue de forma confiável "nunca foi montado
+/// nesta instalação" de "estava montado e caiu, revelando um ponto de
+/// montagem local vazio" sem estado adicional além do filesystem — fica
+/// gravado como metadado para uma heurística futura mais completa.
+pub const LOCAL_ROOT_MARKER: &str = ".slot2sync-root";
+
 /// Identificação dos gatilhos de sync (logs e evento `sync:started`).
 pub const TRIGGER_STARTUP: &str = "startup";
 pub const TRIGGER_SHUTDOWN: &str = "shutdown";

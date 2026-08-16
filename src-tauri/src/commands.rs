@@ -464,6 +464,14 @@ async fn persist_detected(
     state: &State<'_, AppState>,
     profile: EmulatorProfile,
 ) -> AppResult<EmulatorProfile> {
+    // Marcador inerte na raiz (ver `constants::LOCAL_ROOT_MARKER`) — metadado
+    // para uma futura heurística de detecção de desconexão, não checado hoje.
+    #[cfg(desktop)]
+    {
+        let marker = profile.root_path.join(crate::constants::LOCAL_ROOT_MARKER);
+        let _ = tokio::fs::write(&marker, "").await;
+    }
+
     let to_store = profile.clone();
     let path_reset = state
         .db

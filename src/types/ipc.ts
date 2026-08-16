@@ -245,6 +245,7 @@ export interface AppErrorPayload {
     | "remote_not_found"
     | "insufficient_disk_space"
     | "integrity"
+    | "folder_not_mounted"
     | "other";
   message: string;
   /** Detalhe técnico sem o prefixo (caminho, nome, msg da lib). O frontend

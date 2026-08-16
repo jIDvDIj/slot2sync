@@ -51,6 +51,9 @@ pub enum AppError {
     #[error("falha de integridade na transferência: {0}")]
     Integrity(String),
 
+    #[error("pasta não encontrada: {0} — dispositivo desconectado ou pasta removida?")]
+    FolderNotMounted(String),
+
     #[error("{0}")]
     Other(String),
 }
@@ -71,6 +74,7 @@ impl AppError {
             AppError::RemoteObjectNotFound(_) => "remote_not_found",
             AppError::InsufficientDiskSpace { .. } => "insufficient_disk_space",
             AppError::Integrity(_) => "integrity",
+            AppError::FolderNotMounted(_) => "folder_not_mounted",
             AppError::Other(_) => "other",
         }
     }
@@ -96,6 +100,7 @@ impl AppError {
             | AppError::FileBusy(s)
             | AppError::RemoteObjectNotFound(s)
             | AppError::Integrity(s)
+            | AppError::FolderNotMounted(s)
             | AppError::Other(s) => s.clone(),
         }
     }
@@ -167,6 +172,13 @@ mod tests {
         let v = payload(AppError::Integrity("checksum divergente".into()));
         assert_eq!(v["code"], "integrity");
         assert_eq!(v["detail"], "checksum divergente");
+    }
+
+    #[test]
+    fn folder_not_mounted_serializa_code_e_detail() {
+        let v = payload(AppError::FolderNotMounted("/media/usb/PPSSPP".into()));
+        assert_eq!(v["code"], "folder_not_mounted");
+        assert_eq!(v["detail"], "/media/usb/PPSSPP");
     }
 
     #[test]

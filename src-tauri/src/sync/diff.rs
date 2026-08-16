@@ -52,6 +52,16 @@ pub struct PlannedOp {
 /// Consumida pela `DesktopStorage`; no mobile o scan é feito pelo plugin nativo.
 #[cfg_attr(not(desktop), allow(dead_code))]
 pub fn scan_local_bases(root: &Path, bases: &[PathBuf]) -> AppResult<Vec<LocalFile>> {
+    // Sem isto, uma raiz ausente (drive removível desconectado, pasta de rede
+    // fora do ar) faz todo `base` parecer "pasta inexistente, pular" — o scan
+    // volta vazio como se todo arquivo local tivesse sumido, e o diff tenta
+    // baixar de volta a coleção inteira para dentro do que seria o ponto de
+    // montagem (ver `AppError::FolderNotMounted`: erro dedicado e
+    // não-retryable, tratado antes de entrar no plano por arquivo).
+    if !root.is_dir() {
+        return Err(AppError::FolderNotMounted(root.display().to_string()));
+    }
+
     let mut seen = HashSet::new();
     let mut out = Vec::new();
     for base in bases {
@@ -537,5 +547,15 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let files = scan_local_bases(tmp.path(), &[PathBuf::from("NAO_EXISTE")]).unwrap();
         assert!(files.is_empty());
+    }
+
+    #[test]
+    fn scan_com_raiz_inexistente_retorna_folder_not_mounted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("pendrive-desconectado");
+
+        let err = scan_local_bases(&root, &[PathBuf::from("SAVEDATA")]).unwrap_err();
+
+        assert!(matches!(err, AppError::FolderNotMounted(_)));
     }
 }
