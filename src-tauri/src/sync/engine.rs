@@ -100,10 +100,12 @@ pub struct LastSync {
 pub type LastSyncStore = Arc<std::sync::Mutex<Option<LastSync>>>;
 
 enum OpOutcome {
-    Uploaded,
-    Downloaded,
+    /// A entrada do manifest vem junto para ser gravada em lote depois do
+    /// `buffer_unordered` da categoria, em vez de um `upsert` por arquivo.
+    Uploaded(Option<ManifestEntry>),
+    Downloaded(Option<ManifestEntry>),
     /// Download que também gerou um backup local (primeiro sync).
-    DownloadedWithBackup,
+    DownloadedWithBackup(Option<ManifestEntry>),
     /// Conflito registrado; nenhuma transferência feita.
     Conflicted,
     Queued,
@@ -595,11 +597,12 @@ impl<R: Runtime> SyncEngine<R> {
             summary.skipped += skipped;
 
             // Arquivos com mtime tocado mas conteúdo intacto: reancora o mtime
-            // no manifest para o pré-filtro não redisparar a cada sync.
-            for entry in mtime_refreshes {
+            // no manifest para o pré-filtro não redisparar a cada sync. Uma
+            // transação para a categoria inteira, não uma por arquivo.
+            if !mtime_refreshes.is_empty() {
                 let _ = self
                     .db
-                    .with(move |conn| manifest::upsert(conn, &entry))
+                    .with(move |conn| manifest::upsert_batch(conn, &mtime_refreshes))
                     .await;
             }
 
@@ -687,18 +690,34 @@ impl<R: Runtime> SyncEngine<R> {
                 .collect::<Vec<_>>()
                 .await;
 
+            // Uma transação por categoria para todas as entradas sincronizadas
+            // com sucesso, em vez de um `upsert` por arquivo transferido.
+            let mut synced_entries = Vec::new();
             for outcome in outcomes {
                 match outcome {
-                    OpOutcome::Uploaded => summary.uploaded += 1,
-                    OpOutcome::Downloaded => summary.downloaded += 1,
-                    OpOutcome::DownloadedWithBackup => {
+                    OpOutcome::Uploaded(entry) => {
+                        summary.uploaded += 1;
+                        synced_entries.extend(entry);
+                    }
+                    OpOutcome::Downloaded(entry) => {
+                        summary.downloaded += 1;
+                        synced_entries.extend(entry);
+                    }
+                    OpOutcome::DownloadedWithBackup(entry) => {
                         summary.downloaded += 1;
                         summary.backed_up += 1;
+                        synced_entries.extend(entry);
                     }
                     OpOutcome::Conflicted => summary.conflicts += 1,
                     OpOutcome::Queued => summary.queued += 1,
                     OpOutcome::Failed => summary.failed += 1,
                 }
+            }
+            if !synced_entries.is_empty() {
+                let _ = self
+                    .db
+                    .with(move |conn| manifest::upsert_batch(conn, &synced_entries))
+                    .await;
             }
         }
 
@@ -886,18 +905,20 @@ impl<R: Runtime> SyncEngine<R> {
     async fn execute_op(&self, ctx: &CategoryCtx, op: PlannedOp) -> OpOutcome {
         let rel_path = op.rel_path.clone();
         let bytes = op_bytes(&op);
-        let result = match op.action {
-            SyncAction::Upload => self.do_upload(ctx, &op).await,
-            SyncAction::Download => self.do_download(ctx, &op).await,
-            SyncAction::DownloadWithBackup => self.do_download_with_backup(ctx, &op).await,
-            SyncAction::Conflict => self.record_conflict(ctx, &op).await,
-            SyncAction::NoOp => Ok(()),
+        let result: AppResult<Option<ManifestEntry>> = match op.action {
+            SyncAction::Upload => self.do_upload(ctx, &op).await.map(Some),
+            SyncAction::Download => self.do_download(ctx, &op).await.map(Some),
+            SyncAction::DownloadWithBackup => {
+                self.do_download_with_backup(ctx, &op).await.map(Some)
+            }
+            SyncAction::Conflict => self.record_conflict(ctx, &op).await.map(|()| None),
+            SyncAction::NoOp => Ok(None),
         };
 
         self.emit_progress(ctx, &rel_path, bytes);
 
         match result {
-            Ok(()) => {
+            Ok(entry) => {
                 // Conflito não é transferência: não limpa a pendência (o
                 // emulador fica bloqueado até a resolução).
                 if matches!(op.action, SyncAction::Conflict) {
@@ -934,9 +955,9 @@ impl<R: Runtime> SyncEngine<R> {
                     .await;
 
                 match op.action {
-                    SyncAction::Upload => OpOutcome::Uploaded,
-                    SyncAction::DownloadWithBackup => OpOutcome::DownloadedWithBackup,
-                    _ => OpOutcome::Downloaded,
+                    SyncAction::Upload => OpOutcome::Uploaded(entry),
+                    SyncAction::DownloadWithBackup => OpOutcome::DownloadedWithBackup(entry),
+                    _ => OpOutcome::Downloaded(entry),
                 }
             }
             Err(err) => {
@@ -1031,42 +1052,39 @@ impl<R: Runtime> SyncEngine<R> {
         let remote_provider = self
             .remote()
             .expect("provedor remoto verificado no início do sync");
+        // Entradas do manifest de todos os chunks, gravadas numa única
+        // transação ao final — não uma por arquivo do batch.
+        let mut synced = Vec::new();
         for chunk in prepared.chunks(DRIVE_BATCH_MAX_OPS) {
             let ops: Vec<BatchUploadOp> = chunk.iter().map(|p| p.batch.clone()).collect();
             match remote_provider.upload_batch(ops).await {
                 Ok(files) if files.len() == chunk.len() => {
                     for (p, uploaded) in chunk.iter().zip(files) {
                         let drive_mtime = uploaded.modified_ms;
-                        let recorded = self
-                            .record_synced(
-                                ctx,
-                                &p.rel_path,
-                                uploaded.id,
-                                p.mtime_ms,
-                                drive_mtime,
-                                p.size_bytes,
-                                Some(p.content_hash.clone()),
-                            )
+                        synced.push(self.record_synced(
+                            ctx,
+                            &p.rel_path,
+                            uploaded.id,
+                            p.mtime_ms,
+                            drive_mtime,
+                            p.size_bytes,
+                            Some(p.content_hash.clone()),
+                        ));
+
+                        let (emulator, category, rel) =
+                            (ctx.emulator.clone(), ctx.category, p.rel_path.clone());
+                        let _ = self
+                            .db
+                            .with(move |conn| queue::resolve(conn, &emulator, category, &rel))
                             .await;
-                        if recorded.is_ok() {
-                            let (emulator, category, rel) =
-                                (ctx.emulator.clone(), ctx.category, p.rel_path.clone());
-                            let _ = self
-                                .db
-                                .with(move |conn| queue::resolve(conn, &emulator, category, &rel))
-                                .await;
-                            let (emulator, rel, bytes) =
-                                (ctx.emulator.clone(), p.rel_path.clone(), p.size_bytes);
-                            let _ = self
-                                .db
-                                .with(move |conn| {
-                                    stats::record_upload(conn, &emulator, bytes, &rel)
-                                })
-                                .await;
-                            summary.uploaded += 1;
-                        } else {
-                            summary.failed += 1;
-                        }
+                        let (emulator, rel, bytes) =
+                            (ctx.emulator.clone(), p.rel_path.clone(), p.size_bytes);
+                        let _ = self
+                            .db
+                            .with(move |conn| stats::record_upload(conn, &emulator, bytes, &rel))
+                            .await;
+                        summary.uploaded += 1;
+
                         self.emit_progress(ctx, &p.rel_path, p.size_bytes.max(0) as u64);
                     }
                 }
@@ -1087,6 +1105,13 @@ impl<R: Runtime> SyncEngine<R> {
                     }
                 }
             }
+        }
+
+        if !synced.is_empty() {
+            let _ = self
+                .db
+                .with(move |conn| manifest::upsert_batch(conn, &synced))
+                .await;
         }
 
         rest
@@ -1159,7 +1184,7 @@ impl<R: Runtime> SyncEngine<R> {
         })
     }
 
-    async fn do_upload(&self, ctx: &CategoryCtx, op: &PlannedOp) -> AppResult<()> {
+    async fn do_upload(&self, ctx: &CategoryCtx, op: &PlannedOp) -> AppResult<ManifestEntry> {
         let remote_provider = self.remote()?;
         let local = op
             .local
@@ -1203,7 +1228,7 @@ impl<R: Runtime> SyncEngine<R> {
         };
 
         let drive_mtime = uploaded.modified_ms;
-        self.record_synced(
+        Ok(self.record_synced(
             ctx,
             &op.rel_path,
             uploaded.id,
@@ -1211,15 +1236,18 @@ impl<R: Runtime> SyncEngine<R> {
             drive_mtime,
             size_bytes,
             Some(content_hash),
-        )
-        .await
+        ))
     }
 
     /// Primeiro sync de um arquivo que existe nos dois lados: copia o local
     /// para a pasta de backup e só então baixa o do Drive (que vence). O backup
     /// roda ANTES do download — se falhar, o download não acontece, evitando
     /// perder a versão local sem uma cópia de segurança.
-    async fn do_download_with_backup(&self, ctx: &CategoryCtx, op: &PlannedOp) -> AppResult<()> {
+    async fn do_download_with_backup(
+        &self,
+        ctx: &CategoryCtx,
+        op: &PlannedOp,
+    ) -> AppResult<ManifestEntry> {
         if let Some(local) = op.local.as_ref() {
             let backup_dest = self.storage.join(&ctx.backup_base, &op.rel_path);
             self.storage.copy_to(&local.loc, &backup_dest).await?;
@@ -1271,7 +1299,7 @@ impl<R: Runtime> SyncEngine<R> {
         }
     }
 
-    async fn do_download(&self, ctx: &CategoryCtx, op: &PlannedOp) -> AppResult<()> {
+    async fn do_download(&self, ctx: &CategoryCtx, op: &PlannedOp) -> AppResult<ManifestEntry> {
         let remote = op
             .remote
             .as_ref()
@@ -1332,7 +1360,7 @@ impl<R: Runtime> SyncEngine<R> {
             .await?;
         self.mark_recent_download(&dest);
 
-        self.record_synced(
+        Ok(self.record_synced(
             ctx,
             &op.rel_path,
             remote.id.clone(),
@@ -1340,8 +1368,7 @@ impl<R: Runtime> SyncEngine<R> {
             drive_mtime,
             size_bytes,
             Some(content_hash),
-        )
-        .await
+        ))
     }
 
     /// Registra um conflito (ambos os lados mudaram desde o último sync). Não
@@ -1438,7 +1465,10 @@ impl<R: Runtime> SyncEngine<R> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn record_synced(
+    /// Monta a entrada do manifest para um upload/download bem-sucedido. Não
+    /// grava no SQLite — quem chama coleta as entradas da categoria e grava
+    /// em lote (ver `sync_target`), em vez de um `upsert` por arquivo.
+    fn record_synced(
         &self,
         ctx: &CategoryCtx,
         rel_path: &str,
@@ -1447,8 +1477,8 @@ impl<R: Runtime> SyncEngine<R> {
         remote_mtime_ms: Option<i64>,
         size_bytes: i64,
         file_hash: Option<String>,
-    ) -> AppResult<()> {
-        let entry = ManifestEntry {
+    ) -> ManifestEntry {
+        ManifestEntry {
             emulator: ctx.emulator.clone(),
             category: ctx.category,
             rel_path: rel_path.to_string(),
@@ -1458,10 +1488,7 @@ impl<R: Runtime> SyncEngine<R> {
             size_bytes: Some(size_bytes),
             last_synced_at_ms: chrono::Utc::now().timestamp_millis(),
             file_hash,
-        };
-        self.db
-            .with(move |conn| manifest::upsert(conn, &entry))
-            .await
+        }
     }
 
     /// Snapshot do manifest publicado na raiz `Slot2Sync/` (best-effort).

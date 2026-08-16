@@ -70,6 +70,20 @@ pub fn upsert(conn: &Connection, entry: &ManifestEntry) -> AppResult<()> {
     Ok(())
 }
 
+/// Grava várias entradas numa única transação — usado ao final de um
+/// `sync_target` por categoria, no lugar de um `upsert` por arquivo transferido.
+pub fn upsert_batch(conn: &Connection, entries: &[ManifestEntry]) -> AppResult<()> {
+    if entries.is_empty() {
+        return Ok(());
+    }
+    let tx = conn.unchecked_transaction()?;
+    for entry in entries {
+        upsert(&tx, entry)?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
 #[allow(dead_code)]
 pub fn get(
     conn: &Connection,
@@ -229,6 +243,32 @@ mod tests {
             let rest = list_all(conn)?;
             assert_eq!(rest.len(), 1);
             assert_eq!(rest[0].emulator, "PCSX2");
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn upsert_batch_grava_todas_as_entradas_numa_transacao() {
+        let db = Db::open_in_memory().unwrap();
+        db.with_sync(|conn| {
+            let mut a = sample_entry();
+            a.rel_path = "a.bin".into();
+            let mut b = sample_entry();
+            b.rel_path = "b.bin".into();
+
+            upsert_batch(conn, &[a, b])?;
+
+            assert_eq!(list_all(conn)?.len(), 2);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn upsert_batch_vazio_e_no_op() {
+        let db = Db::open_in_memory().unwrap();
+        db.with_sync(|conn| {
+            upsert_batch(conn, &[])?;
+            assert!(list_all(conn)?.is_empty());
             Ok(())
         });
     }
