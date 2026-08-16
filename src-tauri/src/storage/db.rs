@@ -161,6 +161,12 @@ CREATE TABLE IF NOT EXISTS internal_kv (
 );
 ";
 
+/// Intervalo mínimo entre manutenções (7 dias) — não vale a pena rodar em
+/// todo shutdown, só quando o banco já cresceu o suficiente para o planner
+/// ficar desatualizado.
+const MAINTENANCE_INTERVAL_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+const MAINTENANCE_KV_KEY: &str = "last_maintenance_at_ms";
+
 #[derive(Clone)]
 pub struct Db {
     conn: Arc<Mutex<Connection>>,
@@ -216,6 +222,29 @@ impl Db {
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
+    }
+
+    /// Roda manutenção do SQLite (`ANALYZE`, `optimize`, `incremental_vacuum`,
+    /// checkpoint do WAL) se fizer mais de [`MAINTENANCE_INTERVAL_MS`] desde a
+    /// última vez, e grava o carimbo em `internal_kv`. Chamado no sync de
+    /// despedida (`shutdown`), não no caminho quente de sync.
+    pub async fn run_maintenance_if_due(&self) -> AppResult<()> {
+        self.with(|conn| {
+            let now = chrono::Utc::now().timestamp_millis();
+            let last: i64 = crate::storage::kv::get(conn, MAINTENANCE_KV_KEY)?
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0);
+            if now - last < MAINTENANCE_INTERVAL_MS {
+                return Ok(());
+            }
+            conn.execute_batch(
+                "ANALYZE; PRAGMA optimize; PRAGMA incremental_vacuum; \
+                 PRAGMA wal_checkpoint(TRUNCATE);",
+            )?;
+            crate::storage::kv::set(conn, MAINTENANCE_KV_KEY, &now.to_string())?;
+            Ok(())
+        })
+        .await
     }
 
     /// Executa `f` com a conexão num thread bloqueante do Tokio.
@@ -290,4 +319,41 @@ fn migrate(conn: &Connection) -> AppResult<()> {
     }
     conn.pragma_update(None, "user_version", version)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn run_maintenance_if_due_grava_carimbo_na_primeira_vez() {
+        let db = Db::open_in_memory().unwrap();
+        db.with_sync(|conn| {
+            assert_eq!(crate::storage::kv::get(conn, MAINTENANCE_KV_KEY)?, None);
+            Ok(())
+        });
+
+        db.run_maintenance_if_due().await.unwrap();
+
+        db.with_sync(|conn| {
+            assert!(crate::storage::kv::get(conn, MAINTENANCE_KV_KEY)?.is_some());
+            Ok(())
+        });
+    }
+
+    #[tokio::test]
+    async fn run_maintenance_if_due_nao_roda_de_novo_dentro_do_intervalo() {
+        let db = Db::open_in_memory().unwrap();
+        db.run_maintenance_if_due().await.unwrap();
+        let first: String = db.with_sync(|conn| {
+            Ok(crate::storage::kv::get(conn, MAINTENANCE_KV_KEY)?.unwrap())
+        });
+
+        db.run_maintenance_if_due().await.unwrap();
+        let second: String = db.with_sync(|conn| {
+            Ok(crate::storage::kv::get(conn, MAINTENANCE_KV_KEY)?.unwrap())
+        });
+
+        assert_eq!(first, second);
+    }
 }
