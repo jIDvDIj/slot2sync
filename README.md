@@ -108,6 +108,6 @@ Procurando como **instalar e usar** o Slot2Sync? Veja o
 A documentação técnica — arquitetura, decisões de projeto e catálogo da fronteira
 Rust↔TypeScript — mora no site, na aba
 [Para desenvolvedores](https://jidvdij.github.io/slot2sync-site/docs/dev/). Antes de abrir um
-PR, leia o [`CONTRIBUTING.md`](./CONTRIBUTING.md) e o [`CONDUCT.md`](./CONDUCT.md).
+PR, leia o [`CONTRIBUTING.md`](./CONTRIBUTING.md) e o [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md).
 
 Todo o código é licenciado sob a [GPL-3.0-or-later](./LICENSE).
