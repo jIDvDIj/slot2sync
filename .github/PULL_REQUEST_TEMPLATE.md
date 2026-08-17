@@ -22,5 +22,5 @@ a mudança de documentação necessária.
 
 ## Autoria
 
-Seu nome e e-mail serão adicionados automaticamente ao `AUTHORS` a partir dos metadados do
-commit.
+O `AUTHORS` é regenerado periodicamente a partir do git log
+(`scripts/update-authors.sh`), usando o nome e e-mail do seu commit.
