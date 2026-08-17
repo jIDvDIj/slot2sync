@@ -1,6 +1,6 @@
 name: Sugerir uma funcionalidade
 description: Proponha uma ideia de melhoria para o Slot2Sync.
-labels: ["enhancement"]
+labels: ["enhancement", "needs-triage"]
 body:
   - type: markdown
     attributes:
@@ -11,33 +11,25 @@ body:
         — talvez já esteja planejado.
 
   - type: textarea
-    id: problem
+    id: feature
     attributes:
-      label: Qual problema isso resolve?
-      description: Descreva a situação atual e o que incomoda nela.
+      label: Descrição da funcionalidade
+      description: Descreva o comportamento que você gostaria de ver.
     validations:
       required: true
 
   - type: textarea
-    id: solution
+    id: problem-usecase
     attributes:
-      label: Solução proposta
-      description: Como você imagina que isso funcionaria?
+      label: Problema ou caso de uso
+      description: Que problema isso resolve, ou qual é o caso de uso? É mais provável ser implementado se for útil para um número maior de usuários.
     validations:
       required: true
 
   - type: textarea
     id: alternatives
     attributes:
-      label: Alternativas consideradas
-      description: Outras formas de resolver o mesmo problema, se houver.
+      label: Alternativas ou soluções de contorno
+      description: Descreva alternativas ou soluções de contorno que você já considerou (e talvez tenha descartado).
     validations:
-      required: false
-
-  - type: textarea
-    id: extra
-    attributes:
-      label: Contexto adicional
-      description: Screenshots, mockups, links, ou qualquer outra informação relevante.
-    validations:
-      required: false
+      required: true

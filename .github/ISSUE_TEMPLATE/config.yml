@@ -1,11 +1,5 @@
 blank_issues_enabled: false
 contact_links:
-  - name: Vulnerabilidade de segurança
-    url: https://github.com/jIDvDIj/slot2sync/security/advisories/new
-    about: Não abra uma issue pública para falhas de segurança — siga o processo em SECURITY.md.
-  - name: Dúvida sobre como contribuir
-    url: https://github.com/jIDvDIj/slot2sync/blob/main/CONTRIBUTING.md
-    about: Guia de contribuição — setup, credenciais de teste, convenções de commit.
-  - name: Guia do usuário
-    url: https://jidvdij.github.io/slot2sync-site/docs/
-    about: Documentação de instalação e uso do Slot2Sync.
+  - name: Preciso de ajuda / tenho uma dúvida
+    url: https://github.com/jIDvDIj/slot2sync/discussions
+    about: Tire dúvidas, peça suporte e converse com a comunidade.

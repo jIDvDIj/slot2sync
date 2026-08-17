@@ -1,21 +1,26 @@
-## O que este PR faz
+### Objetivo
 
-<!-- Descreva a mudança e por quê. Se resolve uma issue, referencie-a (ex. "Closes #42"). -->
+Descreva o objetivo desta mudança. Se resolve uma issue existente, referencie-a no corpo do PR
+(ex. `Closes #42`) — commits seguem [Conventional Commits](../CONTRIBUTING.md) em inglês
+(`tipo(escopo): descrição`).
 
-## Como testar
+### Como testar
 
-<!-- Passos manuais, se aplicável (ex. fluxo de UI que precisa ser conferido no Windows). -->
+Descreva o que foi testado e, se não houver testes automatizados cobrindo a mudança, como o
+revisor pode testar manualmente.
 
-## Checklist
+### Screenshots
 
-- [ ] Rodei `sh scripts/install-hooks.sh` neste clone (hook de validação de commit).
-- [ ] Commits seguem [Conventional Commits](../CONTRIBUTING.md) em inglês (`tipo(escopo): descrição`).
-- [ ] `cargo test`, `cargo clippy` e `cargo fmt --check` passam (mudanças em `src-tauri/`).
-- [ ] `npm run lint`, `npm run format:check` e `npm run build` passam (mudanças em `src/`).
-- [ ] Adicionei/atualizei testes cobrindo a mudança (o CI exige ≥80% de cobertura no patch via Codecov).
-- [ ] Não modifiquei `.github/workflows/*.yml`, `src-tauri/build.rs`, `worker/`, `package.json` ou `Cargo.toml` sem necessidade — essas áreas afetam pipeline/credenciais e pedem atenção extra na revisão.
-- [ ] Não incluí segredos, tokens ou credenciais (nem como exemplo) em código, testes ou mensagens de commit.
+Se for uma mudança de UI, inclua screenshots do antes/depois. Se não, sinta-se à vontade para
+apagar esta seção.
 
-## Contexto adicional
+### Documentação
 
-<!-- Screenshots, decisões de design, trade-offs considerados, etc. -->
+Se for uma mudança visível para o usuário (inclusive na fronteira IPC), inclua aqui um link para
+o PR correspondente no [`slot2sync-site`](https://github.com/jIDvDIj/slot2sync-site) ou descreva
+a mudança de documentação necessária.
+
+## Autoria
+
+Seu nome e e-mail serão adicionados automaticamente ao `AUTHORS` a partir dos metadados do
+commit.
