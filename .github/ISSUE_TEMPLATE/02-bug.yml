@@ -1,0 +1,58 @@
+name: Relatar um bug
+description: Algo não funcionou como esperado no Slot2Sync.
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        :no_entry_sign: Encontrou uma vulnerabilidade de segurança? Não abra uma issue pública
+        — siga o processo descrito em [`SECURITY.md`](../../SECURITY.md).
+
+        :interrobang: Não tem certeza se é um bug, ou só precisa de ajuda para configurar algo?
+        Use as [Discussions](https://github.com/jIDvDIj/slot2sync/discussions) em vez de abrir
+        uma issue.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: O que aconteceu?
+      description: Conte o que você viu, o que esperava ver, e os passos para reproduzir.
+      placeholder: Descreva o problema...
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Versão do Slot2Sync
+      description: Veja em Configurações, ou o nome do instalador baixado.
+      placeholder: v1.4.0
+    validations:
+      required: true
+
+  - type: input
+    id: platform
+    attributes:
+      label: Plataforma e sistema operacional
+      placeholder: Windows 11 x64
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnóstico
+      description: |
+        Se possível, gere o arquivo de diagnóstico em **Configurações → Backups → Exportar
+        diagnóstico** e anexe o `.zip` aqui (arraste o arquivo para esta caixa de texto). Ele
+        reúne logs, fila de pendências e histórico de erros recentes sem expor tokens.
+    validations:
+      required: false
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Contexto adicional
+      description: Emulador e provedor de armazenamento envolvidos, screenshots, ou qualquer outra informação relevante.
+    validations:
+      required: false

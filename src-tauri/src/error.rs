@@ -25,6 +25,11 @@ pub enum AppError {
     #[error("erro no cofre de credenciais: {0}")]
     Keyring(#[from] keyring::Error),
 
+    // Export de diagnóstico (`export_diagnostics`) é exclusivo do desktop.
+    #[cfg(desktop)]
+    #[error("erro ao gerar zip: {0}")]
+    Zip(#[from] zip::result::ZipError),
+
     #[error("erro de serialização: {0}")]
     Serialization(#[from] serde_json::Error),
 
@@ -51,6 +56,17 @@ pub enum AppError {
     #[error("falha de integridade na transferência: {0}")]
     Integrity(String),
 
+    #[error("pasta não encontrada: {0} — dispositivo desconectado ou pasta removida?")]
+    FolderNotMounted(String),
+
+    /// Windows apenas: dois arquivos com nomes diferindo só em
+    /// maiúsculas/minúsculas colidiriam no mesmo destino (NTFS é
+    /// case-insensitive). Ver `SyncEngine::check_case_collision`.
+    #[error(
+        "colisão de maiúsculas/minúsculas: já existe \"{existing}\" (baixando \"{incoming}\")"
+    )]
+    CaseConflict { existing: String, incoming: String },
+
     #[error("{0}")]
     Other(String),
 }
@@ -63,6 +79,8 @@ impl AppError {
             AppError::Network(_) => "network",
             #[cfg(desktop)]
             AppError::Keyring(_) => "keyring",
+            #[cfg(desktop)]
+            AppError::Zip(_) => "zip",
             AppError::Serialization(_) => "serialization",
             AppError::Auth(_) => "auth",
             AppError::EmulatorNotDetected(_) => "emulator_not_detected",
@@ -71,6 +89,8 @@ impl AppError {
             AppError::RemoteObjectNotFound(_) => "remote_not_found",
             AppError::InsufficientDiskSpace { .. } => "insufficient_disk_space",
             AppError::Integrity(_) => "integrity",
+            AppError::FolderNotMounted(_) => "folder_not_mounted",
+            AppError::CaseConflict { .. } => "case_conflict",
             AppError::Other(_) => "other",
         }
     }
@@ -85,17 +105,23 @@ impl AppError {
             AppError::Network(e) => e.to_string(),
             #[cfg(desktop)]
             AppError::Keyring(e) => e.to_string(),
+            #[cfg(desktop)]
+            AppError::Zip(e) => e.to_string(),
             AppError::Serialization(e) => e.to_string(),
             AppError::InsufficientDiskSpace {
                 needed_mb,
                 available_mb,
             } => format!("necessário {needed_mb} MB, disponível {available_mb} MB"),
+            AppError::CaseConflict { existing, incoming } => {
+                format!("existente: {existing}, chegando: {incoming}")
+            }
             AppError::Auth(s)
             | AppError::EmulatorNotDetected(s)
             | AppError::EmulatorExists(s)
             | AppError::FileBusy(s)
             | AppError::RemoteObjectNotFound(s)
             | AppError::Integrity(s)
+            | AppError::FolderNotMounted(s)
             | AppError::Other(s) => s.clone(),
         }
     }
@@ -167,6 +193,23 @@ mod tests {
         let v = payload(AppError::Integrity("checksum divergente".into()));
         assert_eq!(v["code"], "integrity");
         assert_eq!(v["detail"], "checksum divergente");
+    }
+
+    #[test]
+    fn folder_not_mounted_serializa_code_e_detail() {
+        let v = payload(AppError::FolderNotMounted("/media/usb/PPSSPP".into()));
+        assert_eq!(v["code"], "folder_not_mounted");
+        assert_eq!(v["detail"], "/media/usb/PPSSPP");
+    }
+
+    #[test]
+    fn case_conflict_serializa_code_e_detail() {
+        let v = payload(AppError::CaseConflict {
+            existing: "Save.bin".into(),
+            incoming: "save.bin".into(),
+        });
+        assert_eq!(v["code"], "case_conflict");
+        assert_eq!(v["detail"], "existente: Save.bin, chegando: save.bin");
     }
 
     #[test]

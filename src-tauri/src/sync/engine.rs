@@ -9,13 +9,13 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use futures::stream::{self, StreamExt};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Runtime, Wry};
 use tauri_plugin_notification::NotificationExt;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Semaphore};
 
 use super::conflict::{SyncAction, TIMESTAMP_TOLERANCE_MS};
 use super::diff::{self, CategoryPlan, LocalFile, PlannedOp};
@@ -23,16 +23,17 @@ use super::storage::{FileLoc, LocalStorage};
 use super::{SyncCategory, SyncDirection, SyncProgress, SyncTarget};
 use crate::constants::{
     DRIVE_BATCH_MAX_OPS, DRIVE_BATCH_MIN_OPS, DRIVE_MANIFEST_FILE, DRIVE_MAX_CONCURRENT_TRANSFERS,
-    DRIVE_SIMPLE_UPLOAD_MAX_BYTES,
+    DRIVE_SIMPLE_UPLOAD_MAX_BYTES, MAX_BYTES_IN_FLIGHT, MAX_DISK_WRITES, MAX_NETWORK_OPS,
 };
 use crate::error::{AppError, AppResult};
 use crate::events::{
     EVT_SYNC_COMPLETED, EVT_SYNC_CONFLICT, EVT_SYNC_ERROR, EVT_SYNC_PROGRESS, EVT_SYNC_STARTED,
+    EVT_SYNC_STATE_CHANGED,
 };
 use crate::remote::{BatchUploadOp, DeviceTag, RemoteProvider};
 use crate::storage::conflicts::{self, Conflict};
 use crate::storage::db::Db;
-use crate::storage::manifest::{self, ManifestEntry};
+use crate::storage::manifest::{self, ManifestEntry, FLAG_CONFLICT, FLAG_PENDING};
 use crate::storage::settings::{self, NotificationLevel};
 use crate::storage::{emulators, queue, stats};
 use crate::versioning::Versioner;
@@ -69,6 +70,49 @@ impl SyncSummary {
     }
 }
 
+/// Estado corrente do `SyncEngine`, visto de fora (tray, badge do app). O
+/// frontend renderiza a partir disto e de [`EVT_SYNC_STATE_CHANGED`] em vez
+/// de acumular os eventos discretos (`sync:started`/`progress`/`completed`/
+/// `conflict`/`error`) — reconectar no meio de um sync já chega com o estado
+/// certo, sem precisar ter visto os eventos anteriores.
+///
+/// Não é um estado travado por emulador: reflete a execução de `sync_all`
+/// como um todo. `Conflict`/`Error` são transições momentâneas (emitidas
+/// quando acontecem) — o sync continua para os demais emuladores da mesma
+/// leva, então o estado segue para `Scanning`/`Syncing` do próximo alvo, ou
+/// `Idle` ao final da leva.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SyncState {
+    Idle,
+    Scanning,
+    Syncing,
+    Conflict,
+    Error(String),
+}
+
+impl SyncState {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SyncState::Idle => "idle",
+            SyncState::Scanning => "scanning",
+            SyncState::Syncing => "syncing",
+            SyncState::Conflict => "conflict",
+            SyncState::Error(_) => "error",
+        }
+    }
+}
+
+/// Payload do evento `sync:state-changed`. (→ ipc.ts)
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncStateChanged {
+    pub from: &'static str,
+    pub to: &'static str,
+    pub emulator: Option<String>,
+    /// Só preenchido quando `to == "error"`.
+    pub error_message: Option<String>,
+}
+
 /// Payload do evento `sync:started`. (→ ipc.ts)
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -81,6 +125,16 @@ pub struct SyncStarted {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncError {
+    pub emulator: Option<String>,
+    pub message: String,
+}
+
+/// Entrada do histórico de erros em memória (`SyncEngine::recent_errors`),
+/// exposto via `get_recent_errors`. (→ ipc.ts)
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ErrorEntry {
+    pub at_ms: i64,
     pub emulator: Option<String>,
     pub message: String,
 }
@@ -100,10 +154,12 @@ pub struct LastSync {
 pub type LastSyncStore = Arc<std::sync::Mutex<Option<LastSync>>>;
 
 enum OpOutcome {
-    Uploaded,
-    Downloaded,
+    /// A entrada do manifest vem junto para ser gravada em lote depois do
+    /// `buffer_unordered` da categoria, em vez de um `upsert` por arquivo.
+    Uploaded(Option<ManifestEntry>),
+    Downloaded(Option<ManifestEntry>),
     /// Download que também gerou um backup local (primeiro sync).
-    DownloadedWithBackup,
+    DownloadedWithBackup(Option<ManifestEntry>),
     /// Conflito registrado; nenhuma transferência feita.
     Conflicted,
     Queued,
@@ -149,6 +205,10 @@ struct CategoryCtx {
     /// progresso em bytes, velocidade e ETA (não só contagem de arquivos).
     bytes_total: u64,
     bytes_done: AtomicU64,
+    /// Nome do último arquivo concluído — lido pelo ticker de progresso
+    /// (`emit_progress_snapshot`), já que múltiplas transferências rodam
+    /// concorrentemente e não há um "arquivo atual" único a qualquer momento.
+    last_file: std::sync::Mutex<String>,
 }
 
 /// Genérico sobre o runtime do Tauri para ser testável: em produção é o `Wry`
@@ -177,6 +237,21 @@ pub struct SyncEngine<R: Runtime = Wry> {
     /// O watcher de filesystem consulta para não reagir às próprias escritas
     /// do sync (anti-loop). Entradas expiram após `RECENT_DOWNLOAD_TTL_SECS`.
     recent_downloads: std::sync::Mutex<std::collections::HashMap<PathBuf, Instant>>,
+    /// Limita chamadas de rede simultâneas (upload/download com o provedor
+    /// remoto), separado do limite de I/O de disco — são recursos diferentes
+    /// e não faz sentido que uma escrita local lenta seja bloqueada por uma
+    /// chamada de API em andamento, nem o contrário.
+    network_ops: Semaphore,
+    /// Limita I/O de disco local simultâneo (leitura em `do_upload`, escrita
+    /// em `do_download`). Em HDD, escritas sequenciais são mais rápidas que
+    /// paralelas — um teto baixo evita thrashing de cabeça de leitura/escrita.
+    disk_io: Semaphore,
+    /// Estado corrente exposto ao frontend (ver [`SyncState`]).
+    current_state: std::sync::Mutex<(SyncState, Option<String>)>,
+    /// Histórico de erros em memória (mais recente por último), exposto via
+    /// `get_recent_errors`/`clear_errors`. Perdido a cada reinício do app —
+    /// não é persistido, é só um retrato rápido pra diagnóstico.
+    recent_errors: std::sync::Mutex<std::collections::VecDeque<ErrorEntry>>,
 }
 
 impl<R: Runtime> SyncEngine<R> {
@@ -204,7 +279,72 @@ impl<R: Runtime> SyncEngine<R> {
             secrets,
             running: Mutex::new(()),
             recent_downloads: std::sync::Mutex::new(std::collections::HashMap::new()),
+            network_ops: Semaphore::new(MAX_NETWORK_OPS),
+            disk_io: Semaphore::new(MAX_DISK_WRITES),
+            current_state: std::sync::Mutex::new((SyncState::Idle, None)),
+            recent_errors: std::sync::Mutex::new(std::collections::VecDeque::new()),
         }
+    }
+
+    /// Retrato do histórico de erros em memória, mais antigo primeiro.
+    pub fn recent_errors(&self) -> Vec<ErrorEntry> {
+        self.recent_errors.lock().unwrap().iter().cloned().collect()
+    }
+
+    /// Esvazia o histórico de erros (ação "limpar" da UI de diagnóstico).
+    pub fn clear_errors(&self) {
+        self.recent_errors.lock().unwrap().clear();
+    }
+
+    /// Registra uma entrada no histórico de erros, descartando a mais antiga
+    /// se já estiver no teto (`MAX_RECENT_ERRORS`).
+    fn record_error(&self, emulator: Option<&str>, message: String) {
+        let mut buf = self.recent_errors.lock().unwrap();
+        if buf.len() >= crate::constants::MAX_RECENT_ERRORS {
+            buf.pop_front();
+        }
+        buf.push_back(ErrorEntry {
+            at_ms: chrono::Utc::now().timestamp_millis(),
+            emulator: emulator.map(str::to_string),
+            message,
+        });
+    }
+
+    /// Estado corrente do engine e, se houver, o emulador associado — usado
+    /// pelo comando `get_sync_state` para o frontend renderizar o estado
+    /// certo ao reconectar no meio de um sync, sem depender de ter recebido
+    /// os eventos anteriores.
+    pub fn current_sync_state(&self) -> (SyncState, Option<String>) {
+        self.current_state.lock().unwrap().clone()
+    }
+
+    /// Muda o estado corrente e emite `sync:state-changed`. Sem efeito
+    /// (não emite) se `to` for igual ao estado atual E o emulador não mudar —
+    /// evita ruído de eventos idênticos repetidos.
+    fn transition(&self, to: SyncState, emulator: Option<&str>) {
+        let mut guard = self.current_state.lock().unwrap();
+        let (from, from_emulator) = &*guard;
+        if *from == to && from_emulator.as_deref() == emulator {
+            return;
+        }
+        let from_str = from.as_str();
+        let to_str = to.as_str();
+        let error_message = match &to {
+            SyncState::Error(msg) => Some(msg.clone()),
+            _ => None,
+        };
+        *guard = (to, emulator.map(str::to_string));
+        drop(guard);
+
+        let _ = self.app.emit(
+            EVT_SYNC_STATE_CHANGED,
+            &SyncStateChanged {
+                from: from_str,
+                to: to_str,
+                emulator: emulator.map(str::to_string),
+                error_message,
+            },
+        );
     }
 
     /// Troca o provedor de storage ativo (conectar pela primeira vez ou mudar
@@ -365,6 +505,7 @@ impl<R: Runtime> SyncEngine<R> {
                 direction,
             },
         );
+        self.transition(SyncState::Scanning, None);
 
         // Rótulo desta execução, usado para agrupar os backups locais do
         // primeiro sync numa pasta por sync.
@@ -384,6 +525,8 @@ impl<R: Runtime> SyncEngine<R> {
                 tracing::info!(emulador = %target.label, "conflito pendente; sync do emulador bloqueado");
                 continue;
             }
+
+            self.transition(SyncState::Scanning, Some(&target.label));
 
             match self
                 .sync_target(
@@ -409,6 +552,8 @@ impl<R: Runtime> SyncEngine<R> {
                 Err(err) => {
                     summary.failed += 1;
                     tracing::error!(emulador = %target.label, error = %err, "sync do emulador falhou");
+                    self.transition(SyncState::Error(err.to_string()), Some(&target.label));
+                    self.record_error(Some(&target.label), err.to_string());
                     let _ = self.app.emit(
                         EVT_SYNC_ERROR,
                         &SyncError {
@@ -422,6 +567,8 @@ impl<R: Runtime> SyncEngine<R> {
                 }
             }
         }
+
+        self.transition(SyncState::Idle, None);
 
         if let Err(err) = self.publish_manifest_snapshot().await {
             tracing::warn!(error = %err, "falha ao publicar sync_manifest.json no Drive");
@@ -517,6 +664,18 @@ impl<R: Runtime> SyncEngine<R> {
             .with(move |conn| stats::touch_last_scan(conn, &emulator, now_ms))
             .await;
 
+        // Restos de um download interrompido por queda entre a escrita e o
+        // rename atômico (ver `TMP_SUFFIX`) — best-effort, uma vez por
+        // emulador, antes de qualquer scan.
+        let all_bases: Vec<PathBuf> = target
+            .categories
+            .iter()
+            .flat_map(|(_, bases)| bases.iter().cloned())
+            .collect();
+        self.storage
+            .cleanup_orphaned_temp_files(&target.root, &all_bases)
+            .await;
+
         // Padrões de exclusão do emulador, compilados uma vez por sync.
         let exclude = super::build_exclude_set(&target.exclude_patterns);
 
@@ -595,11 +754,12 @@ impl<R: Runtime> SyncEngine<R> {
             summary.skipped += skipped;
 
             // Arquivos com mtime tocado mas conteúdo intacto: reancora o mtime
-            // no manifest para o pré-filtro não redisparar a cada sync.
-            for entry in mtime_refreshes {
+            // no manifest para o pré-filtro não redisparar a cada sync. Uma
+            // transação para a categoria inteira, não uma por arquivo.
+            if !mtime_refreshes.is_empty() {
                 let _ = self
                     .db
-                    .with(move |conn| manifest::upsert(conn, &entry))
+                    .with(move |conn| manifest::upsert_batch(conn, &mtime_refreshes))
                     .await;
             }
 
@@ -650,6 +810,8 @@ impl<R: Runtime> SyncEngine<R> {
                     .await?;
             }
 
+            self.transition(SyncState::Syncing, Some(&target.label));
+
             let ctx = CategoryCtx {
                 emulator: target.label.clone(),
                 category: *category,
@@ -674,6 +836,7 @@ impl<R: Runtime> SyncEngine<R> {
                 completed: AtomicU32::new(0),
                 bytes_total: plan.iter().map(op_bytes).sum(),
                 bytes_done: AtomicU64::new(0),
+                last_file: std::sync::Mutex::new(String::new()),
             };
 
             // Uploads de arquivos NOVOS e pequenos vão em lote (Batch API),
@@ -682,23 +845,79 @@ impl<R: Runtime> SyncEngine<R> {
             // e o que o batch não conseguir seguem pelo caminho per-file abaixo.
             let plan = self.batch_new_uploads(&ctx, plan, &mut summary).await;
 
-            let outcomes = stream::iter(plan.into_iter().map(|op| self.execute_op(&ctx, op)))
-                .buffer_unordered(DRIVE_MAX_CONCURRENT_TRANSFERS)
-                .collect::<Vec<_>>()
-                .await;
+            // Além do teto de contagem do `buffer_unordered` abaixo, um
+            // semáforo ponderado por bytes evita que poucos arquivos grandes
+            // (savestates) monopolizem as vagas de um jeito que um monte de
+            // saves pequenos jamais faria — cada op só roda depois de
+            // reservar seu peso em bytes (até o teto do semáforo inteiro).
+            let bytes_semaphore = Semaphore::new(MAX_BYTES_IN_FLIGHT as usize);
+            let transfers = stream::iter(plan.into_iter().map(|op| {
+                let (bytes_semaphore, ctx) = (&bytes_semaphore, &ctx);
+                async move {
+                    let weight = op_bytes(&op).max(1).min(MAX_BYTES_IN_FLIGHT as u64) as u32;
+                    let _permit = bytes_semaphore
+                        .acquire_many(weight)
+                        .await
+                        .expect("semáforo de bytes em trânsito nunca é fechado");
+                    self.execute_op(ctx, op).await
+                }
+            }))
+            .buffer_unordered(DRIVE_MAX_CONCURRENT_TRANSFERS)
+            .collect::<Vec<_>>();
 
+            // Retrato consolidado a cada 500ms em vez de um evento por
+            // arquivo — um sync de 200 arquivos não devia inundar o frontend
+            // com 200 eventos. O ticker roda até o `select!` resolver pelo
+            // outro lado (transferências concluídas), quando é cancelado.
+            let mut last_emitted: u32 = ctx.completed.load(Ordering::Relaxed);
+            let ticker = async {
+                let mut interval = tokio::time::interval(Duration::from_millis(500));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                loop {
+                    interval.tick().await;
+                    let completed = ctx.completed.load(Ordering::Relaxed);
+                    if completed != last_emitted {
+                        last_emitted = completed;
+                        self.emit_progress_snapshot(&ctx);
+                    }
+                }
+            };
+            let outcomes = tokio::select! {
+                outcomes = transfers => outcomes,
+                _ = ticker => unreachable!("o ticker nunca termina sozinho"),
+            };
+            // Retrato final garantido (completed == total) mesmo que o
+            // último arquivo tenha terminado entre dois ticks do timer.
+            self.emit_progress_snapshot(&ctx);
+
+            // Uma transação por categoria para todas as entradas sincronizadas
+            // com sucesso, em vez de um `upsert` por arquivo transferido.
+            let mut synced_entries = Vec::new();
             for outcome in outcomes {
                 match outcome {
-                    OpOutcome::Uploaded => summary.uploaded += 1,
-                    OpOutcome::Downloaded => summary.downloaded += 1,
-                    OpOutcome::DownloadedWithBackup => {
+                    OpOutcome::Uploaded(entry) => {
+                        summary.uploaded += 1;
+                        synced_entries.extend(entry);
+                    }
+                    OpOutcome::Downloaded(entry) => {
+                        summary.downloaded += 1;
+                        synced_entries.extend(entry);
+                    }
+                    OpOutcome::DownloadedWithBackup(entry) => {
                         summary.downloaded += 1;
                         summary.backed_up += 1;
+                        synced_entries.extend(entry);
                     }
                     OpOutcome::Conflicted => summary.conflicts += 1,
                     OpOutcome::Queued => summary.queued += 1,
                     OpOutcome::Failed => summary.failed += 1,
                 }
+            }
+            if !synced_entries.is_empty() {
+                let _ = self
+                    .db
+                    .with(move |conn| manifest::upsert_batch(conn, &synced_entries))
+                    .await;
             }
         }
 
@@ -718,17 +937,60 @@ impl<R: Runtime> SyncEngine<R> {
             .iter()
             .map(|e| (e.rel_path.as_str(), (&e.file_hash, e.local_mtime_ms)))
             .collect();
+        // Remanescente sub-ms da âncora, à parte para não mexer no padrão de
+        // desreferência acima. `0` = sem precisão sub-ms conhecida.
+        let ns_anchors: HashMap<&str, i64> = manifest
+            .iter()
+            .map(|e| (e.rel_path.as_str(), e.mtime_ns))
+            .collect();
 
-        for file in &mut local {
+        // 1ª passada: decide quais arquivos precisam de hash (I/O assíncrono,
+        // sequencial) e junta o conteúdo lido — o hash em si (CPU-bound) é
+        // calculado à parte, em paralelo, depois desta passada.
+        let mut to_hash: Vec<(usize, Vec<u8>)> = Vec::new();
+        for (idx, file) in local.iter().enumerate() {
             let Some((known_hash, Some(anchor))) = anchors.get(file.rel_path.as_str()) else {
                 continue;
             };
-            if known_hash.is_none() || (file.mtime_ms - anchor).abs() <= TIMESTAMP_TOLERANCE_MS {
+            if known_hash.is_none() {
+                continue;
+            }
+            let ms_within_tolerance = (file.mtime_ms - anchor).abs() <= TIMESTAMP_TOLERANCE_MS;
+            // Dentro da tolerância em ms, mas o remanescente sub-ms diverge de
+            // um valor conhecido dos dois lados: escrita real diferente que a
+            // tolerância de 2s teria mascarado (ex.: duas gravações do
+            // emulador a menos de 2s uma da outra).
+            let anchor_ns = ns_anchors.get(file.rel_path.as_str()).copied().unwrap_or(0);
+            let ns_disagrees = anchor_ns != 0 && file.mtime_ns != 0 && anchor_ns != file.mtime_ns;
+            if ms_within_tolerance && !ns_disagrees {
                 continue;
             }
             if let Ok(content) = self.storage.read(&file.loc).await {
-                file.hash = Some(super::sha256_hex(&content));
+                to_hash.push((idx, content));
             }
+        }
+
+        if to_hash.is_empty() {
+            return local;
+        }
+
+        // 2ª passada: SHA-256 de cada arquivo tocado em paralelo via rayon —
+        // savestates grandes tocados na mesma categoria não esperam uns pelos
+        // outros. `spawn_blocking` tira o cálculo do executor async: o join
+        // do rayon dentro dele bloqueia a thread, mas é uma thread dedicada a
+        // isso, não uma worker do tokio.
+        let hashed = tokio::task::spawn_blocking(move || {
+            use rayon::prelude::*;
+            to_hash
+                .into_par_iter()
+                .map(|(idx, content)| (idx, super::sha256_hex(&content)))
+                .collect::<Vec<_>>()
+        })
+        .await
+        .unwrap_or_default();
+
+        for (idx, hash) in hashed {
+            local[idx].hash = Some(hash);
         }
         local
     }
@@ -852,6 +1114,9 @@ impl<R: Runtime> SyncEngine<R> {
                         size_bytes: Some(content.len() as i64),
                         last_synced_at_ms: chrono::Utc::now().timestamp_millis(),
                         file_hash: Some(super::sha256_hex(&content)),
+                        flags: 0,
+                        inaccessible: false,
+                        mtime_ns: local.mtime_ns,
                     };
                     let (emu, old_rel) = (emulator.to_string(), orphan_rel);
                     let _ = self
@@ -886,18 +1151,20 @@ impl<R: Runtime> SyncEngine<R> {
     async fn execute_op(&self, ctx: &CategoryCtx, op: PlannedOp) -> OpOutcome {
         let rel_path = op.rel_path.clone();
         let bytes = op_bytes(&op);
-        let result = match op.action {
-            SyncAction::Upload => self.do_upload(ctx, &op).await,
-            SyncAction::Download => self.do_download(ctx, &op).await,
-            SyncAction::DownloadWithBackup => self.do_download_with_backup(ctx, &op).await,
-            SyncAction::Conflict => self.record_conflict(ctx, &op).await,
-            SyncAction::NoOp => Ok(()),
+        let result: AppResult<Option<ManifestEntry>> = match op.action {
+            SyncAction::Upload => self.do_upload(ctx, &op).await.map(Some),
+            SyncAction::Download => self.do_download(ctx, &op).await.map(Some),
+            SyncAction::DownloadWithBackup => {
+                self.do_download_with_backup(ctx, &op).await.map(Some)
+            }
+            SyncAction::Conflict => self.record_conflict(ctx, &op).await.map(|()| None),
+            SyncAction::NoOp => Ok(None),
         };
 
-        self.emit_progress(ctx, &rel_path, bytes);
+        self.record_progress(ctx, &rel_path, bytes);
 
         match result {
-            Ok(()) => {
+            Ok(entry) => {
                 // Conflito não é transferência: não limpa a pendência (o
                 // emulador fica bloqueado até a resolução).
                 if matches!(op.action, SyncAction::Conflict) {
@@ -934,12 +1201,41 @@ impl<R: Runtime> SyncEngine<R> {
                     .await;
 
                 match op.action {
-                    SyncAction::Upload => OpOutcome::Uploaded,
-                    SyncAction::DownloadWithBackup => OpOutcome::DownloadedWithBackup,
-                    _ => OpOutcome::Downloaded,
+                    SyncAction::Upload => OpOutcome::Uploaded(entry),
+                    SyncAction::DownloadWithBackup => OpOutcome::DownloadedWithBackup(entry),
+                    _ => OpOutcome::Downloaded(entry),
                 }
             }
             Err(err) => {
+                // Upload travado pelo emulador (arquivo aberto/exclusivo): não é um
+                // erro permanente nem uma falha de rede a reagendar por backoff — o
+                // watcher de filesystem já dispara um resync quando o emulador
+                // libera o arquivo. Marca inacessível em vez de enfileirar.
+                let locked = op.action == SyncAction::Upload
+                    && matches!(
+                        &err,
+                        AppError::Io(io)
+                            if matches!(
+                                io.kind(),
+                                std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::WouldBlock
+                            )
+                    );
+                if locked {
+                    tracing::info!(
+                        emulador = %ctx.emulator,
+                        arquivo = %rel_path,
+                        "upload abortado: arquivo travado pelo emulador; marcado inacessível"
+                    );
+                    let (emulator, category, rel) = (ctx.emulator.clone(), ctx.category, rel_path);
+                    let _ = self
+                        .db
+                        .with(move |conn| {
+                            manifest::mark_inaccessible(conn, &emulator, category, &rel)
+                        })
+                        .await;
+                    return OpOutcome::Failed;
+                }
+
                 let retryable = matches!(
                     err,
                     AppError::Network(_) | AppError::FileBusy(_) | AppError::Integrity(_)
@@ -952,7 +1248,8 @@ impl<R: Runtime> SyncEngine<R> {
                     "operação de sync falhou"
                 );
                 if retryable {
-                    let (emulator, category, rel) = (ctx.emulator.clone(), ctx.category, rel_path);
+                    let (emulator, category, rel) =
+                        (ctx.emulator.clone(), ctx.category, rel_path.clone());
                     let direction = match op.action {
                         SyncAction::Upload => queue::OpDirection::Upload,
                         _ => queue::OpDirection::Download,
@@ -964,6 +1261,15 @@ impl<R: Runtime> SyncEngine<R> {
                             queue::enqueue(conn, &emulator, category, &rel, direction, &message)
                         })
                         .await;
+                    // Índice best-effort em sync_manifest.flags — não-op se a
+                    // linha ainda não existir.
+                    let (emulator, category) = (ctx.emulator.clone(), ctx.category);
+                    let _ = self
+                        .db
+                        .with(move |conn| {
+                            manifest::set_flag(conn, &emulator, category, &rel_path, FLAG_PENDING)
+                        })
+                        .await;
                     OpOutcome::Queued
                 } else {
                     OpOutcome::Failed
@@ -972,16 +1278,31 @@ impl<R: Runtime> SyncEngine<R> {
         }
     }
 
-    /// Emite o evento de progresso e avança os contadores (arquivos e bytes)
-    /// de concluídos da categoria.
-    fn emit_progress(&self, ctx: &CategoryCtx, rel_path: &str, bytes: u64) {
-        let completed = ctx.completed.fetch_add(1, Ordering::Relaxed) + 1;
-        let bytes_done = ctx.bytes_done.fetch_add(bytes, Ordering::Relaxed) + bytes;
+    /// Avança os contadores (arquivos e bytes) de concluídos da categoria e
+    /// registra o nome do arquivo — sem emitir evento. A emissão é
+    /// responsabilidade do ticker periódico em `sync_target`
+    /// ([`Self::emit_progress_snapshot`]), não de cada arquivo individual.
+    fn record_progress(&self, ctx: &CategoryCtx, rel_path: &str, bytes: u64) {
+        ctx.completed.fetch_add(1, Ordering::Relaxed);
+        ctx.bytes_done.fetch_add(bytes, Ordering::Relaxed);
+        if let Ok(mut last) = ctx.last_file.lock() {
+            *last = rel_path.to_string();
+        }
+    }
+
+    /// Emite um retrato consolidado do progresso da categoria a partir dos
+    /// contadores atômicos. Chamado periodicamente (não por arquivo) por um
+    /// `tokio::time::interval` em `sync_target`, para não inundar o frontend
+    /// num sync de muitos arquivos.
+    fn emit_progress_snapshot(&self, ctx: &CategoryCtx) {
+        let completed = ctx.completed.load(Ordering::Relaxed);
+        let bytes_done = ctx.bytes_done.load(Ordering::Relaxed);
+        let current_file = ctx.last_file.lock().map(|s| s.clone()).unwrap_or_default();
         let _ = self.app.emit(
             EVT_SYNC_PROGRESS,
             &SyncProgress {
                 emulator: ctx.emulator.clone(),
-                current_file: rel_path.to_string(),
+                current_file,
                 completed,
                 total: ctx.total,
                 bytes_done,
@@ -1031,43 +1352,42 @@ impl<R: Runtime> SyncEngine<R> {
         let remote_provider = self
             .remote()
             .expect("provedor remoto verificado no início do sync");
+        // Entradas do manifest de todos os chunks, gravadas numa única
+        // transação ao final — não uma por arquivo do batch.
+        let mut synced = Vec::new();
         for chunk in prepared.chunks(DRIVE_BATCH_MAX_OPS) {
             let ops: Vec<BatchUploadOp> = chunk.iter().map(|p| p.batch.clone()).collect();
             match remote_provider.upload_batch(ops).await {
                 Ok(files) if files.len() == chunk.len() => {
                     for (p, uploaded) in chunk.iter().zip(files) {
                         let drive_mtime = uploaded.modified_ms;
-                        let recorded = self
-                            .record_synced(
-                                ctx,
-                                &p.rel_path,
-                                uploaded.id,
-                                p.mtime_ms,
-                                drive_mtime,
-                                p.size_bytes,
-                                Some(p.content_hash.clone()),
-                            )
+                        let local_mtime_ns = p.op.local.as_ref().map(|l| l.mtime_ns).unwrap_or(0);
+                        synced.push(self.record_synced(
+                            ctx,
+                            &p.rel_path,
+                            uploaded.id,
+                            p.mtime_ms,
+                            local_mtime_ns,
+                            drive_mtime,
+                            p.size_bytes,
+                            Some(p.content_hash.clone()),
+                        ));
+
+                        let (emulator, category, rel) =
+                            (ctx.emulator.clone(), ctx.category, p.rel_path.clone());
+                        let _ = self
+                            .db
+                            .with(move |conn| queue::resolve(conn, &emulator, category, &rel))
                             .await;
-                        if recorded.is_ok() {
-                            let (emulator, category, rel) =
-                                (ctx.emulator.clone(), ctx.category, p.rel_path.clone());
-                            let _ = self
-                                .db
-                                .with(move |conn| queue::resolve(conn, &emulator, category, &rel))
-                                .await;
-                            let (emulator, rel, bytes) =
-                                (ctx.emulator.clone(), p.rel_path.clone(), p.size_bytes);
-                            let _ = self
-                                .db
-                                .with(move |conn| {
-                                    stats::record_upload(conn, &emulator, bytes, &rel)
-                                })
-                                .await;
-                            summary.uploaded += 1;
-                        } else {
-                            summary.failed += 1;
-                        }
-                        self.emit_progress(ctx, &p.rel_path, p.size_bytes.max(0) as u64);
+                        let (emulator, rel, bytes) =
+                            (ctx.emulator.clone(), p.rel_path.clone(), p.size_bytes);
+                        let _ = self
+                            .db
+                            .with(move |conn| stats::record_upload(conn, &emulator, bytes, &rel))
+                            .await;
+                        summary.uploaded += 1;
+
+                        self.record_progress(ctx, &p.rel_path, p.size_bytes.max(0) as u64);
                     }
                 }
                 result => {
@@ -1087,6 +1407,13 @@ impl<R: Runtime> SyncEngine<R> {
                     }
                 }
             }
+        }
+
+        if !synced.is_empty() {
+            let _ = self
+                .db
+                .with(move |conn| manifest::upsert_batch(conn, &synced))
+                .await;
         }
 
         rest
@@ -1159,67 +1486,89 @@ impl<R: Runtime> SyncEngine<R> {
         })
     }
 
-    async fn do_upload(&self, ctx: &CategoryCtx, op: &PlannedOp) -> AppResult<()> {
+    async fn do_upload(&self, ctx: &CategoryCtx, op: &PlannedOp) -> AppResult<ManifestEntry> {
         let remote_provider = self.remote()?;
         let local = op
             .local
             .as_ref()
             .ok_or_else(|| AppError::Other("upload planejado sem arquivo local".into()))?;
 
-        let mtime_before = self.storage.mtime_ms(&local.loc).await?;
-        let content = self.storage.read(&local.loc).await?;
-        let mtime_after = self.storage.mtime_ms(&local.loc).await?;
-        if mtime_before != mtime_after {
-            return Err(AppError::FileBusy(local.rel_path.clone()));
-        }
-
-        let (dir_part, file_name) = split_rel_path(&op.rel_path);
-        let parent_id = match dir_part {
-            Some(dir) => {
-                remote_provider
-                    .ensure_subpath(&ctx.folder_id, &ctx.folder_key, dir)
-                    .await?
+        let (content, mtime_after) = {
+            // I/O de disco local: teto separado do de rede abaixo (ver
+            // `disk_io`/`MAX_DISK_WRITES`) — em HDD, ler vários arquivos ao
+            // mesmo tempo é mais lento que ler em sequência.
+            let _permit = self.disk_io.acquire().await.expect("disk_io não fecha");
+            let mtime_before = self.storage.mtime_ms(&local.loc).await?;
+            let content = self.storage.read(&local.loc).await?;
+            let mtime_after = self.storage.mtime_ms(&local.loc).await?;
+            if mtime_before != mtime_after {
+                return Err(AppError::FileBusy(local.rel_path.clone()));
             }
-            None => ctx.folder_id.clone(),
+            (content, mtime_after)
         };
 
         let size_bytes = content.len() as i64;
         let content_hash = super::sha256_hex(&content);
-        let tag = DeviceTag {
-            name: ctx.device.as_deref(),
-            id: ctx.device_id.as_deref(),
-        };
-        let uploaded = match op.remote.as_ref() {
-            Some(existing) => {
-                remote_provider
-                    .upload_existing(&existing.id, content, mtime_after, tag)
-                    .await?
-            }
-            None => {
-                remote_provider
-                    .upload_new(&parent_id, file_name, content, mtime_after, tag)
-                    .await?
+        let uploaded = {
+            // Chamadas de rede: teto separado do de disco acima (ver
+            // `network_ops`/`MAX_NETWORK_OPS`).
+            let _permit = self
+                .network_ops
+                .acquire()
+                .await
+                .expect("network_ops não fecha");
+            let (dir_part, file_name) = split_rel_path(&op.rel_path);
+            let parent_id = match dir_part {
+                Some(dir) => {
+                    remote_provider
+                        .ensure_subpath(&ctx.folder_id, &ctx.folder_key, dir)
+                        .await?
+                }
+                None => ctx.folder_id.clone(),
+            };
+            let tag = DeviceTag {
+                name: ctx.device.as_deref(),
+                id: ctx.device_id.as_deref(),
+            };
+            match op.remote.as_ref() {
+                Some(existing) => {
+                    remote_provider
+                        .upload_existing(&existing.id, content, mtime_after, tag)
+                        .await?
+                }
+                None => {
+                    remote_provider
+                        .upload_new(&parent_id, file_name, content, mtime_after, tag)
+                        .await?
+                }
             }
         };
 
         let drive_mtime = uploaded.modified_ms;
-        self.record_synced(
+        // Remanescente sub-ms do scan original — a estabilidade do arquivo já
+        // foi confirmada acima (mtime_before == mtime_after em ms).
+        let local_mtime_ns = local.mtime_ns;
+        Ok(self.record_synced(
             ctx,
             &op.rel_path,
             uploaded.id,
             mtime_after,
+            local_mtime_ns,
             drive_mtime,
             size_bytes,
             Some(content_hash),
-        )
-        .await
+        ))
     }
 
     /// Primeiro sync de um arquivo que existe nos dois lados: copia o local
     /// para a pasta de backup e só então baixa o do Drive (que vence). O backup
     /// roda ANTES do download — se falhar, o download não acontece, evitando
     /// perder a versão local sem uma cópia de segurança.
-    async fn do_download_with_backup(&self, ctx: &CategoryCtx, op: &PlannedOp) -> AppResult<()> {
+    async fn do_download_with_backup(
+        &self,
+        ctx: &CategoryCtx,
+        op: &PlannedOp,
+    ) -> AppResult<ManifestEntry> {
         if let Some(local) = op.local.as_ref() {
             let backup_dest = self.storage.join(&ctx.backup_base, &op.rel_path);
             self.storage.copy_to(&local.loc, &backup_dest).await?;
@@ -1271,7 +1620,33 @@ impl<R: Runtime> SyncEngine<R> {
         }
     }
 
-    async fn do_download(&self, ctx: &CategoryCtx, op: &PlannedOp) -> AppResult<()> {
+    /// Windows apenas: `dest` colide (case-insensitive) com outro nome já
+    /// presente na mesma pasta? Compara só o componente final do caminho —
+    /// escaneia a pasta-pai, não a árvore inteira.
+    #[cfg(target_os = "windows")]
+    async fn check_case_collision(&self, dest: &FileLoc) -> AppResult<()> {
+        let Some(path) = dest.as_native_path() else {
+            return Ok(());
+        };
+        let (Some(parent), Some(incoming)) = (path.parent(), path.file_name()) else {
+            return Ok(());
+        };
+        let incoming = incoming.to_string_lossy().into_owned();
+        let incoming_lower = incoming.to_lowercase();
+
+        let Ok(mut entries) = tokio::fs::read_dir(parent).await else {
+            return Ok(());
+        };
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let existing = entry.file_name().to_string_lossy().into_owned();
+            if existing != incoming && existing.to_lowercase() == incoming_lower {
+                return Err(AppError::CaseConflict { existing, incoming });
+            }
+        }
+        Ok(())
+    }
+
+    async fn do_download(&self, ctx: &CategoryCtx, op: &PlannedOp) -> AppResult<ManifestEntry> {
         let remote = op
             .remote
             .as_ref()
@@ -1281,6 +1656,14 @@ impl<R: Runtime> SyncEngine<R> {
             Some(local) => local.loc.clone(),
             None => self.storage.join(&ctx.download_base, &op.rel_path),
         };
+
+        // NTFS é case-preserving mas case-insensitive: "Save.bin" e "save.bin"
+        // são o MESMO arquivo pro Windows, mas o motor de sync (rel_path exato)
+        // os trata como dois arquivos distintos. Sem essa checagem, baixar o
+        // segundo sobrescreveria o primeiro em silêncio — cada lado acha que
+        // sincronizou o seu, e um deles some do disco sem aviso.
+        #[cfg(target_os = "windows")]
+        self.check_case_collision(&dest).await?;
 
         // Checa o espaço livre no volume de destino ANTES de baixar (margem de
         // 10%). Sem medição disponível (mobile/volume desconhecido), segue.
@@ -1297,7 +1680,14 @@ impl<R: Runtime> SyncEngine<R> {
             }
         }
 
-        let content = self.remote()?.download(&remote.id).await?;
+        let content = {
+            let _permit = self
+                .network_ops
+                .acquire()
+                .await
+                .expect("network_ops não fecha");
+            self.remote()?.download(&remote.id).await?
+        };
 
         // Verificação de integridade: o tamanho do que chegou precisa bater com
         // o que a listagem reportou. Divergência = transferência corrompida/
@@ -1315,33 +1705,40 @@ impl<R: Runtime> SyncEngine<R> {
             }
         }
 
-        // Versionamento: arquiva a versão local vigente ANTES de sobrescrever
-        // (só em downloads comuns — o primeiro sync já tem seu próprio backup
-        // dedicado). Best-effort: falha de arquivamento não bloqueia o sync,
-        // pois a versão anterior já esteve no provedor remoto em algum momento.
-        if op.action == SyncAction::Download {
-            self.archive_previous_version(ctx, op).await;
-        }
-
         // mtime local = mtime remoto, para o diff convergir.
         let drive_mtime = remote.modified_ms;
         let size_bytes = content.len() as i64;
         let content_hash = super::sha256_hex(&content);
-        self.storage
-            .write_atomic(&dest, &content, drive_mtime)
-            .await?;
+        {
+            // I/O de disco local: teto separado do de rede acima (ver
+            // `disk_io`/`MAX_DISK_WRITES`) — em HDD, escritas paralelas
+            // demais viram thrashing de cabeça de leitura/escrita.
+            let _permit = self.disk_io.acquire().await.expect("disk_io não fecha");
+            // Versionamento: arquiva a versão local vigente ANTES de
+            // sobrescrever (só em downloads comuns — o primeiro sync já tem
+            // seu próprio backup dedicado). Best-effort: falha de
+            // arquivamento não bloqueia o sync, pois a versão anterior já
+            // esteve no provedor remoto em algum momento.
+            if op.action == SyncAction::Download {
+                self.archive_previous_version(ctx, op).await;
+            }
+            self.storage
+                .write_atomic(&dest, &content, drive_mtime)
+                .await?;
+        }
         self.mark_recent_download(&dest);
 
-        self.record_synced(
+        Ok(self.record_synced(
             ctx,
             &op.rel_path,
             remote.id.clone(),
             drive_mtime.unwrap_or(0),
+            // Sem precisão sub-ms real: mtime local vem do modifiedTime remoto.
+            0,
             drive_mtime,
             size_bytes,
             Some(content_hash),
-        )
-        .await
+        ))
     }
 
     /// Registra um conflito (ambos os lados mudaram desde o último sync). Não
@@ -1382,8 +1779,16 @@ impl<R: Runtime> SyncEngine<R> {
         self.db
             .with(move |conn| conflicts::upsert(conn, &stored))
             .await?;
+        // Índice best-effort em sync_manifest.flags — não-op se a linha ainda
+        // não existir (arquivo nunca sincronizado antes deste conflito).
+        let (emulator, category, rel) = (ctx.emulator.clone(), ctx.category, op.rel_path.clone());
+        let _ = self
+            .db
+            .with(move |conn| manifest::set_flag(conn, &emulator, category, &rel, FLAG_CONFLICT))
+            .await;
 
         tracing::warn!(emulador = %ctx.emulator, arquivo = %op.rel_path, "conflito detectado: ambos os lados mudaram");
+        self.transition(SyncState::Conflict, Some(&ctx.emulator));
         let _ = self.app.emit(EVT_SYNC_CONFLICT, &conflict);
         if ctx.notif.notifies_errors() {
             self.notify_conflict(&ctx.emulator, &op.rel_path);
@@ -1438,17 +1843,25 @@ impl<R: Runtime> SyncEngine<R> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn record_synced(
+    /// Monta a entrada do manifest para um upload/download bem-sucedido. Não
+    /// grava no SQLite — quem chama coleta as entradas da categoria e grava
+    /// em lote (ver `sync_target`), em vez de um `upsert` por arquivo.
+    /// `local_mtime_ns`: remanescente sub-ms do mtime local, quando a
+    /// chamada tiver um `LocalFile` fresco à mão (upload); `0` para download,
+    /// já que o mtime local nesse caso é derivado do `modifiedTime` remoto
+    /// (sem precisão sub-ms real).
+    fn record_synced(
         &self,
         ctx: &CategoryCtx,
         rel_path: &str,
         remote_file_id: String,
         local_mtime_ms: i64,
+        local_mtime_ns: i64,
         remote_mtime_ms: Option<i64>,
         size_bytes: i64,
         file_hash: Option<String>,
-    ) -> AppResult<()> {
-        let entry = ManifestEntry {
+    ) -> ManifestEntry {
+        ManifestEntry {
             emulator: ctx.emulator.clone(),
             category: ctx.category,
             rel_path: rel_path.to_string(),
@@ -1458,10 +1871,12 @@ impl<R: Runtime> SyncEngine<R> {
             size_bytes: Some(size_bytes),
             last_synced_at_ms: chrono::Utc::now().timestamp_millis(),
             file_hash,
-        };
-        self.db
-            .with(move |conn| manifest::upsert(conn, &entry))
-            .await
+            // Sync bem-sucedido: qualquer flag/trava anterior não se aplica
+            // mais a esta versão do arquivo.
+            flags: 0,
+            inaccessible: false,
+            mtime_ns: local_mtime_ns,
+        }
     }
 
     /// Snapshot do manifest publicado na raiz `Slot2Sync/` (best-effort).
@@ -1627,6 +2042,11 @@ impl<R: Runtime> SyncEngine<R> {
             size_bytes: Some(size_bytes),
             last_synced_at_ms: chrono::Utc::now().timestamp_millis(),
             file_hash,
+            // Conflito resolvido: a versão escolhida não está mais em conflito nem travada.
+            flags: 0,
+            inaccessible: false,
+            // Sem `LocalFile` fresco nesta trilha (leitura direta via `storage.read`).
+            mtime_ns: 0,
         };
         self.db
             .with(move |conn| manifest::upsert(conn, &entry))

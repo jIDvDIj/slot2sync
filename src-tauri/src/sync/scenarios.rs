@@ -10,7 +10,9 @@ use std::sync::Arc;
 use tauri::test::MockRuntime;
 
 use super::engine::ConflictResolution;
-use super::{DesktopStorage, LastSyncStore, SyncCategory, SyncDirection, SyncEngine, SyncSummary};
+use super::{
+    DesktopStorage, LastSyncStore, SyncCategory, SyncDirection, SyncEngine, SyncState, SyncSummary,
+};
 use crate::constants::{DRIVE_BATCH_MIN_OPS, DRIVE_MANIFEST_FILE};
 use crate::drive::mock::MockDrive;
 use crate::emulator::EmulatorProfile;
@@ -278,6 +280,113 @@ async fn conflito_bloqueia_emulador_e_resolucao_desbloqueia() {
 /// timestamp — detectar isso exige hash, ainda não implementado.
 /// Este teste DOCUMENTA a limitação atual; quando o hash entrar, ele deve
 /// passar a falhar e ser invertido.
+#[tokio::test]
+async fn progresso_emite_retrato_final_com_completed_igual_a_total() {
+    use std::sync::{Arc, Mutex};
+    use tauri::Listener;
+
+    let h = Harness::new().await;
+    h.write_local("a.bin", b"1", T);
+    h.write_local("b.bin", b"2", T);
+    h.write_local("c.bin", b"3", T);
+
+    let last_progress: Arc<Mutex<Option<serde_json::Value>>> = Arc::new(Mutex::new(None));
+    let captured = last_progress.clone();
+    h._app
+        .handle()
+        .listen(crate::events::EVT_SYNC_PROGRESS, move |event| {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(event.payload()) {
+                *captured.lock().unwrap() = Some(v);
+            }
+        });
+
+    h.sync().await;
+
+    let last = last_progress
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("deveria ter emitido ao menos um sync:progress (o retrato final garantido)");
+    assert_eq!(last["completed"], last["total"]);
+    assert_eq!(last["total"], 3);
+}
+
+#[tokio::test]
+async fn erro_de_sync_entra_no_historico_e_clear_errors_esvazia() {
+    let h = Harness::new().await;
+    assert!(h.engine.recent_errors().is_empty());
+
+    // Raiz do emulador desaparece (drive removível desconectado) — falha
+    // dura, específica deste emulador, propagada por `sync_target`.
+    let root = h.saves_dir.parent().unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+
+    h.sync().await;
+
+    let errors = h.engine.recent_errors();
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].emulator.as_deref(), Some(EMU));
+
+    h.engine.clear_errors();
+    assert!(h.engine.recent_errors().is_empty());
+}
+
+#[tokio::test]
+async fn sync_state_comeca_e_termina_ocioso() {
+    let h = Harness::new().await;
+    assert_eq!(h.engine.current_sync_state(), (SyncState::Idle, None));
+
+    h.write_local("save.bin", b"conteudo", T);
+    h.sync().await;
+
+    assert_eq!(
+        h.engine.current_sync_state(),
+        (SyncState::Idle, None),
+        "sync termina sempre voltando a Idle, mesmo com transferência real"
+    );
+}
+
+#[tokio::test]
+async fn sync_state_emite_transicao_para_conflict() {
+    use std::sync::{Arc, Mutex};
+    use tauri::Listener;
+
+    let h = Harness::new().await;
+    h.write_local("save.bin", b"v1", T);
+    h.sync().await;
+
+    // Ambos os lados mudam desde a âncora → conflito.
+    h.write_local("save.bin", b"v2-local", T + S10);
+    h.drive.overwrite_as_device(
+        EMU,
+        SyncCategory::Saves,
+        "save.bin",
+        b"v2-drive",
+        T + 2 * S10,
+        "dev-B",
+    );
+
+    let seen_conflict = Arc::new(Mutex::new(false));
+    let flag = seen_conflict.clone();
+    h._app
+        .handle()
+        .listen(crate::events::EVT_SYNC_STATE_CHANGED, move |event| {
+            if event.payload().contains("\"to\":\"conflict\"") {
+                *flag.lock().unwrap() = true;
+            }
+        });
+
+    let summary = h.sync().await;
+
+    assert_eq!(summary.conflicts, 1);
+    assert!(
+        *seen_conflict.lock().unwrap(),
+        "deveria ter emitido sync:state-changed com to=conflict"
+    );
+    // O sync sempre volta a Idle ao final da leva, mesmo após um conflito.
+    assert_eq!(h.engine.current_sync_state(), (SyncState::Idle, None));
+}
+
 #[tokio::test]
 async fn mtime_igual_com_conteudo_diferente_passa_despercebido() {
     let h = Harness::new().await;

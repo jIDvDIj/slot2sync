@@ -16,9 +16,9 @@ use crate::error::AppResult;
 #[cfg(desktop)]
 use super::diff;
 #[cfg(desktop)]
-use crate::constants::TMP_SUFFIX;
-#[cfg(desktop)]
 use crate::error::AppError;
+#[cfg(desktop)]
+use std::time::{Duration, SystemTime};
 
 /// Locador opaco de um arquivo ou pasta no armazenamento local.
 ///
@@ -157,6 +157,65 @@ pub trait LocalStorage: Send + Sync {
     async fn available_space(&self, _loc: &FileLoc) -> Option<u64> {
         None
     }
+
+    /// Remove arquivos temporários de download (ver `diff::tmp_name`) órfãos há mais
+    /// de 24h nas pastas-base — restos de um download interrompido por uma
+    /// queda entre a escrita e o rename atômico. Chamado uma vez por
+    /// emulador, no início de `sync_target`. No-op por padrão; sem
+    /// equivalente no mobile, onde `write_atomic` não passa por um temporário
+    /// no filesystem local do app.
+    async fn cleanup_orphaned_temp_files(&self, _root: &Path, _bases: &[PathBuf]) {}
+}
+
+/// Recusa gravar se `dest` ou a pasta que o contém diretamente já forem um
+/// symlink — um link plantado no lugar exato de um arquivo/pasta de save
+/// (pelo emulador, ou por qualquer outro processo com acesso à pasta) não
+/// deve poder redirecionar a escrita para fora dela. Não sobe além do pai
+/// imediato: symlinks acima disso (ex.: a raiz do emulador inteira montada
+/// via link simbólico, configuração legítima e comum) não são tocados.
+#[cfg(desktop)]
+async fn reject_symlinked_dest(dest: &Path) -> AppResult<()> {
+    let mut candidates = vec![dest.to_path_buf()];
+    if let Some(parent) = dest.parent() {
+        candidates.push(parent.to_path_buf());
+    }
+    for path in candidates {
+        if let Ok(meta) = tokio::fs::symlink_metadata(&path).await {
+            if meta.file_type().is_symlink() {
+                return Err(AppError::Other(format!(
+                    "destino atravessa um symlink: {}",
+                    path.display()
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `rename(tmp, dest)` com uma retentativa no Windows quando `dest` está
+/// marcado somente-leitura (herdado de um save trazido de outro sistema, ou
+/// atributo definido pelo próprio emulador) — o NTFS recusa sobrescrever um
+/// destino assim com `PermissionDenied`. Em outras plataformas o erro só é
+/// propagado; não há atributo somente-leitura equivalente bloqueando rename.
+#[cfg(desktop)]
+async fn rename_dest(tmp: &Path, dest: &Path) -> AppResult<()> {
+    match tokio::fs::rename(tmp, dest).await {
+        Ok(()) => Ok(()),
+        #[cfg(windows)]
+        Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
+            if let Ok(meta) = tokio::fs::metadata(dest).await {
+                let mut perms = meta.permissions();
+                // No Windows isto limpa o atributo somente-leitura, não bits
+                // de permissão Unix (o lint padrão do clippy assume Unix).
+                #[allow(clippy::permissions_set_readonly_false)]
+                perms.set_readonly(false);
+                let _ = tokio::fs::set_permissions(dest, perms).await;
+            }
+            tokio::fs::rename(tmp, dest).await?;
+            Ok(())
+        }
+        Err(err) => Err(err.into()),
+    }
 }
 
 /// `true` se `path` existe e é um diretório (não propaga erro — ausência,
@@ -238,22 +297,58 @@ impl LocalStorage for DesktopStorage {
         bytes: &[u8],
         mtime_ms: Option<i64>,
     ) -> AppResult<()> {
-        let dest = require_path(dest)?;
-        if let Some(parent) = dest.parent() {
+        // Prefixo \\?\ no Windows: sem isso, coleções de save profundamente
+        // aninhadas (PPSSPP/PCSX2) estouram o MAX_PATH de 260 caracteres em
+        // silêncio. No-op nas demais plataformas.
+        let dest = diff::to_long_path(require_path(dest)?);
+        reject_symlinked_dest(&dest).await?;
+        let parent = dest.parent();
+        if let Some(parent) = parent {
             tokio::fs::create_dir_all(parent).await?;
         }
+        // Preserva as permissões do arquivo substituído, se já existir (ex.:
+        // um save trazido de outro sistema com bits diferentes do padrão).
+        let existing_permissions = tokio::fs::metadata(&dest)
+            .await
+            .ok()
+            .map(|m| m.permissions());
+
         // Gravação atômica: temp + rename evita save corrompido se cair no meio.
-        let tmp = dest.with_file_name(format!(
-            "{}{TMP_SUFFIX}",
-            dest.file_name().unwrap_or_default().to_string_lossy()
+        let tmp = dest.with_file_name(diff::tmp_name(
+            &dest.file_name().unwrap_or_default().to_string_lossy(),
         ));
-        tokio::fs::write(&tmp, bytes).await?;
-        tokio::fs::rename(&tmp, dest).await?;
+        // Escreve e sincroniza no mesmo handle: no Windows, FlushFileBuffers
+        // exige acesso GENERIC_WRITE, então reabrir só-leitura (como
+        // `tokio::fs::write` + `File::open` fariam) falha com Access Denied.
+        // fsync do conteúdo antes do rename evita que o rename fique durável
+        // no journal do filesystem antes dos dados do arquivo em si — uma
+        // queda logo depois deixaria o destino apontando para um arquivo
+        // truncado/vazio.
+        let mut tmp_file = tokio::fs::File::create(&tmp).await?;
+        tokio::io::AsyncWriteExt::write_all(&mut tmp_file, bytes).await?;
+        tmp_file.sync_all().await?;
+        drop(tmp_file);
+
+        if let Some(permissions) = existing_permissions {
+            let _ = tokio::fs::set_permissions(&tmp, permissions).await;
+        }
+
+        rename_dest(&tmp, &dest).await?;
+
+        // fsync do diretório pai: garante que a entrada renomeada sobrevive a
+        // uma queda logo após o rename. Best-effort e só em Unix — abrir um
+        // diretório como arquivo não é suportado pela API padrão no Windows.
+        #[cfg(unix)]
+        if let Some(parent) = parent {
+            if let Ok(dir) = tokio::fs::File::open(parent).await {
+                let _ = dir.sync_all().await;
+            }
+        }
 
         if let Some(ms) = mtime_ms {
             let ft =
                 filetime::FileTime::from_unix_time(ms / 1000, ((ms % 1000) * 1_000_000) as u32);
-            filetime::set_file_mtime(dest, ft)?;
+            filetime::set_file_mtime(&dest, ft)?;
         }
         Ok(())
     }
@@ -291,6 +386,60 @@ impl LocalStorage for DesktopStorage {
             .await
             .ok()
             .flatten()
+    }
+
+    async fn cleanup_orphaned_temp_files(&self, root: &Path, bases: &[PathBuf]) {
+        let (root, bases) = (root.to_path_buf(), bases.to_vec());
+        let _ = tokio::task::spawn_blocking(move || {
+            let cutoff = SystemTime::now()
+                .checked_sub(Duration::from_secs(24 * 60 * 60))
+                .unwrap_or(SystemTime::UNIX_EPOCH);
+            for base in &bases {
+                let base_abs = root.join(base);
+                if base_abs.is_dir() {
+                    remove_stale_temp_files(&base_abs, cutoff);
+                }
+            }
+        })
+        .await;
+    }
+}
+
+/// Percorre `dir` recursivamente removendo temporários (`diff::is_temp_name`) cujo mtime é anterior
+/// a `cutoff`. Erros de leitura/remoção de uma entrada não interrompem as
+/// demais — best-effort, chamado no início de cada sync.
+#[cfg(desktop)]
+fn remove_stale_temp_files(dir: &Path, cutoff: SystemTime) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_dir() {
+            remove_stale_temp_files(&path, cutoff);
+            continue;
+        }
+        if !diff::is_temp_name(&entry.file_name().to_string_lossy()) {
+            continue;
+        }
+        let is_stale = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .is_ok_and(|modified| modified < cutoff);
+        if !is_stale {
+            continue;
+        }
+        match std::fs::remove_file(&path) {
+            Ok(()) => {
+                tracing::info!(arquivo = %path.display(), "temporário órfão removido (sync anterior interrompido)")
+            }
+            Err(err) => {
+                tracing::warn!(arquivo = %path.display(), error = %err, "falha ao remover temporário órfão")
+            }
+        }
     }
 }
 
@@ -344,6 +493,94 @@ mod tests {
         assert_eq!(s.mtime_ms(&dest).await.unwrap(), 1_700_000_000_000);
         // Não deixa o temporário para trás.
         assert!(!tmp.path().join("sub/dir/save.bin.slot2sync-tmp").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn write_atomic_recusa_gravar_por_cima_de_symlink() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s = DesktopStorage;
+
+        let outside = tmp.path().join("fora-da-pasta.bin");
+        let link = tmp.path().join("save.bin");
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+
+        let dest = FileLoc::from_path(link.clone());
+        let err = s.write_atomic(&dest, b"conteudo", None).await.unwrap_err();
+
+        assert!(err.to_string().contains("symlink"));
+        assert!(!outside.exists(), "escrita não deveria seguir o symlink");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn write_atomic_recusa_gravar_quando_a_pasta_pai_e_symlink() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s = DesktopStorage;
+
+        let real_outside = tmp.path().join("fora-da-pasta");
+        std::fs::create_dir_all(&real_outside).unwrap();
+        let linked_dir = tmp.path().join("GAME01");
+        std::os::unix::fs::symlink(&real_outside, &linked_dir).unwrap();
+
+        let dest = FileLoc::from_path(linked_dir.join("save.bin"));
+        let err = s.write_atomic(&dest, b"conteudo", None).await.unwrap_err();
+
+        assert!(err.to_string().contains("symlink"));
+        assert!(!real_outside.join("save.bin").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn write_atomic_preserva_permissoes_do_arquivo_substituido() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let s = DesktopStorage;
+        let dest = FileLoc::from_path(tmp.path().join("save.bin"));
+
+        s.write_atomic(&dest, b"v1", None).await.unwrap();
+        let path = dest.as_path().unwrap().to_path_buf();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+
+        s.write_atomic(&dest, b"v2 maior", None).await.unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o640);
+        assert_eq!(s.read(&dest).await.unwrap(), b"v2 maior");
+    }
+
+    #[tokio::test]
+    async fn cleanup_orphaned_temp_files_remove_so_os_antigos() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().join("SAVEDATA");
+        std::fs::create_dir_all(base.join("GAME01")).unwrap();
+
+        let old_tmp = base.join(diff::tmp_name("velho"));
+        let old_nested_tmp = base.join("GAME01").join(diff::tmp_name("velho"));
+        let fresh_tmp = base.join(diff::tmp_name("novo"));
+        std::fs::write(&old_tmp, b"x").unwrap();
+        std::fs::write(&old_nested_tmp, b"x").unwrap();
+        std::fs::write(&fresh_tmp, b"x").unwrap();
+
+        let old_time =
+            filetime::FileTime::from_unix_time(chrono::Utc::now().timestamp() - 25 * 60 * 60, 0);
+        filetime::set_file_mtime(&old_tmp, old_time).unwrap();
+        filetime::set_file_mtime(&old_nested_tmp, old_time).unwrap();
+
+        let s = DesktopStorage;
+        s.cleanup_orphaned_temp_files(tmp.path(), &[PathBuf::from("SAVEDATA")])
+            .await;
+
+        assert!(!old_tmp.exists(), "temporário antigo na raiz deveria sumir");
+        assert!(
+            !old_nested_tmp.exists(),
+            "temporário antigo em subpasta deveria sumir"
+        );
+        assert!(
+            fresh_tmp.exists(),
+            "temporário recente não deveria ser tocado"
+        );
     }
 
     #[tokio::test]

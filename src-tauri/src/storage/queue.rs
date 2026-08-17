@@ -58,6 +58,10 @@ pub struct PendingOp {
     /// A partir de quando a pendência pode ser retentada (backoff exponencial).
     /// `None` = morta após esgotar as tentativas; exige "tentar novamente".
     pub next_retry_at_ms: Option<i64>,
+    /// `true` = usuário pediu para priorizar este arquivo (ação "mover para
+    /// frente da fila" da UI). Só afeta a ordem de `list_all` — o backoff
+    /// zerado por `bump_priority` é o que de fato libera a retentativa.
+    pub priority: bool,
 }
 
 impl PendingOp {
@@ -68,11 +72,13 @@ impl PendingOp {
     }
 }
 
-/// Todas as pendências, mais antigas primeiro — a UI agrupa por emulador.
+/// Todas as pendências — priorizadas primeiro, depois mais antigas primeiro.
+/// A UI agrupa por emulador.
 pub fn list_all(conn: &Connection) -> AppResult<Vec<PendingOp>> {
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare_cached(
         "SELECT emulator, category, rel_path, direction, enqueued_at_ms, attempts, last_error, \
-         next_retry_at_ms FROM pending_ops ORDER BY enqueued_at_ms ASC",
+         next_retry_at_ms, priority FROM pending_ops \
+         ORDER BY priority DESC, enqueued_at_ms ASC",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok((
@@ -84,6 +90,7 @@ pub fn list_all(conn: &Connection) -> AppResult<Vec<PendingOp>> {
             row.get::<_, u32>(5)?,
             row.get::<_, Option<String>>(6)?,
             row.get::<_, Option<i64>>(7)?,
+            row.get::<_, i64>(8)?,
         ))
     })?;
 
@@ -98,6 +105,7 @@ pub fn list_all(conn: &Connection) -> AppResult<Vec<PendingOp>> {
             attempts,
             last_error,
             next_retry_at_ms,
+            priority,
         ) = row?;
         // Linha com categoria desconhecida (schema futuro?) é ignorada em vez
         // de derrubar a listagem inteira.
@@ -113,6 +121,7 @@ pub fn list_all(conn: &Connection) -> AppResult<Vec<PendingOp>> {
             attempts,
             last_error,
             next_retry_at_ms,
+            priority: priority != 0,
         });
     }
     Ok(out)
@@ -130,43 +139,46 @@ pub fn enqueue(
     error: &str,
 ) -> AppResult<()> {
     let now = chrono::Utc::now().timestamp_millis();
-    conn.execute(
+    conn.prepare_cached(
         "INSERT INTO pending_ops (emulator, category, rel_path, direction, enqueued_at_ms, attempts, last_error) \
          VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6) \
          ON CONFLICT (emulator, category, rel_path, direction) \
          DO UPDATE SET attempts = attempts + 1, last_error = excluded.last_error",
-        params![
-            emulator,
-            category.as_str(),
-            rel_path,
-            direction.as_str(),
-            now,
-            error,
-        ],
-    )?;
+    )?
+    .execute(params![
+        emulator,
+        category.as_str(),
+        rel_path,
+        direction.as_str(),
+        now,
+        error,
+    ])?;
 
-    let attempts: u32 = conn.query_row(
-        "SELECT attempts FROM pending_ops \
+    let attempts: u32 = conn
+        .prepare_cached(
+            "SELECT attempts FROM pending_ops \
          WHERE emulator = ?1 AND category = ?2 AND rel_path = ?3 AND direction = ?4",
-        params![emulator, category.as_str(), rel_path, direction.as_str()],
-        |row| row.get(0),
-    )?;
+        )?
+        .query_row(
+            params![emulator, category.as_str(), rel_path, direction.as_str()],
+            |row| row.get(0),
+        )?;
     let next_retry: Option<i64> = if attempts >= MAX_ATTEMPTS {
         None
     } else {
         Some(now + backoff_ms(attempts))
     };
-    conn.execute(
+    conn.prepare_cached(
         "UPDATE pending_ops SET next_retry_at_ms = ?5 \
          WHERE emulator = ?1 AND category = ?2 AND rel_path = ?3 AND direction = ?4",
-        params![
-            emulator,
-            category.as_str(),
-            rel_path,
-            direction.as_str(),
-            next_retry,
-        ],
-    )?;
+    )?
+    .execute(params![
+        emulator,
+        category.as_str(),
+        rel_path,
+        direction.as_str(),
+        next_retry,
+    ])?;
     Ok(())
 }
 
@@ -179,7 +191,7 @@ pub fn deferred_rel_paths(
     category: SyncCategory,
     now_ms: i64,
 ) -> AppResult<HashSet<String>> {
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare_cached(
         "SELECT rel_path FROM pending_ops \
          WHERE emulator = ?1 AND category = ?2 \
          AND (next_retry_at_ms IS NULL OR next_retry_at_ms > ?3)",
@@ -202,11 +214,29 @@ pub fn retry_now(
     category: SyncCategory,
     rel_path: &str,
 ) -> AppResult<()> {
-    conn.execute(
+    conn.prepare_cached(
         "UPDATE pending_ops SET attempts = 0, next_retry_at_ms = 0 \
          WHERE emulator = ?1 AND category = ?2 AND rel_path = ?3",
-        params![emulator, category.as_str(), rel_path],
-    )?;
+    )?
+    .execute(params![emulator, category.as_str(), rel_path])?;
+    Ok(())
+}
+
+/// Ação "mover para frente da fila" da UI: marca a pendência como
+/// prioritária (`priority = 1`, ordenada primeiro em `list_all`) e libera a
+/// retentativa imediata — mesmo efeito de `retry_now` sobre o backoff, num
+/// só lugar.
+pub fn bump_priority(
+    conn: &Connection,
+    emulator: &str,
+    category: SyncCategory,
+    rel_path: &str,
+) -> AppResult<()> {
+    conn.prepare_cached(
+        "UPDATE pending_ops SET priority = 1, attempts = 0, next_retry_at_ms = 0 \
+         WHERE emulator = ?1 AND category = ?2 AND rel_path = ?3",
+    )?
+    .execute(params![emulator, category.as_str(), rel_path])?;
     Ok(())
 }
 
@@ -217,24 +247,23 @@ pub fn resolve(
     category: SyncCategory,
     rel_path: &str,
 ) -> AppResult<()> {
-    conn.execute(
+    conn.prepare_cached(
         "DELETE FROM pending_ops WHERE emulator = ?1 AND category = ?2 AND rel_path = ?3",
-        params![emulator, category.as_str(), rel_path],
-    )?;
+    )?
+    .execute(params![emulator, category.as_str(), rel_path])?;
     Ok(())
 }
 
 pub fn remove_for_emulator(conn: &Connection, emulator: &str) -> AppResult<()> {
-    conn.execute(
-        "DELETE FROM pending_ops WHERE emulator = ?1",
-        params![emulator],
-    )?;
+    conn.prepare_cached("DELETE FROM pending_ops WHERE emulator = ?1")?
+        .execute(params![emulator])?;
     Ok(())
 }
 
-#[allow(dead_code)]
 pub fn count(conn: &Connection) -> AppResult<i64> {
-    let count = conn.query_row("SELECT COUNT(*) FROM pending_ops", [], |row| row.get(0))?;
+    let count = conn
+        .prepare_cached("SELECT COUNT(*) FROM pending_ops")?
+        .query_row([], |row| row.get(0))?;
     Ok(count)
 }
 
@@ -352,6 +381,7 @@ mod tests {
             attempts: 3,
             last_error: Some("rede".into()),
             next_retry_at_ms: Some(1_700_000_060_000),
+            priority: true,
         };
         let json = serde_json::to_value(&op).unwrap();
         assert_eq!(json["emulator"], "PPSSPP");
@@ -362,6 +392,39 @@ mod tests {
         assert_eq!(json["attempts"], 3);
         assert_eq!(json["lastError"], "rede");
         assert_eq!(json["nextRetryAtMs"], 1_700_000_060_000i64);
+        assert_eq!(json["priority"], true);
+    }
+
+    #[test]
+    fn bump_priority_marca_prioridade_e_lista_primeiro() {
+        let db = Db::open_in_memory().unwrap();
+        db.with_sync(|conn| {
+            enqueue(
+                conn,
+                "PPSSPP",
+                SyncCategory::Saves,
+                "antigo.bin",
+                OpDirection::Upload,
+                "x",
+            )?;
+            enqueue(
+                conn,
+                "PPSSPP",
+                SyncCategory::Saves,
+                "novo.bin",
+                OpDirection::Upload,
+                "x",
+            )?;
+
+            bump_priority(conn, "PPSSPP", SyncCategory::Saves, "novo.bin")?;
+
+            let ops = list_all(conn)?;
+            assert_eq!(ops[0].rel_path, "novo.bin", "priorizado vem primeiro");
+            assert!(ops[0].priority);
+            assert_eq!(ops[0].attempts, 0, "backoff liberado, igual ao retry_now");
+            assert!(!ops[1].priority);
+            Ok(())
+        });
     }
 
     #[test]

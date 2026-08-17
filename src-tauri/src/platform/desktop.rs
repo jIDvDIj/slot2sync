@@ -118,6 +118,10 @@ fn spawn_sync(app: AppHandle, trigger: &'static str, then_exit: bool) {
             tracing::warn!(trigger, error = %err, "sync acionado pela bandeja falhou");
         }
         if then_exit {
+            let db = app.state::<AppState>().db.clone();
+            if let Err(err) = db.run_maintenance_if_due().await {
+                tracing::warn!(error = %err, "manutenção do SQLite no shutdown falhou");
+            }
             app.exit(0);
         }
     });

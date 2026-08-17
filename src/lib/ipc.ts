@@ -13,6 +13,7 @@ import type {
   DiscoveredEmulator,
   EmulatorProfile,
   EmulatorStats,
+  ErrorEntry,
   FileVersion,
   HealthStatus,
   LastSync,
@@ -21,6 +22,7 @@ import type {
   Settings,
   SyncCategories,
   SyncedGame,
+  SyncStateSnapshot,
   SyncSummary,
   TriggerSettings,
 } from "../types/ipc";
@@ -135,6 +137,28 @@ export function getLastSync(): Promise<LastSync | null> {
   return invoke<LastSync | null>("get_last_sync");
 }
 
+/** Estado corrente do sync (idle/scanning/syncing/conflict/error) — usado para
+ * renderizar o estado certo ao montar a UI, sem depender de eventos perdidos
+ * antes da conexão (ex.: reconectar no meio de um sync). */
+export function getSyncState(): Promise<SyncStateSnapshot> {
+  return invoke<SyncStateSnapshot>("get_sync_state");
+}
+
+/** Histórico de erros em memória desde o último reinício (mais antigo primeiro). */
+export function getRecentErrors(): Promise<ErrorEntry[]> {
+  return invoke<ErrorEntry[]>("get_recent_errors");
+}
+
+/** Limpa o histórico de erros em memória. */
+export function clearErrors(): Promise<void> {
+  return invoke<void>("clear_errors");
+}
+
+/** Gera o .zip de diagnóstico na pasta de Downloads; resolve com o caminho gerado. */
+export function exportDiagnostics(): Promise<string> {
+  return invoke<string>("export_diagnostics");
+}
+
 /** Configurações globais do usuário (nome do dispositivo, etc.). */
 export function getSettings(): Promise<Settings> {
   return invoke<Settings>("get_settings");
@@ -235,6 +259,16 @@ export function retryPendingOp(
   relPath: string,
 ): Promise<void> {
   return invoke<void>("retry_pending_op", { emulator, category, relPath });
+}
+
+/** Marca uma pendência como prioritária e libera a retentativa imediata
+ * ("↑ mover para frente da fila"). */
+export function bumpPendingOp(
+  emulator: string,
+  category: PendingOp["category"],
+  relPath: string,
+): Promise<void> {
+  return invoke<void>("bump_pending_op", { emulator, category, relPath });
 }
 
 /** IDs de banners informativos já dispensados pelo usuário. */

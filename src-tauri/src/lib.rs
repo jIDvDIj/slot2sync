@@ -3,6 +3,8 @@ mod backups;
 mod commands;
 mod constants;
 mod device;
+#[cfg(desktop)]
+mod diagnostics;
 mod drive;
 mod dropbox;
 mod emulator;
@@ -10,6 +12,7 @@ mod error;
 mod events;
 mod folder;
 mod games;
+mod locations;
 mod onedrive;
 mod platform;
 mod remote;
@@ -74,10 +77,13 @@ pub fn run() {
         .setup(|app| {
             init_logging(app.handle())?;
             tracing::info!(version = env!("CARGO_PKG_VERSION"), "Slot2Sync iniciado");
+            #[cfg(windows)]
+            lower_process_priority();
 
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
-            let db = storage::db::Db::open(&data_dir.join(constants::LOCAL_DB_FILE))?;
+            let db_path = locations::AppPath::Database.resolve(app.handle())?;
+            let db = storage::db::Db::open(&db_path)?;
 
             let last_sync: sync::LastSyncStore = Arc::new(std::sync::Mutex::new(None));
             let http = reqwest::Client::new();
@@ -177,7 +183,7 @@ pub fn run() {
                 remote_provider,
                 app.handle().clone(),
                 last_sync.clone(),
-                data_dir.join(constants::LOCAL_BACKUP_DIR),
+                locations::AppPath::BackupDir.resolve(app.handle())?,
                 storage.clone(),
                 secret_store.clone(),
             ));
@@ -240,7 +246,7 @@ pub fn run() {
             // Retenção de backups: remove no startup as execuções de backup mais
             // antigas que o limite configurado (default 30 dias; 0 desativa).
             let retention_db = db.clone();
-            let backups_root = data_dir.join(constants::LOCAL_BACKUP_DIR);
+            let backups_root = locations::AppPath::BackupDir.resolve(app.handle())?;
             tauri::async_runtime::spawn(async move {
                 let days = retention_db
                     .with(storage::settings::backup_retention_days)
@@ -325,7 +331,11 @@ pub fn run() {
             commands::list_conflicts,
             commands::resolve_conflict,
             commands::list_pending_ops,
+            commands::get_sync_state,
+            commands::get_recent_errors,
+            commands::clear_errors,
             commands::retry_pending_op,
+            commands::bump_pending_op,
             commands::list_dismissed_notices,
             commands::dismiss_notice,
             commands::list_backups,
@@ -337,6 +347,7 @@ pub fn run() {
             commands::set_autostart,
             #[cfg(desktop)]
             commands::open_backup_folder,
+            commands::export_diagnostics,
             #[cfg(desktop)]
             commands::reveal_backup_path,
         ])
@@ -346,9 +357,34 @@ pub fn run() {
 
 /// Logs em stdout (dev) e em arquivo diário no diretório de logs do app
 /// (`%LOCALAPPDATA%/com.slot2sync.app/logs` no Windows).
+/// Dias de retenção dos arquivos de log rotacionados (`prune_old_logs`).
+/// Fixo por ora — mesmo racional de outras constantes de retenção do app que
+/// não viraram configuração de usuário (evita expandir a boundary IPC por uma
+/// issue de manutenção interna).
+const LOG_RETENTION_DAYS: u32 = 7;
+
+/// Baixa a prioridade do processo (`BELOW_NORMAL_PRIORITY_CLASS`) no
+/// startup — a sincronização faz I/O em background e não deve competir com um
+/// emulador aberto pelos ciclos de CPU/prioridade de I/O do Windows.
+/// Best-effort: falha aqui não impede o app de iniciar.
+#[cfg(windows)]
+fn lower_process_priority() {
+    use windows::Win32::System::Threading::{
+        GetCurrentProcess, SetPriorityClass, BELOW_NORMAL_PRIORITY_CLASS,
+    };
+    // SAFETY: `GetCurrentProcess` devolve um pseudo-handle válido para a
+    // duração do processo, sem precisar ser fechado; `SetPriorityClass` só
+    // lê esse handle e a flag de prioridade, não há estado inválido possível.
+    let result = unsafe { SetPriorityClass(GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS) };
+    if let Err(err) = result {
+        tracing::warn!(error = %err, "falha ao baixar a prioridade do processo");
+    }
+}
+
 fn init_logging(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
-    let log_dir = app.path().app_log_dir()?;
+    let log_dir = locations::AppPath::LogDir.resolve(app)?;
     std::fs::create_dir_all(&log_dir)?;
+    prune_old_logs(&log_dir, LOG_RETENTION_DAYS);
     let file_appender = tracing_appender::rolling::daily(&log_dir, "slot2sync.log");
 
     tracing_subscriber::registry()
@@ -358,4 +394,68 @@ fn init_logging(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>
         .init();
 
     Ok(())
+}
+
+/// Remove de `log_dir` os arquivos de log (rotação diária do
+/// `tracing-appender`) cujo mtime é mais antigo que `retention_days` — sem
+/// isso, o diretório de logs cresce indefinidamente ao longo do uso do app.
+/// Roda antes do subscriber ser inicializado, então erros aqui só vão para
+/// stderr (não há `tracing` disponível ainda).
+fn prune_old_logs(log_dir: &std::path::Path, retention_days: u32) {
+    let cutoff = std::time::SystemTime::now()
+        .checked_sub(std::time::Duration::from_secs(
+            u64::from(retention_days) * 24 * 60 * 60,
+        ))
+        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+
+    let Ok(entries) = std::fs::read_dir(log_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let is_old_log = entry.file_type().is_ok_and(|t| t.is_file())
+            && entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .is_ok_and(|modified| modified < cutoff);
+        if is_old_log {
+            if let Err(err) = std::fs::remove_file(entry.path()) {
+                eprintln!(
+                    "falha ao remover log antigo {}: {err}",
+                    entry.path().display()
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod prune_old_logs_tests {
+    use super::prune_old_logs;
+
+    fn touch_with_age(path: &std::path::Path, days_old: u64) {
+        std::fs::write(path, b"log").unwrap();
+        let old_time = filetime::FileTime::from_system_time(
+            std::time::SystemTime::now() - std::time::Duration::from_secs(days_old * 24 * 60 * 60),
+        );
+        filetime::set_file_mtime(path, old_time).unwrap();
+    }
+
+    #[test]
+    fn remove_apenas_logs_mais_antigos_que_a_retencao() {
+        let tmp = tempfile::tempdir().unwrap();
+        let old_log = tmp.path().join("slot2sync.log.2020-01-01");
+        let recent_log = tmp.path().join("slot2sync.log.2026-01-01");
+        touch_with_age(&old_log, 30);
+        touch_with_age(&recent_log, 1);
+
+        prune_old_logs(tmp.path(), 7);
+
+        assert!(!old_log.exists());
+        assert!(recent_log.exists());
+    }
+
+    #[test]
+    fn diretorio_ausente_nao_causa_panico() {
+        prune_old_logs(std::path::Path::new("/nao/existe/mesmo"), 7);
+    }
 }

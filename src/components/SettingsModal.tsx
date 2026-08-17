@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { SUPPORTED_LANGUAGES, changeLanguage, type LanguageCode } from "../i18n";
 import { useErrorMessage } from "../lib/errors";
 import {
+  exportDiagnostics,
   openBackupFolder,
   setAutostart,
   setBackupRetentionDays,
@@ -155,6 +156,24 @@ export function SettingsModal({
       await openBackupFolder();
     } catch (err) {
       setBackupError(errorMessage(err));
+    }
+  };
+
+  const [diagnosticsBusy, setDiagnosticsBusy] = useState(false);
+  const [diagnosticsResult, setDiagnosticsResult] = useState<string | null>(null);
+  const [diagnosticsError, setDiagnosticsError] = useState<string | null>(null);
+
+  const exportDiagnosticsFile = async () => {
+    setDiagnosticsBusy(true);
+    setDiagnosticsError(null);
+    setDiagnosticsResult(null);
+    try {
+      const path = await exportDiagnostics();
+      setDiagnosticsResult(path);
+    } catch (err) {
+      setDiagnosticsError(errorMessage(err));
+    } finally {
+      setDiagnosticsBusy(false);
     }
   };
 
@@ -464,6 +483,30 @@ export function SettingsModal({
             ) : null}
           </div>
           {backupError ? <p className="error">{backupError}</p> : null}
+        </section>
+      ) : null}
+
+      {tab === "backups" && !isMobile ? (
+        <section className="settings-section">
+          <h3>{t("settings.diagnostics.heading")}</h3>
+          <p className="muted">{t("settings.diagnostics.hint")}</p>
+          <div className="settings-row">
+            <button
+              className="secondary"
+              onClick={exportDiagnosticsFile}
+              disabled={diagnosticsBusy}
+            >
+              {diagnosticsBusy
+                ? t("settings.diagnostics.exporting")
+                : t("settings.diagnostics.export")}
+            </button>
+          </div>
+          {diagnosticsResult ? (
+            <span className="saved-hint">
+              {t("settings.diagnostics.exported", { path: diagnosticsResult })}
+            </span>
+          ) : null}
+          {diagnosticsError ? <p className="error">{diagnosticsError}</p> : null}
         </section>
       ) : null}
 

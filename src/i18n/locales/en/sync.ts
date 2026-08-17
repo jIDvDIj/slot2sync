@@ -49,6 +49,8 @@ export const sync = {
     retrying: "Syncing…",
     dead: "gave up after too many attempts",
     retryFile: "Retry this file",
+    bumpFile: "↑ Prioritize",
+    prioritized: "prioritized",
   },
   conflict: {
     title: "Conflict — {{emulator}}",
