@@ -1,0 +1,43 @@
+name: Sugerir uma funcionalidade
+description: Proponha uma ideia de melhoria para o Slot2Sync.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Antes de continuar, confira se já não existe uma
+        [issue aberta](https://github.com/jIDvDIj/slot2sync/issues) com a mesma ideia, e dê
+        uma olhada no [roadmap](https://jidvdij.github.io/slot2sync-site/docs/dev/roadmap)
+        — talvez já esteja planejado.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Qual problema isso resolve?
+      description: Descreva a situação atual e o que incomoda nela.
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Solução proposta
+      description: Como você imagina que isso funcionaria?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternativas consideradas
+      description: Outras formas de resolver o mesmo problema, se houver.
+    validations:
+      required: false
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Contexto adicional
+      description: Screenshots, mockups, links, ou qualquer outra informação relevante.
+    validations:
+      required: false
