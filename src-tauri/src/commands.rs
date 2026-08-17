@@ -10,12 +10,14 @@ use std::sync::Arc;
 use serde::Serialize;
 #[cfg(mobile)]
 use tauri::Listener;
-use tauri::{AppHandle, Emitter, Manager, Runtime, State};
+#[cfg(all(test, desktop, not(windows)))]
+use tauri::Manager;
+use tauri::{AppHandle, Emitter, Runtime, State};
 #[cfg(desktop)]
 use tauri_plugin_autostart::ManagerExt;
 
 use crate::auth::{AuthManager, AuthStatus};
-use crate::constants::{LOCAL_BACKUP_DIR, TRIGGER_MANUAL};
+use crate::constants::TRIGGER_MANUAL;
 use crate::emulator::{self, EmulatorProfile};
 use crate::error::{AppError, AppResult};
 use crate::events::EVT_AUTH_STATUS;
@@ -38,15 +40,30 @@ pub struct HealthStatus {
     pub ready: bool,
     /// `true` quando compilado para Android ou iOS; `false` no desktop.
     pub is_mobile: bool,
+    /// Tamanho do arquivo SQLite (via `dbstat`). Crescimento anormal pode
+    /// indicar corrupção ou vazamento de dados de conflito.
+    pub db_size_bytes: u64,
+    /// Pendências acumuladas na fila offline. Valor alto por muito tempo
+    /// sugere que o dispositivo está sem conseguir sincronizar.
+    pub pending_ops_count: u32,
 }
 
-/// Verificação mínima de que a boundary frontend ↔ Rust está funcional.
+/// Verificação mínima de que a boundary frontend ↔ Rust está funcional, mais
+/// um retrato rápido da saúde do SQLite local.
 #[tauri::command]
-pub fn health_check() -> AppResult<HealthStatus> {
+pub async fn health_check(state: State<'_, AppState>) -> AppResult<HealthStatus> {
+    health_check_impl(&state).await
+}
+
+async fn health_check_impl<R: Runtime>(state: &State<'_, AppState<R>>) -> AppResult<HealthStatus> {
+    let db_size_bytes = state.db.with(crate::storage::db::size_bytes).await?;
+    let pending_ops_count = state.db.with(queue::count).await? as u32;
     Ok(HealthStatus {
         version: env!("CARGO_PKG_VERSION").to_string(),
         ready: true,
         is_mobile: cfg!(mobile),
+        db_size_bytes,
+        pending_ops_count,
     })
 }
 
@@ -447,6 +464,14 @@ async fn persist_detected(
     state: &State<'_, AppState>,
     profile: EmulatorProfile,
 ) -> AppResult<EmulatorProfile> {
+    // Marcador inerte na raiz (ver `constants::LOCAL_ROOT_MARKER`) — metadado
+    // para uma futura heurística de detecção de desconexão, não checado hoje.
+    #[cfg(desktop)]
+    {
+        let marker = profile.root_path.join(crate::constants::LOCAL_ROOT_MARKER);
+        let _ = tokio::fs::write(&marker, "").await;
+    }
+
     let to_store = profile.clone();
     let path_reset = state
         .db
@@ -721,16 +746,48 @@ fn autostart_enabled(_app: &AppHandle) -> AppResult<bool> {
     Ok(false)
 }
 
+/// Gera um `.zip` de diagnóstico na pasta de Downloads do usuário
+/// (configurações com segredos redigidos, manifest, conflitos, fila offline,
+/// informações do app e o final do log de hoje) — para anexar a um relato de
+/// bug. Devolve o caminho do arquivo gerado.
+#[cfg(desktop)]
+#[tauri::command]
+pub async fn export_diagnostics(app: AppHandle, state: State<'_, AppState>) -> AppResult<String> {
+    let downloads_dir = crate::locations::AppPath::DownloadsDir.resolve(&app)?;
+    tokio::fs::create_dir_all(&downloads_dir).await?;
+
+    let settings = state.db.with(settings::load).await?;
+    let manifest = state.db.with(manifest::list_all).await?;
+    let conflicts = state.db.with(conflicts::list_all).await?;
+    let pending_ops = state.db.with(queue::list_all).await?;
+    let log_dir = crate::locations::AppPath::LogDir.resolve(&app)?;
+
+    let dest = downloads_dir.join(crate::diagnostics::file_name());
+    let dest_for_task = dest.clone();
+    let version = env!("CARGO_PKG_VERSION");
+    tokio::task::spawn_blocking(move || {
+        crate::diagnostics::write_zip(
+            &dest_for_task,
+            &settings,
+            &manifest,
+            &conflicts,
+            &pending_ops,
+            version,
+            &log_dir,
+        )
+    })
+    .await
+    .map_err(|e| AppError::Other(format!("tarefa bloqueante abortada: {e}")))??;
+
+    Ok(dest.display().to_string())
+}
+
 /// Abre a pasta de backups locais no gerenciador de arquivos do SO. A pasta é
 /// criada se ainda não existir (recebe os backups do primeiro sync).
 #[cfg(desktop)]
 #[tauri::command]
 pub async fn open_backup_folder(app: AppHandle) -> AppResult<()> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| AppError::Other(format!("diretório de dados indisponível: {e}")))?
-        .join(LOCAL_BACKUP_DIR);
+    let dir = crate::locations::AppPath::BackupDir.resolve(&app)?;
     tokio::fs::create_dir_all(&dir).await?;
     tokio::task::spawn_blocking(move || open::that(&dir))
         .await
@@ -744,11 +801,7 @@ pub async fn open_backup_folder(app: AppHandle) -> AppResult<()> {
 #[cfg(desktop)]
 #[tauri::command]
 pub async fn reveal_backup_path(app: AppHandle, path: String) -> AppResult<()> {
-    let backups_root = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| AppError::Other(format!("diretório de dados indisponível: {e}")))?
-        .join(LOCAL_BACKUP_DIR);
+    let backups_root = crate::locations::AppPath::BackupDir.resolve(&app)?;
     let target = PathBuf::from(&path);
     let canonical = tokio::fs::canonicalize(&target).await?;
     let root_canonical = tokio::fs::canonicalize(&backups_root).await?;
@@ -868,6 +921,33 @@ pub async fn list_pending_ops(state: State<'_, AppState>) -> AppResult<Vec<queue
     state.db.with(queue::list_all).await
 }
 
+/// Retrato do `SyncState` corrente do engine. (→ ipc.ts)
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncStateSnapshot {
+    pub state: &'static str,
+    pub emulator: Option<String>,
+    /// Só preenchido quando `state == "error"`.
+    pub error_message: Option<String>,
+}
+
+/// Estado corrente do sync (`idle`/`scanning`/`syncing`/`conflict`/`error`) —
+/// permite ao frontend renderizar o estado certo ao reconectar no meio de um
+/// sync, sem depender de ter recebido os eventos `sync:*` anteriores.
+#[tauri::command]
+pub fn get_sync_state(state: State<'_, AppState>) -> SyncStateSnapshot {
+    let (sync_state, emulator) = state.engine.current_sync_state();
+    let error_message = match &sync_state {
+        crate::sync::SyncState::Error(msg) => Some(msg.clone()),
+        _ => None,
+    };
+    SyncStateSnapshot {
+        state: sync_state.as_str(),
+        emulator,
+        error_message,
+    }
+}
+
 /// Ação "tentar novamente" da fila offline: zera as tentativas e o backoff de
 /// um arquivo (inclusive pendências mortas), liberando a retentativa no próximo
 /// sync.
@@ -881,6 +961,23 @@ pub async fn retry_pending_op(
     state
         .db
         .with(move |conn| queue::retry_now(conn, &emulator, category, &rel_path))
+        .await
+}
+
+/// Ação "↑ mover para frente da fila" da UI: marca a pendência como
+/// prioritária e libera a retentativa imediata (mesmo efeito de backoff de
+/// `retry_pending_op`). O próximo sync (automático ou manual) é quem de fato
+/// reprocessa o arquivo.
+#[tauri::command]
+pub async fn bump_pending_op(
+    state: State<'_, AppState>,
+    emulator: String,
+    category: SyncCategory,
+    rel_path: String,
+) -> AppResult<()> {
+    state
+        .db
+        .with(move |conn| queue::bump_priority(conn, &emulator, category, &rel_path))
         .await
 }
 
@@ -899,6 +996,19 @@ pub async fn dismiss_notice(state: State<'_, AppState>, id: String) -> AppResult
         .await
 }
 
+/// Histórico de erros em memória desde o último reinício (mais antigo
+/// primeiro) — alimenta uma futura aba de diagnóstico na UI.
+#[tauri::command]
+pub fn get_recent_errors(state: State<'_, AppState>) -> Vec<crate::sync::ErrorEntry> {
+    state.engine.recent_errors()
+}
+
+/// Limpa o histórico de erros em memória.
+#[tauri::command]
+pub fn clear_errors(state: State<'_, AppState>) {
+    state.engine.clear_errors();
+}
+
 /// Versões arquivadas de um arquivo no histórico pré-download
 /// (`<backups>/<emulador>/history/<categoria>/…`), mais recentes primeiro.
 #[tauri::command]
@@ -908,11 +1018,7 @@ pub async fn list_file_versions(
     category: SyncCategory,
     rel_path: String,
 ) -> AppResult<Vec<crate::versioning::FileVersion>> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| AppError::Other(format!("diretório de dados indisponível: {e}")))?
-        .join(LOCAL_BACKUP_DIR);
+    let dir = crate::locations::AppPath::BackupDir.resolve(&app)?;
     tokio::task::spawn_blocking(move || {
         use crate::versioning::Versioner;
         crate::versioning::FsVersioner::new(dir).versions(&emulator, category.as_str(), &rel_path)
@@ -934,11 +1040,7 @@ pub async fn restore_version(
     category: SyncCategory,
     versioned_rel_path: String,
 ) -> AppResult<()> {
-    let backups_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| AppError::Other(format!("diretório de dados indisponível: {e}")))?
-        .join(LOCAL_BACKUP_DIR);
+    let backups_dir = crate::locations::AppPath::BackupDir.resolve(&app)?;
 
     // Valida o caminho versionado e deriva origem + rel_path original
     // (lógica pura e testada em `versioning::resolve_restore`).
@@ -1029,11 +1131,7 @@ pub async fn restore_version(
 /// continua manual, pela pasta.
 #[tauri::command]
 pub async fn list_backups(app: AppHandle) -> AppResult<Vec<crate::backups::BackupEntry>> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| AppError::Other(format!("diretório de dados indisponível: {e}")))?
-        .join(LOCAL_BACKUP_DIR);
+    let dir = crate::locations::AppPath::BackupDir.resolve(&app)?;
     tokio::task::spawn_blocking(move || crate::backups::list(&dir))
         .await
         .map_err(|e| AppError::Other(format!("tarefa bloqueante abortada: {e}")))?
@@ -1095,10 +1193,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn health_check_reporta_versao_e_pronto() {
-        let status = health_check().unwrap();
+    async fn health_check_reporta_versao_pronto_e_metricas_do_banco() {
+        let (app, _tmp) = build_app().await;
+        let state = app.state::<AppState<MockRuntime>>();
+
+        let status = health_check_impl(&state).await.unwrap();
         assert!(status.ready);
         assert!(!status.version.is_empty());
+        assert_eq!(status.pending_ops_count, 0);
+        // Banco novo não é vazio (migrações já criaram tabelas).
+        assert!(status.db_size_bytes > 0);
     }
 
     #[tokio::test]

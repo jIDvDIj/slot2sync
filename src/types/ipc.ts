@@ -10,6 +10,10 @@ export interface HealthStatus {
   ready: boolean;
   /** `true` quando compilado para Android ou iOS; `false` no desktop. */
   isMobile: boolean;
+  /** Tamanho do banco SQLite local em bytes (via `dbstat`). */
+  dbSizeBytes: number;
+  /** Pendências acumuladas na fila offline. */
+  pendingOpsCount: number;
 }
 
 /** `auth::AuthStatus` */
@@ -149,6 +153,9 @@ export interface PendingOp {
   /** A partir de quando pode ser retentado; `null` = morta (esgotou as
    * tentativas — só volta pela ação "tentar novamente"). */
   nextRetryAtMs: number | null;
+  /** `true` = usuário pediu para priorizar este arquivo ("↑ mover para
+   * frente da fila") — listado primeiro por `list_pending_ops`. */
+  priority: boolean;
 }
 
 /** `backups::BackupEntry` — cópia de backup local listada no histórico */
@@ -220,10 +227,36 @@ export interface SyncErrorEvent {
   message: string;
 }
 
+/** `sync::ErrorEntry` — item de `get_recent_errors` */
+export interface ErrorEntry {
+  atMs: number;
+  emulator: string | null;
+  message: string;
+}
+
 /** `watcher::EmulatorStatusEvent` — payload do evento `emulator:status` */
 export interface EmulatorStatusEvent {
   emulator: string;
   running: boolean;
+}
+
+/** `sync::SyncState` serializado como string — ver `commands::SyncStateSnapshot` */
+export type SyncStateKind = "idle" | "scanning" | "syncing" | "conflict" | "error";
+
+/** `sync::engine::SyncStateChanged` — payload do evento `sync:state-changed` */
+export interface SyncStateChangedEvent {
+  from: SyncStateKind;
+  to: SyncStateKind;
+  emulator: string | null;
+  /** Só preenchido quando `to === "error"`. */
+  errorMessage: string | null;
+}
+
+/** `commands::SyncStateSnapshot` — retorno de `get_sync_state` */
+export interface SyncStateSnapshot {
+  state: SyncStateKind;
+  emulator: string | null;
+  errorMessage: string | null;
 }
 
 /** `error::AppError` serializado — todo comando rejeita com este shape */
@@ -241,6 +274,9 @@ export interface AppErrorPayload {
     | "remote_not_found"
     | "insufficient_disk_space"
     | "integrity"
+    | "folder_not_mounted"
+    | "case_conflict"
+    | "zip"
     | "other";
   message: string;
   /** Detalhe técnico sem o prefixo (caminho, nome, msg da lib). O frontend
@@ -255,6 +291,7 @@ export const EVT = {
   SYNC_COMPLETED: "sync:completed",
   SYNC_ERROR: "sync:error",
   SYNC_CONFLICT: "sync:conflict",
+  SYNC_STATE_CHANGED: "sync:state-changed",
   AUTH_STATUS: "auth:status",
   EMULATOR_STATUS: "emulator:status",
 } as const;

@@ -80,12 +80,16 @@ funcionamento do app.
 - Tudo que ele guarda no Drive fica organizado numa pasta dedicada: `Slot2Sync`, com uma
   subpasta para cada emulador.
 
-## Contribuindo e reportando problemas
+## Dúvidas, bugs e contribuições
 
-Quer contribuir? Veja o [guia de contribuição](./CONTRIBUTING.md) — inclui como configurar
-suas próprias credenciais de teste, sem depender das de produção.
+Tem uma dúvida ou quer trocar ideia? Use as
+[Discussions](https://github.com/jIDvDIj/slot2sync/discussions).
 
-Encontrou um bug? Abra uma [issue](https://github.com/jIDvDIj/slot2sync/issues).
+Encontrou um bug ou quer sugerir algo? Abra uma
+[issue](https://github.com/jIDvDIj/slot2sync/issues).
+
+Quer contribuir com código? Veja o [guia de contribuição](./CONTRIBUTING.md) — inclui como
+configurar suas próprias credenciais de teste, sem depender das de produção.
 
 Encontrou uma vulnerabilidade de segurança? **Não abra uma issue pública** — siga o processo
 de divulgação responsável descrito em [`SECURITY.md`](./SECURITY.md).
@@ -100,6 +104,19 @@ npm run tauri build      # build completo (Windows/macOS/Linux)
 cargo test --manifest-path src-tauri/Cargo.toml   # testes do backend
 ```
 
+## Instaladores assinados
+
+Cada instalador publicado numa [release](https://github.com/jIDvDIj/slot2sync/releases) sai
+acompanhado de uma atestação de proveniência SLSA (assinada via Sigstore), verificável com
+
+```bash
+gh attestation verify <instalador-baixado> --repo jIDvDIj/slot2sync
+```
+
+Mais contexto sobre isso e os demais mecanismos de confiança (verificação OAuth do Google,
+SmartScreen) na página
+[Distribuição e confiança](https://jidvdij.github.io/slot2sync-site/docs/dev/explicacao/distribuicao-e-confianca).
+
 ## Documentação
 
 Procurando como **instalar e usar** o Slot2Sync? Veja o
@@ -108,6 +125,6 @@ Procurando como **instalar e usar** o Slot2Sync? Veja o
 A documentação técnica — arquitetura, decisões de projeto e catálogo da fronteira
 Rust↔TypeScript — mora no site, na aba
 [Para desenvolvedores](https://jidvdij.github.io/slot2sync-site/docs/dev/). Antes de abrir um
-PR, leia o [`CONTRIBUTING.md`](./CONTRIBUTING.md) e o [`CONDUCT.md`](./CONDUCT.md).
+PR, leia o [`CONTRIBUTING.md`](./CONTRIBUTING.md) e o [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md).
 
-Todo o código é licenciado sob a [GPL-3.0-or-later](./LICENSE).
+Todo o código é licenciado sob a [GPL-3.0](./LICENSE).

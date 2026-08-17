@@ -9,10 +9,41 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use super::conflict::{decide, SyncAction};
 use super::storage::FileLoc;
 use super::SyncDirection;
-use crate::constants::TMP_SUFFIX;
+use crate::constants::{TMP_PREFIX_UNIX, TMP_PREFIX_WINDOWS};
 use crate::error::{AppError, AppResult};
 use crate::remote::RemoteFile;
 use crate::storage::manifest::ManifestEntry;
+
+/// Acima deste tamanho, o nome-base do temporário vira um hash — nomes de
+/// jogo/arquivo muito longos (comuns em coleções importadas de outros
+/// sistemas) podem estourar o limite de caminho do filesystem quando somados
+/// ao prefixo e ao caminho da pasta.
+const TMP_NAME_HASH_THRESHOLD: usize = 200;
+
+/// Nome do arquivo temporário de gravação atômica para `name` (nome final,
+/// sem diretório). Prefixo por plataforma (ver `TMP_PREFIX_WINDOWS`/
+/// `TMP_PREFIX_UNIX`); nomes muito longos viram um hash curto do nome
+/// original em vez de `prefixo + nome`.
+pub fn tmp_name(name: &str) -> String {
+    let prefix = if cfg!(target_os = "windows") {
+        TMP_PREFIX_WINDOWS
+    } else {
+        TMP_PREFIX_UNIX
+    };
+    if name.len() > TMP_NAME_HASH_THRESHOLD {
+        format!("{prefix}{}", &super::sha256_hex(name.as_bytes())[..16])
+    } else {
+        format!("{prefix}{name}")
+    }
+}
+
+/// `true` se `name` é um temporário de gravação atômica do Slot2Sync — checa
+/// os dois prefixos (não só o da plataforma atual), já que um scan pode topar
+/// com um resto de escrita feita por outra instalação/SO (ex.: dual-boot
+/// apontando para a mesma pasta).
+pub fn is_temp_name(name: &str) -> bool {
+    name.starts_with(TMP_PREFIX_WINDOWS) || name.starts_with(TMP_PREFIX_UNIX)
+}
 
 #[derive(Debug, Clone)]
 pub struct LocalFile {
@@ -21,6 +52,15 @@ pub struct LocalFile {
     /// Locador opaco do arquivo no armazenamento local (ver [`FileLoc`]).
     pub loc: FileLoc,
     pub mtime_ms: i64,
+    /// Remanescente sub-milissegundo do mtime (0..999_999 ns), quando o SO/
+    /// filesystem oferece essa precisão. `0` em plataformas que não oferecem
+    /// (mobile via SAF) ou quando o próprio mtime é `0`. Refina a detecção de
+    /// "arquivo tocado" em [`crate::sync::engine::SyncEngine::hash_touched_files`]
+    /// dentro da janela de tolerância de [`super::conflict::TIMESTAMP_TOLERANCE_MS`]
+    /// — duas escritas reais quase nunca compartilham o mesmo remanescente,
+    /// então ele distingue "conteúdo idêntico" de "escrita rápida sucessiva
+    /// que a tolerância de 2s teria mascarado".
+    pub mtime_ns: i64,
     #[allow(dead_code)]
     pub size_bytes: i64,
     /// SHA-256 (hex) do conteúdo atual. Calculado pelo engine SOMENTE quando o
@@ -43,10 +83,20 @@ pub struct PlannedOp {
 /// Consumida pela `DesktopStorage`; no mobile o scan é feito pelo plugin nativo.
 #[cfg_attr(not(desktop), allow(dead_code))]
 pub fn scan_local_bases(root: &Path, bases: &[PathBuf]) -> AppResult<Vec<LocalFile>> {
+    // Sem isto, uma raiz ausente (drive removível desconectado, pasta de rede
+    // fora do ar) faz todo `base` parecer "pasta inexistente, pular" — o scan
+    // volta vazio como se todo arquivo local tivesse sumido, e o diff tenta
+    // baixar de volta a coleção inteira para dentro do que seria o ponto de
+    // montagem (ver `AppError::FolderNotMounted`: erro dedicado e
+    // não-retryable, tratado antes de entrar no plano por arquivo).
+    if !root.is_dir() {
+        return Err(AppError::FolderNotMounted(root.display().to_string()));
+    }
+
     let mut seen = HashSet::new();
     let mut out = Vec::new();
     for base in bases {
-        let base_abs = root.join(base);
+        let base_abs = to_long_path(&root.join(base));
         if base_abs.is_dir() {
             walk(&base_abs, &base_abs, &mut seen, &mut out)?;
         }
@@ -74,7 +124,7 @@ fn walk(
         }
 
         let name = entry.file_name().to_string_lossy().into_owned();
-        if name.ends_with(TMP_SUFFIX) {
+        if is_temp_name(&name) {
             continue;
         }
 
@@ -91,10 +141,12 @@ fn walk(
         }
 
         let metadata = entry.metadata()?;
+        let modified = metadata.modified()?;
         out.push(LocalFile {
             rel_path,
             loc: FileLoc::from_path(path),
-            mtime_ms: system_time_ms(metadata.modified()?),
+            mtime_ms: system_time_ms(modified),
+            mtime_ns: system_time_subsec_ns_remainder(modified),
             size_bytes: metadata.len() as i64,
             hash: None,
         });
@@ -106,6 +158,47 @@ fn walk(
 pub fn system_time_ms(time: SystemTime) -> i64 {
     time.duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// No Windows, prefixa um caminho absoluto com `\\?\` (`\\?\UNC\` para
+/// caminhos de rede) para contornar o limite de 260 caracteres do `MAX_PATH`
+/// — necessário para coleções de save profundamente aninhadas (ex.:
+/// `PPSSPP/PSP/SAVEDATA/<id longo>/<arquivo>`). O prefixo desliga a
+/// normalização de `.`/`..` do Win32, então só é aplicado a caminhos que já
+/// são absolutos. No-op nas demais plataformas e em caminhos relativos.
+#[cfg_attr(not(desktop), allow(dead_code))]
+pub fn to_long_path(path: &Path) -> PathBuf {
+    if !cfg!(windows) || !path.is_absolute() {
+        return path.to_path_buf();
+    }
+    windows_long_path_prefix(path)
+}
+
+/// Lógica pura do prefixo — separada de [`to_long_path`] só para ser testável
+/// em qualquer plataforma (é string, não chama nenhuma API do Windows).
+fn windows_long_path_prefix(path: &Path) -> PathBuf {
+    // O prefixo \\?\ desliga a expansão automática do Win32, o que inclui a
+    // conversão de `/` para `\`; sem normalizar aqui, um caminho como
+    // `tmp\sub/dir\save.bin` (comum com `Path::join("sub/dir/save.bin")`)
+    // vira um único nome de entrada inválido em vez de duas subpastas.
+    let s = path.as_os_str().to_string_lossy().replace('/', "\\");
+    if s.starts_with(r"\\?\") {
+        return PathBuf::from(s);
+    }
+    match s.strip_prefix(r"\\") {
+        Some(unc) => PathBuf::from(format!(r"\\?\UNC\{unc}")),
+        None => PathBuf::from(format!(r"\\?\{s}")),
+    }
+}
+
+/// Nanossegundos restantes dentro do milissegundo atual de `time` (0..999_999).
+/// Complementa [`system_time_ms`] com a precisão sub-milissegundo que o SO
+/// eventualmente oferece (ext4, NTFS) e que o `as_millis()` trunca.
+#[cfg_attr(not(desktop), allow(dead_code))]
+pub fn system_time_subsec_ns_remainder(time: SystemTime) -> i64 {
+    time.duration_since(UNIX_EPOCH)
+        .map(|d| (d.subsec_nanos() % 1_000_000) as i64)
         .unwrap_or(0)
 }
 
@@ -169,6 +262,7 @@ pub fn build_plan(
                 if file.hash.is_some() && file.hash == entry.file_hash {
                     let mut refreshed = entry.clone();
                     refreshed.local_mtime_ms = Some(file.mtime_ms);
+                    refreshed.mtime_ns = file.mtime_ns;
                     mtime_refreshes.push(refreshed);
                     skipped += 1;
                     continue;
@@ -213,11 +307,102 @@ mod tests {
 
     const T: i64 = 1_700_000_000_000;
 
+    #[test]
+    fn system_time_subsec_ns_remainder_extrai_so_o_resto_sub_ms() {
+        // Múltiplo de 100ns: no Windows, `SystemTime` internamente é um
+        // FILETIME com granularidade de 100ns, então nanossegundos que não
+        // caem numa fronteira de 100 seriam truncados antes mesmo de chegar
+        // à função sob teste, quebrando o teste só naquela plataforma.
+        let t = UNIX_EPOCH + std::time::Duration::new(1_700_000_000, 123_456_700);
+        assert_eq!(system_time_ms(t), 1_700_000_000_123);
+        // 123_456_700 ns % 1_000_000 = 456_700 (resto dentro do milissegundo).
+        assert_eq!(system_time_subsec_ns_remainder(t), 456_700);
+    }
+
+    #[test]
+    fn system_time_subsec_ns_remainder_e_zero_em_fronteira_de_ms() {
+        let t = UNIX_EPOCH + std::time::Duration::new(1_700_000_000, 5_000_000);
+        assert_eq!(system_time_subsec_ns_remainder(t), 0);
+    }
+
+    #[test]
+    fn to_long_path_e_no_op_fora_do_windows_ou_em_caminho_relativo() {
+        // cfg!(windows) é false neste host, mesmo para um caminho absoluto
+        // (segundo as regras Unix) — cobre o passthrough real da função.
+        assert_eq!(
+            to_long_path(Path::new("/home/user/PPSSPP/save.bin")),
+            PathBuf::from("/home/user/PPSSPP/save.bin")
+        );
+        assert_eq!(
+            to_long_path(Path::new("relativo/save.bin")),
+            PathBuf::from("relativo/save.bin")
+        );
+    }
+
+    #[test]
+    fn windows_long_path_prefix_prefixa_caminho_de_drive() {
+        assert_eq!(
+            windows_long_path_prefix(Path::new(r"C:\Games\PPSSPP\save.bin")),
+            PathBuf::from(r"\\?\C:\Games\PPSSPP\save.bin")
+        );
+    }
+
+    #[test]
+    fn windows_long_path_prefix_usa_unc_para_caminho_de_rede() {
+        assert_eq!(
+            windows_long_path_prefix(Path::new(r"\\servidor\compartilhado\save.bin")),
+            PathBuf::from(r"\\?\UNC\servidor\compartilhado\save.bin")
+        );
+    }
+
+    #[test]
+    fn windows_long_path_prefix_e_idempotente() {
+        let already = PathBuf::from(r"\\?\C:\Games\save.bin");
+        assert_eq!(windows_long_path_prefix(&already), already);
+    }
+
+    #[test]
+    fn windows_long_path_prefix_normaliza_barras_antes_do_prefixo() {
+        // `\\?\` desliga a expansão automática do Win32 (inclui `/` → `\`);
+        // sem normalizar, "sub/dir" viraria um nome de entrada só, inválido.
+        assert_eq!(
+            windows_long_path_prefix(Path::new("C:/Games/sub/dir/save.bin")),
+            PathBuf::from(r"\\?\C:\Games\sub\dir\save.bin")
+        );
+    }
+
+    #[test]
+    fn tmp_name_usa_o_prefixo_da_plataforma_atual() {
+        let name = tmp_name("save.bin");
+        let prefix = if cfg!(target_os = "windows") {
+            TMP_PREFIX_WINDOWS
+        } else {
+            TMP_PREFIX_UNIX
+        };
+        assert_eq!(name, format!("{prefix}save.bin"));
+    }
+
+    #[test]
+    fn tmp_name_troca_por_hash_quando_o_nome_e_muito_longo() {
+        let long_name = "a".repeat(250);
+        let name = tmp_name(&long_name);
+        assert!(name.len() < long_name.len());
+        assert!(is_temp_name(&name));
+    }
+
+    #[test]
+    fn is_temp_name_reconhece_os_dois_prefixos_independente_do_so_atual() {
+        assert!(is_temp_name(&format!("{TMP_PREFIX_WINDOWS}save.bin")));
+        assert!(is_temp_name(&format!("{TMP_PREFIX_UNIX}save.bin")));
+        assert!(!is_temp_name("save.bin"));
+    }
+
     fn local_file(rel: &str, mtime: i64) -> LocalFile {
         LocalFile {
             rel_path: rel.to_string(),
             loc: FileLoc::from_path(PathBuf::from("/tmp").join(rel)),
             mtime_ms: mtime,
+            mtime_ns: 0,
             size_bytes: 100,
             hash: None,
         }
@@ -253,6 +438,9 @@ mod tests {
             size_bytes: Some(100),
             last_synced_at_ms: T,
             file_hash: None,
+            flags: 0,
+            inaccessible: false,
+            mtime_ns: 0,
         }
     }
 
@@ -483,7 +671,7 @@ mod tests {
         std::fs::create_dir_all(base.join("GAME01")).unwrap();
         std::fs::write(base.join("GAME01/SAVE.bin"), b"abc").unwrap();
         std::fs::write(base.join("topo.txt"), b"x").unwrap();
-        std::fs::write(base.join(format!("baixando{TMP_SUFFIX}")), b"parcial").unwrap();
+        std::fs::write(base.join(tmp_name("baixando")), b"parcial").unwrap();
 
         let files = scan_local_bases(tmp.path(), &[PathBuf::from("SAVEDATA")]).unwrap();
 
@@ -497,5 +685,15 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let files = scan_local_bases(tmp.path(), &[PathBuf::from("NAO_EXISTE")]).unwrap();
         assert!(files.is_empty());
+    }
+
+    #[test]
+    fn scan_com_raiz_inexistente_retorna_folder_not_mounted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("pendrive-desconectado");
+
+        let err = scan_local_bases(&root, &[PathBuf::from("SAVEDATA")]).unwrap_err();
+
+        assert!(matches!(err, AppError::FolderNotMounted(_)));
     }
 }

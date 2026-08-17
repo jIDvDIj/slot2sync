@@ -18,6 +18,9 @@ use crate::constants::{DRIVE_APP_PROP_DEVICE, DRIVE_APP_PROP_DEVICE_ID};
 use crate::error::{AppError, AppResult};
 use crate::remote::{BatchUploadOp, DeviceTag, RemoteFile};
 
+/// TTL do cache de `list_tree` (`DriveClient::listing_cache`).
+const LISTING_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DriveFile {
@@ -139,8 +142,15 @@ impl DriveClient {
     }
 
     /// Lista recursivamente todos os arquivos sob `folder_id`, com caminhos
-    /// relativos (`sub/pasta/arquivo.ext`).
+    /// relativos (`sub/pasta/arquivo.ext`). Serve do cache (`listing_cache`)
+    /// se a última listagem dessa pasta tem menos de `LISTING_CACHE_TTL`.
     pub async fn list_tree(&self, folder_id: &str) -> AppResult<Vec<RemoteFile>> {
+        if let Some((cached, at)) = self.listing_cache.lock().await.get(folder_id) {
+            if at.elapsed() < LISTING_CACHE_TTL {
+                return Ok(cached.clone());
+            }
+        }
+
         let mut out = Vec::new();
         let mut pending = vec![(folder_id.to_string(), String::new())];
 
@@ -154,6 +164,11 @@ impl DriveClient {
                 }
             }
         }
+
+        self.listing_cache.lock().await.insert(
+            folder_id.to_string(),
+            (out.clone(), std::time::Instant::now()),
+        );
         Ok(out)
     }
 
@@ -239,6 +254,7 @@ impl DriveClient {
             self.upload_multipart(reqwest::Method::POST, &url, &metadata, content)
                 .await?
         };
+        self.invalidate_listing_cache().await;
         Ok(file.to_remote(name.to_string()))
     }
 
@@ -261,6 +277,7 @@ impl DriveClient {
             self.upload_multipart(reqwest::Method::PATCH, &url, &metadata, content)
                 .await?
         };
+        self.invalidate_listing_cache().await;
         Ok(file.to_remote(String::new()))
     }
 
@@ -294,6 +311,7 @@ impl DriveClient {
             })
             .await?;
         let file: DriveFile = response.json().await?;
+        self.invalidate_listing_cache().await;
         Ok(file.to_remote(new_name.to_string()))
     }
 
@@ -341,6 +359,7 @@ impl DriveClient {
         }
         // A ordem das partes na resposta não é garantida; reordena pelo Content-ID.
         items.sort_by_key(|(idx, _)| *idx);
+        self.invalidate_listing_cache().await;
         Ok(items
             .into_iter()
             .zip(names)
@@ -712,6 +731,50 @@ mod http_tests {
         rel_paths.sort();
 
         assert_eq!(rel_paths, vec!["jogo/state.bin", "save.bin"]);
+    }
+
+    #[tokio::test]
+    async fn list_tree_serve_do_cache_na_segunda_chamada() {
+        let server = MockServer::start().await;
+        let client = test_client(&server).await;
+
+        Mock::given(method("GET"))
+            .and(path("/drive/v3/files"))
+            .and(query_param("q", "'root-id' in parents and trashed = false"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "files": [{"id": "f1", "name": "save.bin", "mimeType": "application/octet-stream"}]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let first = client.list_tree("root-id").await.unwrap();
+        let second = client.list_tree("root-id").await.unwrap();
+
+        assert_eq!(first.len(), 1);
+        assert_eq!(second.len(), 1);
+        // O mock com `.expect(1)` falha a verificação ao cair de escopo se a
+        // segunda chamada tivesse batido na rede de novo.
+    }
+
+    #[tokio::test]
+    async fn list_tree_refaz_a_chamada_apos_invalidar_o_cache() {
+        let server = MockServer::start().await;
+        let client = test_client(&server).await;
+
+        Mock::given(method("GET"))
+            .and(path("/drive/v3/files"))
+            .and(query_param("q", "'root-id' in parents and trashed = false"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "files": [{"id": "f1", "name": "save.bin", "mimeType": "application/octet-stream"}]
+            })))
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        client.list_tree("root-id").await.unwrap();
+        client.invalidate_listing_cache().await;
+        client.list_tree("root-id").await.unwrap();
     }
 
     #[tokio::test]

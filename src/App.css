@@ -744,6 +744,11 @@ progress.sync-bar::-moz-progress-bar {
   word-break: break-word;
 }
 
+.pending-priority {
+  color: var(--rs-color-info);
+  font-weight: var(--rs-weight-semibold);
+}
+
 /* Histórico de backups (#8a) */
 .backup-list {
   display: flex;

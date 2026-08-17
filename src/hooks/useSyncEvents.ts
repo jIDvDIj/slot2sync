@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
-import { getLastSync } from "../lib/ipc";
+import { getLastSync, getSyncState } from "../lib/ipc";
 import {
   EVT,
   type EmulatorStatusEvent,
@@ -10,6 +10,7 @@ import {
   type SyncErrorEvent,
   type SyncProgress,
   type SyncStarted,
+  type SyncStateChangedEvent,
 } from "../types/ipc";
 
 export type SyncPhase = "idle" | "syncing";
@@ -46,6 +47,15 @@ export function useSyncEvents(): SyncState {
       })
       .catch(() => {});
 
+    // Idem para a fase: reconectar no meio de um sync (janela reaberta, app
+    // recarregado) não pode depender de ter visto o `sync:started` que já
+    // passou — pergunta o estado atual em vez de assumir "idle".
+    getSyncState()
+      .then((snapshot) => {
+        setPhase(snapshot.state === "idle" ? "idle" : "syncing");
+      })
+      .catch(() => {});
+
     const subscriptions: Promise<UnlistenFn>[] = [
       listen<SyncStarted>(EVT.SYNC_STARTED, (event) => {
         setPhase("syncing");
@@ -69,6 +79,12 @@ export function useSyncEvents(): SyncState {
       }),
       listen<SyncErrorEvent>(EVT.SYNC_ERROR, (event) => {
         setLastError(event.payload);
+      }),
+      // Fonte determinística da fase (ver `getSyncState` acima): `idle` só
+      // quando a leva inteira termina, qualquer outro estado conta como
+      // "sincronizando" — conflito/erro num emulador não pausam os demais.
+      listen<SyncStateChangedEvent>(EVT.SYNC_STATE_CHANGED, (event) => {
+        setPhase(event.payload.to === "idle" ? "idle" : "syncing");
       }),
       listen<EmulatorStatusEvent>(EVT.EMULATOR_STATUS, (event) => {
         const { emulator, running: isRunning } = event.payload;

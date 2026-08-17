@@ -1,0 +1,31 @@
+version: 1
+labels:
+  - label: enhancement
+    title: ^feat\b
+
+  - label: bug
+    title: ^fix\b
+
+  - label: documentation
+    title: ^docs\b
+
+  - label: performance
+    title: ^perf\b
+
+  - label: ci
+    title: ^ci\b
+
+  - label: tooling
+    title: ^build\b
+
+  - label: backend
+    files:
+      - "^src-tauri\\/.*"
+
+  - label: frontend
+    files:
+      - "^src\\/.*"
+
+  - label: storage
+    files:
+      - "^src-tauri\\/src\\/storage\\/.*"

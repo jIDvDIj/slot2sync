@@ -66,6 +66,25 @@ pub const DRIVE_MAX_RETRIES: u32 = 3;
 /// `send_with_retry` absorve eventuais 429/rateLimit com backoff.
 pub const DRIVE_MAX_CONCURRENT_TRANSFERS: usize = 6;
 
+/// Teto de bytes em trânsito simultaneamente numa categoria, além do limite
+/// de contagem acima — um savestate de 500 MB não deve ocupar a mesma "vaga"
+/// que um save de 1 KB e deixar memória/banda livres para os demais.
+pub const MAX_BYTES_IN_FLIGHT: u32 = 64 * 1024 * 1024;
+
+/// Máximo de entradas no histórico de erros em memória
+/// (`SyncEngine::recent_errors`) — as mais antigas caem conforme novas
+/// chegam.
+pub const MAX_RECENT_ERRORS: usize = 100;
+
+/// Chamadas de rede (upload/download) simultâneas com o provedor remoto —
+/// separado do limite de I/O de disco (`MAX_DISK_WRITES`): são recursos
+/// diferentes, um não deveria esperar o outro.
+pub const MAX_NETWORK_OPS: usize = 4;
+/// Leituras/escritas de disco local simultâneas. Menor que `MAX_NETWORK_OPS`
+/// de propósito — em HDD, I/O paralelo demais vira thrashing de cabeça de
+/// leitura/escrita; sequencial (ou quase) é mais rápido.
+pub const MAX_DISK_WRITES: usize = 2;
+
 /// Acima deste tamanho o upload usa sessão resumable; abaixo, multipart — e o
 /// arquivo é elegível ao batch (a Batch API não suporta resumable).
 pub const DRIVE_SIMPLE_UPLOAD_MAX_BYTES: usize = 5 * 1024 * 1024;
@@ -78,9 +97,24 @@ pub const DRIVE_BATCH_MAX_OPS: usize = 100;
 /// o ganho do batch aparece no primeiro sync de coleções grandes.
 pub const DRIVE_BATCH_MIN_OPS: usize = 12;
 
-/// Sufixo de arquivos temporários de download (gravação atômica via rename).
-/// O scan local ignora arquivos com este sufixo.
-pub const TMP_SUFFIX: &str = ".slot2sync-tmp";
+/// Prefixo de arquivo temporário de gravação atômica (temp + rename) no
+/// Windows: convenção comum de apps que fazem escrita segura ali (Office,
+/// editores), reconhecível como "arquivo temporário de alguma coisa" mesmo
+/// fora do Slot2Sync.
+pub const TMP_PREFIX_WINDOWS: &str = "~slot2sync~";
+/// Prefixo equivalente em Unix (Linux/macOS): ponto inicial segue a convenção
+/// local de arquivo oculto.
+pub const TMP_PREFIX_UNIX: &str = ".slot2sync.";
+
+/// Arquivo-marcador gravado na raiz de um emulador ao ser adicionado
+/// (`add_emulator`). Não é lido/checado hoje — `scan_local_bases` detecta
+/// desconexão pela ausência da própria pasta raiz (`AppError::FolderNotMounted`),
+/// que já cobre o caso comum (drive removível desaparece por completo). Um
+/// marcador por si só não distingue de forma confiável "nunca foi montado
+/// nesta instalação" de "estava montado e caiu, revelando um ponto de
+/// montagem local vazio" sem estado adicional além do filesystem — fica
+/// gravado como metadado para uma heurística futura mais completa.
+pub const LOCAL_ROOT_MARKER: &str = ".slot2sync-root";
 
 /// Identificação dos gatilhos de sync (logs e evento `sync:started`).
 pub const TRIGGER_STARTUP: &str = "startup";
@@ -155,6 +189,16 @@ pub const SETTING_FOLDER_PROVIDER_PATH: &str = "folder_provider_path";
 /// primeira execução. Impede religar o autostart a cada inicialização — depois
 /// disso a escolha do usuário prevalece, inclusive se ele desativar.
 pub const SETTING_AUTOSTART_INITIALIZED: &str = "autostart_initialized";
+
+/// Versionamento lógico do *formato dos dados* guardados em `app_settings` e
+/// `sync_manifest` (chaves, encoding de valores) — distinto do `PRAGMA
+/// user_version` em `storage::db`, que versiona o schema físico (tabelas/
+/// colunas). Sobe quando uma migração muda como os dados são interpretados,
+/// não quando uma coluna nasce. Ver `storage::schema_version`.
+pub const SCHEMA_COMPONENT_SETTINGS: &str = "settings";
+pub const SCHEMA_COMPONENT_MANIFEST: &str = "sync_manifest";
+pub const SETTINGS_SCHEMA_VERSION: i64 = 1;
+pub const MANIFEST_SCHEMA_VERSION: i64 = 1;
 
 /// Label da janela principal (definida pelo Tauri quando não há `label`).
 pub const MAIN_WINDOW_LABEL: &str = "main";

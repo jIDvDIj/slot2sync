@@ -47,6 +47,7 @@ dirs = "6"
 futures = "0.3"
 filetime = "0.2"
 sha2 = "0.11"
+rayon = "1"
 globset = "0.4"
 # Confere o conteúdo baixado contra o `md5Checksum` devolvido pela API do Drive.
 md-5 = "0.11"
@@ -75,6 +76,9 @@ sysinfo = "0.39"
 # gatilho "file-change" — sincroniza sem esperar o emulador fechar.
 notify = "8"
 keyring = { version = "3", features = ["windows-native", "apple-native", "sync-secret-service"] }
+# Empacota o export de diagnóstico (`export_diagnostics`, só desktop) num
+# único .zip.
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 # Dependências exclusivas do mobile.
 # - deep-link: captura o redirect URI `slot2sync://oauth` de volta ao app (OAuth).
@@ -86,6 +90,9 @@ tauri-plugin-opener = "2"
 # Leitura do registro do Windows para a descoberta de instalações (Sinal B).
 [target.'cfg(windows)'.dependencies]
 winreg = "0.56"
+# SetPriorityClass: baixa a prioridade do processo no startup para não competir
+# por I/O com o emulador aberto.
+windows = { version = "0.58", features = ["Win32_System_Threading"] }
 
 [dev-dependencies]
 tempfile = "3"

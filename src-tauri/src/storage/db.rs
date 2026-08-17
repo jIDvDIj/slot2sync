@@ -150,6 +150,65 @@ ALTER TABLE sync_conflicts RENAME COLUMN drive_device TO remote_device;
 ALTER TABLE sync_conflicts RENAME COLUMN drive_file_id TO remote_file_id;
 ";
 
+/// v12 — tabela chave→valor genérica para metadados internos do app (carimbos
+/// de manutenção, versionamento lógico de schema). Separada de `app_settings`,
+/// que guarda apenas preferências visíveis/editáveis pelo usuário. Ver
+/// `storage::kv`.
+const SCHEMA_V12: &str = "
+CREATE TABLE IF NOT EXISTS internal_kv (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+";
+
+/// v13 — versionamento lógico do formato de dados por componente. Ver
+/// `storage::schema_version`.
+const SCHEMA_V13: &str = "
+CREATE TABLE IF NOT EXISTS schema_version (
+    component TEXT PRIMARY KEY,
+    version   INTEGER NOT NULL
+);
+";
+
+/// v14 — bitmask de flags por entrada do manifest (`FLAG_CONFLICT`,
+/// `FLAG_PENDING`, ...). Índice secundário best-effort para consultas
+/// (`WHERE flags & 1 != 0`) — `sync_conflicts` e `pending_ops` continuam
+/// sendo a fonte de verdade; a flag some silenciosamente se a linha do
+/// manifest ainda não existir (ex.: conflito num arquivo nunca sincronizado).
+/// Ver `storage::manifest`.
+const SCHEMA_V14: &str = "
+ALTER TABLE sync_manifest ADD COLUMN flags INTEGER NOT NULL DEFAULT 0;
+";
+
+/// v15 — marca de arquivo temporariamente inacessível (bloqueado pelo
+/// emulador durante um upload: `PermissionDenied`/`WouldBlock`). Fica
+/// pendurada no manifest em vez de virar retentativa com backoff em
+/// `pending_ops` — o watcher de filesystem já dispara um resync assim que o
+/// emulador libera o arquivo. Ver `storage::manifest`.
+const SCHEMA_V15: &str = "
+ALTER TABLE sync_manifest ADD COLUMN inaccessible INTEGER NOT NULL DEFAULT 0;
+";
+
+/// v16 — remanescente sub-milissegundo (ns) do `local_mtime_ms` na âncora do
+/// manifest, quando o filesystem local oferece essa precisão. `0` = sem dado
+/// (entradas antigas, plataformas sem precisão sub-ms, ou âncora vinda de
+/// download). Ver `storage::manifest` e `sync::diff::system_time_subsec_ns_remainder`.
+const SCHEMA_V16: &str = "
+ALTER TABLE sync_manifest ADD COLUMN mtime_ns INTEGER NOT NULL DEFAULT 0;
+";
+
+/// v17 — marca de prioridade na fila offline (\"mover para frente\" da UI).
+/// Ver `storage::queue::bump_priority`.
+const SCHEMA_V17: &str = "
+ALTER TABLE pending_ops ADD COLUMN priority INTEGER NOT NULL DEFAULT 0;
+";
+
+/// Intervalo mínimo entre manutenções (7 dias) — não vale a pena rodar em
+/// todo shutdown, só quando o banco já cresceu o suficiente para o planner
+/// ficar desatualizado.
+const MAINTENANCE_INTERVAL_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+const MAINTENANCE_KV_KEY: &str = "last_maintenance_at_ms";
+
 #[derive(Clone)]
 pub struct Db {
     conn: Arc<Mutex<Connection>>,
@@ -187,11 +246,47 @@ impl Db {
     }
 
     fn from_connection(conn: Connection) -> AppResult<Self> {
+        // journal_mode=WAL: leituras não bloqueiam a escrita em andamento.
+        // foreign_keys: nenhuma FK é declarada hoje, mas protege migrações futuras.
+        // synchronous=NORMAL: seguro em WAL (só fsync no checkpoint), evita o
+        // custo de FULL a cada commit sem abrir mão de durabilidade após crash.
+        // auto_vacuum=INCREMENTAL: só tem efeito num banco novo (SQLite exige
+        // VACUUM para aplicar retroativamente); para bancos existentes é um
+        // no-op inofensivo — não vale forçar um VACUUM de uma tabela grande
+        // só por causa disso.
         let _: String = conn.query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0))?;
+        conn.execute_batch(
+            "PRAGMA foreign_keys = ON;
+             PRAGMA synchronous = NORMAL;
+             PRAGMA auto_vacuum = INCREMENTAL;",
+        )?;
         migrate(&conn)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
+    }
+
+    /// Roda manutenção do SQLite (`ANALYZE`, `optimize`, `incremental_vacuum`,
+    /// checkpoint do WAL) se fizer mais de [`MAINTENANCE_INTERVAL_MS`] desde a
+    /// última vez, e grava o carimbo em `internal_kv`. Chamado no sync de
+    /// despedida (`shutdown`), não no caminho quente de sync.
+    pub async fn run_maintenance_if_due(&self) -> AppResult<()> {
+        self.with(|conn| {
+            let now = chrono::Utc::now().timestamp_millis();
+            let last: i64 = crate::storage::kv::get(conn, MAINTENANCE_KV_KEY)?
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0);
+            if now - last < MAINTENANCE_INTERVAL_MS {
+                return Ok(());
+            }
+            conn.execute_batch(
+                "ANALYZE; PRAGMA optimize; PRAGMA incremental_vacuum; \
+                 PRAGMA wal_checkpoint(TRUNCATE);",
+            )?;
+            crate::storage::kv::set(conn, MAINTENANCE_KV_KEY, &now.to_string())?;
+            Ok(())
+        })
+        .await
     }
 
     /// Executa `f` com a conexão num thread bloqueante do Tokio.
@@ -210,6 +305,16 @@ impl Db {
         .await
         .map_err(|e| AppError::Other(format!("tarefa bloqueante abortada: {e}")))?
     }
+}
+
+/// Tamanho total do banco em bytes, via a tabela virtual `dbstat` (soma do
+/// `pgsize` de todas as páginas) — evita abrir/stat o arquivo `.sqlite` do
+/// disco, que dá o tamanho do arquivo mas não reflete o WAL não-checkpointado.
+pub fn size_bytes(conn: &Connection) -> AppResult<u64> {
+    let size: i64 = conn.query_row("SELECT COALESCE(SUM(pgsize), 0) FROM dbstat", [], |row| {
+        row.get(0)
+    })?;
+    Ok(size as u64)
 }
 
 fn migrate(conn: &Connection) -> AppResult<()> {
@@ -260,6 +365,76 @@ fn migrate(conn: &Connection) -> AppResult<()> {
         conn.execute_batch(SCHEMA_V11)?;
         version = 11;
     }
+    if version < 12 {
+        conn.execute_batch(SCHEMA_V12)?;
+        version = 12;
+    }
+    if version < 13 {
+        conn.execute_batch(SCHEMA_V13)?;
+        version = 13;
+    }
+    if version < 14 {
+        conn.execute_batch(SCHEMA_V14)?;
+        version = 14;
+    }
+    if version < 15 {
+        conn.execute_batch(SCHEMA_V15)?;
+        version = 15;
+    }
+    if version < 16 {
+        conn.execute_batch(SCHEMA_V16)?;
+        version = 16;
+    }
+    if version < 17 {
+        conn.execute_batch(SCHEMA_V17)?;
+        version = 17;
+    }
     conn.pragma_update(None, "user_version", version)?;
+
+    crate::storage::schema_version::ensure_current(
+        conn,
+        crate::constants::SCHEMA_COMPONENT_SETTINGS,
+        crate::constants::SETTINGS_SCHEMA_VERSION,
+    )?;
+    crate::storage::schema_version::ensure_current(
+        conn,
+        crate::constants::SCHEMA_COMPONENT_MANIFEST,
+        crate::constants::MANIFEST_SCHEMA_VERSION,
+    )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn run_maintenance_if_due_grava_carimbo_na_primeira_vez() {
+        let db = Db::open_in_memory().unwrap();
+        db.with_sync(|conn| {
+            assert_eq!(crate::storage::kv::get(conn, MAINTENANCE_KV_KEY)?, None);
+            Ok(())
+        });
+
+        db.run_maintenance_if_due().await.unwrap();
+
+        db.with_sync(|conn| {
+            assert!(crate::storage::kv::get(conn, MAINTENANCE_KV_KEY)?.is_some());
+            Ok(())
+        });
+    }
+
+    #[tokio::test]
+    async fn run_maintenance_if_due_nao_roda_de_novo_dentro_do_intervalo() {
+        let db = Db::open_in_memory().unwrap();
+        db.run_maintenance_if_due().await.unwrap();
+        let first: String =
+            db.with_sync(|conn| Ok(crate::storage::kv::get(conn, MAINTENANCE_KV_KEY)?.unwrap()));
+
+        db.run_maintenance_if_due().await.unwrap();
+        let second: String =
+            db.with_sync(|conn| Ok(crate::storage::kv::get(conn, MAINTENANCE_KV_KEY)?.unwrap()));
+
+        assert_eq!(first, second);
+    }
 }

@@ -10,9 +10,18 @@ Obrigado pelo interesse em contribuir. Antes de abrir um PR, leia isto.
    e exige aprovação do mantenedor antes de ser mesclado — inclusive PRs de
    colaboradores frequentes.
 3. Siga [Conventional Commits](https://www.conventionalcommits.org/) nas
-   mensagens (`tipo(escopo): descrição`), em inglês.
+   mensagens (`tipo(escopo): descrição`), em inglês. O escopo é o componente
+   afetado (`sync`, `auth`, `storage`, `drive`...); omita se a mudança não for
+   específica de um componente (build, docs). Se a mudança resolve uma issue
+   existente, referencie-a no corpo do PR (ex. `Closes #42`).
 4. Rode `sh scripts/install-hooks.sh` uma vez após clonar, para instalar os
    hooks de validação de commit.
+
+## Autoria
+
+O `AUTHORS` é gerado a partir do git log (`sh scripts/update-authors.sh`),
+usando o nome e e-mail do seu `git config` — identidades duplicadas são
+unificadas via `.mailmap`. Não edite o arquivo manualmente.
 
 ## Credenciais do Google OAuth — use as suas, não peça as de produção
 
