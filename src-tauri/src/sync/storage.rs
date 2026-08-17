@@ -317,12 +317,17 @@ impl LocalStorage for DesktopStorage {
         let tmp = dest.with_file_name(diff::tmp_name(
             &dest.file_name().unwrap_or_default().to_string_lossy(),
         ));
-        tokio::fs::write(&tmp, bytes).await?;
-        // fsync do conteúdo antes do rename: sem isso, o rename pode ficar
-        // durável no journal do filesystem antes dos dados do arquivo em si,
-        // e uma queda logo depois deixaria o destino apontando para um
-        // arquivo truncado/vazio.
-        tokio::fs::File::open(&tmp).await?.sync_all().await?;
+        // Escreve e sincroniza no mesmo handle: no Windows, FlushFileBuffers
+        // exige acesso GENERIC_WRITE, então reabrir só-leitura (como
+        // `tokio::fs::write` + `File::open` fariam) falha com Access Denied.
+        // fsync do conteúdo antes do rename evita que o rename fique durável
+        // no journal do filesystem antes dos dados do arquivo em si — uma
+        // queda logo depois deixaria o destino apontando para um arquivo
+        // truncado/vazio.
+        let mut tmp_file = tokio::fs::File::create(&tmp).await?;
+        tokio::io::AsyncWriteExt::write_all(&mut tmp_file, bytes).await?;
+        tmp_file.sync_all().await?;
+        drop(tmp_file);
 
         if let Some(permissions) = existing_permissions {
             let _ = tokio::fs::set_permissions(&tmp, permissions).await;

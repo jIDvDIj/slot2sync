@@ -178,9 +178,13 @@ pub fn to_long_path(path: &Path) -> PathBuf {
 /// Lógica pura do prefixo — separada de [`to_long_path`] só para ser testável
 /// em qualquer plataforma (é string, não chama nenhuma API do Windows).
 fn windows_long_path_prefix(path: &Path) -> PathBuf {
-    let s = path.as_os_str().to_string_lossy();
+    // O prefixo \\?\ desliga a expansão automática do Win32, o que inclui a
+    // conversão de `/` para `\`; sem normalizar aqui, um caminho como
+    // `tmp\sub/dir\save.bin` (comum com `Path::join("sub/dir/save.bin")`)
+    // vira um único nome de entrada inválido em vez de duas subpastas.
+    let s = path.as_os_str().to_string_lossy().replace('/', "\\");
     if s.starts_with(r"\\?\") {
-        return path.to_path_buf();
+        return PathBuf::from(s);
     }
     match s.strip_prefix(r"\\") {
         Some(unc) => PathBuf::from(format!(r"\\?\UNC\{unc}")),
@@ -305,10 +309,14 @@ mod tests {
 
     #[test]
     fn system_time_subsec_ns_remainder_extrai_so_o_resto_sub_ms() {
-        let t = UNIX_EPOCH + std::time::Duration::new(1_700_000_000, 123_456_789);
+        // Múltiplo de 100ns: no Windows, `SystemTime` internamente é um
+        // FILETIME com granularidade de 100ns, então nanossegundos que não
+        // caem numa fronteira de 100 seriam truncados antes mesmo de chegar
+        // à função sob teste, quebrando o teste só naquela plataforma.
+        let t = UNIX_EPOCH + std::time::Duration::new(1_700_000_000, 123_456_700);
         assert_eq!(system_time_ms(t), 1_700_000_000_123);
-        // 123_456_789 ns % 1_000_000 = 456_789 (resto dentro do milissegundo).
-        assert_eq!(system_time_subsec_ns_remainder(t), 456_789);
+        // 123_456_700 ns % 1_000_000 = 456_700 (resto dentro do milissegundo).
+        assert_eq!(system_time_subsec_ns_remainder(t), 456_700);
     }
 
     #[test]
@@ -351,6 +359,16 @@ mod tests {
     fn windows_long_path_prefix_e_idempotente() {
         let already = PathBuf::from(r"\\?\C:\Games\save.bin");
         assert_eq!(windows_long_path_prefix(&already), already);
+    }
+
+    #[test]
+    fn windows_long_path_prefix_normaliza_barras_antes_do_prefixo() {
+        // `\\?\` desliga a expansão automática do Win32 (inclui `/` → `\`);
+        // sem normalizar, "sub/dir" viraria um nome de entrada só, inválido.
+        assert_eq!(
+            windows_long_path_prefix(Path::new("C:/Games/sub/dir/save.bin")),
+            PathBuf::from(r"\\?\C:\Games\sub\dir\save.bin")
+        );
     }
 
     #[test]
