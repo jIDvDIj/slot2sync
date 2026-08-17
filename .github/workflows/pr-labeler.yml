@@ -1,0 +1,23 @@
+name: PR labeler
+
+on:
+  pull_request_target:
+    types:
+      - opened
+      - reopened
+      - edited
+      - synchronize
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  labels:
+    name: Set labels
+    if: github.repository == 'jIDvDIj/slot2sync'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: srvaroa/labeler@bf262763a8a8e191f5847873aecc0f29df84f957 # v1.14.0
+        env:
+          GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
