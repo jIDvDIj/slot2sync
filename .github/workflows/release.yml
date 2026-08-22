@@ -358,7 +358,7 @@ jobs:
       # sem correspondência nesta matriz específica são ignorados, desde que
       # ao menos um arquivo bata em algum deles.
       - name: Assinar proveniência de build (SLSA)
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: |
             src-tauri/target/**/release/bundle/**/*.dmg
