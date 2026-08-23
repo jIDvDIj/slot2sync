@@ -182,10 +182,16 @@ pub fn run() {
             #[cfg(mobile)]
             let storage: Arc<dyn sync::LocalStorage> = sync::mobile_storage::storage(app.handle())?;
 
+            // Barramento de saída: o engine e os comandos publicam aqui, e a
+            // ponte abaixo traduz para `emit`/notificação nativa. É o que
+            // permite ao engine não conhecer o `AppHandle`.
+            let bus = events::bus::EventBus::new();
+            spawn_event_bridge(app.handle().clone(), bus.subscribe());
+
             let engine = Arc::new(sync::SyncEngine::new(
                 db.clone(),
                 remote_provider,
-                app.handle().clone(),
+                bus.clone(),
                 last_sync.clone(),
                 locations::AppPath::BackupDir.resolve(app.handle())?,
                 storage.clone(),
@@ -205,13 +211,14 @@ pub fn run() {
                 http,
                 secrets: secret_store,
                 shutdown: shutdown.clone(),
+                bus: bus.clone(),
             });
 
             // Bandeja, janela escondível, autostart e process watcher são
             // exclusivos do desktop. No mobile o webview único já é exibido pelo
             // sistema e os gatilhos automáticos por processo não existem.
             #[cfg(desktop)]
-            platform::desktop::setup(app, db.clone(), engine.clone(), shutdown)?;
+            platform::desktop::setup(app, db.clone(), engine.clone(), shutdown, bus.clone())?;
             #[cfg(mobile)]
             platform::mobile::setup(app)?;
 
@@ -434,6 +441,73 @@ fn prune_old_logs(log_dir: &std::path::Path, retention_days: u32) {
                 );
             }
         }
+    }
+}
+
+/// Ponte barramento → Tauri: consome os [`AppEvent`](events::bus::AppEvent)
+/// publicados pelo backend e os traduz em eventos para o frontend e
+/// notificações nativas do SO.
+///
+/// É o único lugar do app que chama `emit`/`notification()` para eventos de
+/// sync — por isso o `SyncEngine` não precisa mais de um `AppHandle`, e deixou
+/// de ser genérico sobre o runtime do Tauri.
+///
+/// O canal é `broadcast`, então um consumidor lento perde as mensagens mais
+/// antigas. Aqui isso é aceitável: cada evento carrega o estado completo e o
+/// frontend só depende do mais recente. O log registra quantas se perderam.
+fn spawn_event_bridge(
+    app: tauri::AppHandle,
+    mut rx: tokio::sync::broadcast::Receiver<events::bus::AppEvent>,
+) {
+    use events::bus::AppEvent;
+    tauri::async_runtime::spawn(async move {
+        loop {
+            let event = match rx.recv().await {
+                Ok(event) => event,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
+                    tracing::warn!(perdidos = missed, "ponte de eventos ficou para trás");
+                    continue;
+                }
+                // Todos os produtores foram derrubados: o app está encerrando.
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+            };
+
+            match event {
+                AppEvent::SyncStarted(p) => emit(&app, events::EVT_SYNC_STARTED, &p),
+                AppEvent::SyncProgress(p) => emit(&app, events::EVT_SYNC_PROGRESS, &p),
+                AppEvent::SyncCompleted(p) => emit(&app, events::EVT_SYNC_COMPLETED, &p),
+                AppEvent::SyncCancelled(p) => emit(&app, events::EVT_SYNC_CANCELLED, &p),
+                AppEvent::SyncError(p) => emit(&app, events::EVT_SYNC_ERROR, &p),
+                AppEvent::SyncConflict(p) => emit(&app, events::EVT_SYNC_CONFLICT, &*p),
+                AppEvent::SyncStateChanged(p) => emit(&app, events::EVT_SYNC_STATE_CHANGED, &p),
+                AppEvent::AuthStatus(p) => emit(&app, events::EVT_AUTH_STATUS, &*p),
+                AppEvent::EmulatorStatus { emulator, running } => emit(
+                    &app,
+                    events::EVT_EMULATOR_STATUS,
+                    &serde_json::json!({ "emulator": emulator, "running": running }),
+                ),
+                AppEvent::Notify(n) => show_native_notification(&app, &n),
+            }
+        }
+    });
+}
+
+/// Emissão best-effort: a janela pode já ter sido fechada.
+fn emit<T: serde::Serialize + Clone>(app: &tauri::AppHandle, name: &str, payload: &T) {
+    use tauri::Emitter;
+    let _ = app.emit(name, payload);
+}
+
+fn show_native_notification(app: &tauri::AppHandle, n: &events::bus::NativeNotification) {
+    use tauri_plugin_notification::NotificationExt;
+    if let Err(err) = app
+        .notification()
+        .builder()
+        .title(&n.title)
+        .body(&n.body)
+        .show()
+    {
+        tracing::debug!(error = %err, "não foi possível exibir notificação nativa");
     }
 }
 

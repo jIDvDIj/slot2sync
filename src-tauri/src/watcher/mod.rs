@@ -18,10 +18,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
-use serde::Serialize;
 use sysinfo::System;
-use tauri::{AppHandle, Emitter};
-use tauri_plugin_notification::NotificationExt;
 use tokio::sync::mpsc;
 
 use crate::constants::{
@@ -29,7 +26,7 @@ use crate::constants::{
     WATCHER_POLL_INTERVAL_SECS, WATCHER_STOP_DEBOUNCE_TICKS,
 };
 use crate::emulator;
-use crate::events::EVT_EMULATOR_STATUS;
+use crate::events::bus::{AppEvent, EventBus};
 use crate::shutdown::ShutdownHandle;
 use crate::storage::db::Db;
 use crate::storage::emulators;
@@ -45,14 +42,6 @@ pub enum WatcherEvent {
     EmulatorStopped(String),
 }
 
-/// Payload do evento `emulator:status`. (→ ipc.ts)
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct EmulatorStatusEvent {
-    emulator: String,
-    running: bool,
-}
-
 /// Conjunto dos emuladores atualmente em execução, alimentado pelo watcher e
 /// consultado por quem só deve agir com tudo parado (scan periódico, watcher
 /// de filesystem). `std::sync::Mutex`: locks curtos, sem `await` no meio.
@@ -64,13 +53,13 @@ pub type RunningEmulators = Arc<std::sync::Mutex<HashSet<String>>>;
 pub fn start(
     db: Db,
     engine: Arc<SyncEngine>,
-    app: AppHandle,
+    bus: EventBus,
     running: RunningEmulators,
     shutdown: ShutdownHandle,
 ) {
     let (tx, rx) = mpsc::channel::<WatcherEvent>(32);
     spawn_poll_loop(db.clone(), tx, shutdown.clone());
-    spawn_consumer(rx, engine, app, db, running, shutdown);
+    spawn_consumer(rx, engine, bus, db, running, shutdown);
 }
 
 fn spawn_poll_loop(db: Db, tx: mpsc::Sender<WatcherEvent>, shutdown: ShutdownHandle) {
@@ -148,7 +137,7 @@ fn spawn_poll_loop(db: Db, tx: mpsc::Sender<WatcherEvent>, shutdown: ShutdownHan
 fn spawn_consumer(
     mut rx: mpsc::Receiver<WatcherEvent>,
     engine: Arc<SyncEngine>,
-    app: AppHandle,
+    bus: EventBus,
     db: Db,
     running_set: RunningEmulators,
     shutdown: ShutdownHandle,
@@ -192,13 +181,10 @@ fn spawn_consumer(
 
             // O status sempre é emitido (a UI mostra "em execução"); só o sync
             // automático respeita o gatilho desativado pelo usuário.
-            let _ = app.emit(
-                EVT_EMULATOR_STATUS,
-                &EmulatorStatusEvent {
-                    emulator: name.clone(),
-                    running,
-                },
-            );
+            bus.publish(AppEvent::EmulatorStatus {
+                emulator: name.clone(),
+                running,
+            });
             tracing::info!(emulador = %name, running, trigger, "transição de emulador detectada");
 
             let settings = db
@@ -208,15 +194,7 @@ fn spawn_consumer(
 
             // Notificação "emulador detectado" (só na abertura, nível `all`).
             if running && settings.notification_level.notifies_info() {
-                if let Err(err) = app
-                    .notification()
-                    .builder()
-                    .title("Slot2Sync")
-                    .body(format!("Emulador detectado: {name}"))
-                    .show()
-                {
-                    tracing::debug!(error = %err, "não foi possível exibir notificação nativa");
-                }
+                bus.notify("Slot2Sync", format!("Emulador detectado: {name}"));
             }
 
             let enabled = if running {

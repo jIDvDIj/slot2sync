@@ -1,7 +1,13 @@
 //! Nomes dos eventos Tauri emitidos pelo backend. O frontend espelha estes
 //! valores em `src/types/ipc.ts` (objeto `EVT`).
+//!
+//! Quem produz um evento não chama `emit` diretamente: publica um
+//! [`bus::AppEvent`] no barramento interno, e a ponte em `lib.rs` traduz para
+//! estes nomes. Ver [`bus`].
 
 #![allow(dead_code)]
+
+pub mod bus;
 
 pub const EVT_SYNC_STARTED: &str = "sync:started";
 pub const EVT_SYNC_PROGRESS: &str = "sync:progress";
