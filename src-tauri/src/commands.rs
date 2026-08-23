@@ -581,6 +581,7 @@ pub async fn remove_emulator(state: State<'_, AppState>, name: String) -> AppRes
             emulators::remove_categories(conn, &name)?;
             conflicts::remove_for_emulator(conn, &name)?;
             manifest::remove_for_emulator(conn, &name)?;
+            crate::storage::mtime_overrides::remove_for_emulator(conn, &name)?;
             crate::storage::stats::remove_for_emulator(conn, &name)?;
             queue::remove_for_emulator(conn, &name)
         })

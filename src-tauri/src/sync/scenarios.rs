@@ -819,3 +819,108 @@ async fn set_remote_provider_troca_o_provedor_ativo_sem_restart() {
     assert_eq!(summary.downloaded, 1, "baixa b.bin do provedor novo");
     assert_eq!(h.read_local("b.bin"), b"do-provedor-novo");
 }
+
+/// Cenário FAT32: o filesystem arredonda o mtime que o download carimbou, e o
+/// scan seguinte vê um timestamp que não bate com a âncora do manifest.
+///
+/// Os dois testes abaixo isolam o efeito com uma entrada de manifest sem hash
+/// (como as gravadas antes da migração v7), justamente o caso em que o
+/// pré-filtro de hash do diff não entra para segurar o upload inútil.
+async fn arredondamento_de_fat32(com_override: bool) -> SyncSummary {
+    let h = Harness::new().await;
+    h.seed_remote("save.bin", b"conteudo", T, None);
+    h.sync().await;
+
+    // O disco "arredondou": mesmo conteúdo, mtime deslocado para fora da
+    // tolerância de ±2s do diff.
+    let ondisk = T - S10;
+    h.write_local("save.bin", b"conteudo", ondisk);
+    h.db.with(|conn| {
+        conn.execute("UPDATE sync_manifest SET file_hash = NULL", [])
+            .map(|_| ())
+            .map_err(Into::into)
+    })
+    .await
+    .unwrap();
+
+    if com_override {
+        h.db.with(move |conn| {
+            crate::storage::mtime_overrides::upsert(
+                conn,
+                EMU,
+                SyncCategory::Saves,
+                "save.bin",
+                crate::storage::mtime_overrides::MtimeOverride {
+                    ondisk_ms: ondisk,
+                    virtual_ms: T,
+                },
+            )
+        })
+        .await
+        .unwrap();
+    }
+
+    h.sync().await
+}
+
+/// Sem a camada de mtime virtual, o arredondamento do filesystem faz o arquivo
+/// subir de novo sem ter mudado — é o desperdício que a tabela existe para
+/// evitar.
+#[tokio::test]
+async fn sem_override_o_arredondamento_causa_upload_inutil() {
+    let summary = arredondamento_de_fat32(false).await;
+    assert_eq!(summary.uploaded, 1);
+}
+
+/// Com o override registrado, o diff enxerga o mtime lógico e conclui
+/// corretamente que nada mudou.
+#[tokio::test]
+async fn override_de_mtime_evita_o_upload_causado_pelo_arredondamento() {
+    let summary = arredondamento_de_fat32(true).await;
+    assert_eq!(summary.uploaded, 0);
+}
+
+/// O override é uma âncora para UM estado do disco: quando o arquivo é
+/// realmente editado, o mtime deixa de bater com `ondisk_ms`, o override é
+/// descartado e a mudança sobe normalmente.
+#[tokio::test]
+async fn edicao_real_invalida_o_override_e_sobe() {
+    let h = Harness::new().await;
+    h.seed_remote("save.bin", b"conteudo", T, None);
+    h.sync().await;
+
+    let ondisk = T - S10;
+    h.db.with(move |conn| {
+        crate::storage::mtime_overrides::upsert(
+            conn,
+            EMU,
+            SyncCategory::Saves,
+            "save.bin",
+            crate::storage::mtime_overrides::MtimeOverride {
+                ondisk_ms: ondisk,
+                virtual_ms: T,
+            },
+        )
+    })
+    .await
+    .unwrap();
+
+    // O emulador gravou de verdade: conteúdo novo e mtime que não é o
+    // `ondisk_ms` anotado.
+    h.write_local("save.bin", b"conteudo-novo", T + S10);
+    let summary = h.sync().await;
+
+    assert_eq!(summary.uploaded, 1);
+    assert_eq!(h.remote_content("save.bin").unwrap(), b"conteudo-novo");
+
+    let restantes =
+        h.db.with(|conn| {
+            crate::storage::mtime_overrides::list_for_category(conn, EMU, SyncCategory::Saves)
+        })
+        .await
+        .unwrap();
+    assert!(
+        restantes.is_empty(),
+        "override obsoleto deveria ter sido descartado"
+    );
+}

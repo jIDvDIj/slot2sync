@@ -203,6 +203,20 @@ const SCHEMA_V17: &str = "
 ALTER TABLE pending_ops ADD COLUMN priority INTEGER NOT NULL DEFAULT 0;
 ";
 
+/// v18 — camada de mtime virtual para filesystems de baixa granularidade
+/// (FAT32 arredonda o mtime para múltiplos de 2s). Ver
+/// `storage::mtime_overrides`.
+const SCHEMA_V18: &str = "
+CREATE TABLE IF NOT EXISTS mtime_overrides (
+    emulator   TEXT    NOT NULL,
+    category   TEXT    NOT NULL,
+    rel_path   TEXT    NOT NULL,
+    ondisk_ms  INTEGER NOT NULL,
+    virtual_ms INTEGER NOT NULL,
+    PRIMARY KEY (emulator, category, rel_path)
+);
+";
+
 /// Intervalo mínimo entre manutenções (7 dias) — não vale a pena rodar em
 /// todo shutdown, só quando o banco já cresceu o suficiente para o planner
 /// ficar desatualizado.
@@ -388,6 +402,10 @@ fn migrate(conn: &Connection) -> AppResult<()> {
     if version < 17 {
         conn.execute_batch(SCHEMA_V17)?;
         version = 17;
+    }
+    if version < 18 {
+        conn.execute_batch(SCHEMA_V18)?;
+        version = 18;
     }
     conn.pragma_update(None, "user_version", version)?;
 
