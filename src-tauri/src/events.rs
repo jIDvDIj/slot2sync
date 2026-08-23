@@ -15,3 +15,6 @@ pub const EVT_SYNC_CONFLICT: &str = "sync:conflict";
 pub const EVT_SYNC_STATE_CHANGED: &str = "sync:state-changed";
 pub const EVT_AUTH_STATUS: &str = "auth:status";
 pub const EVT_EMULATOR_STATUS: &str = "emulator:status";
+/// Panic capturado pelo hook global: o app segue vivo (outras threads não são
+/// derrubadas), mas a UI avisa que algo falhou de forma inesperada.
+pub const EVT_APP_PANIC: &str = "app:panic";

@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 
+import type { AppPanicPayload } from "./types/ipc";
+
 import { AccountStatus } from "./components/AccountStatus";
 import { AddEmulator } from "./components/AddEmulator";
 import { EmulatorCard } from "./components/EmulatorCard";
@@ -8,6 +10,7 @@ import { LoginScreen } from "./components/LoginScreen";
 import { SettingsModal } from "./components/SettingsModal";
 import { SyncStatus } from "./components/SyncStatus";
 import { Button } from "./components/ui/Button";
+import { useAppPanic } from "./hooks/useAppPanic";
 import { useAuth } from "./hooks/useAuth";
 import { useConflicts } from "./hooks/useConflicts";
 import { useEmulators } from "./hooks/useEmulators";
@@ -23,11 +26,15 @@ function App() {
   const auth = useAuth();
   const { settings, reload: reloadSettings } = useSettings();
   const theme = useTheme();
+  const { panic, dismiss: dismissPanic } = useAppPanic();
+
+  const panicBanner = panic ? <PanicBanner panic={panic} onDismiss={dismissPanic} /> : null;
 
   // Enquanto o status de auth não chega, não decide qual tela mostrar.
   if (auth.loading) {
     return (
       <main className="login-screen">
+        {panicBanner}
         <p className="muted">{t("app.checkingConnection")}</p>
       </main>
     );
@@ -36,20 +43,51 @@ function App() {
   // Sem login, a única tela acessível é a de login.
   if (!auth.connected) {
     return (
-      <LoginScreen
-        initialDeviceName={settings?.deviceName ?? null}
-        onConnected={(status) => {
-          auth.setStatus(status);
-          reloadSettings();
-        }}
-        theme={theme.theme}
-        onToggleTheme={theme.toggle}
-      />
+      <>
+        {panicBanner}
+        <LoginScreen
+          initialDeviceName={settings?.deviceName ?? null}
+          onConnected={(status) => {
+            auth.setStatus(status);
+            reloadSettings();
+          }}
+          theme={theme.theme}
+          onToggleTheme={theme.toggle}
+        />
+      </>
     );
   }
 
   return (
-    <MainScreen auth={auth} settings={settings} reloadSettings={reloadSettings} theme={theme} />
+    <>
+      {panicBanner}
+      <MainScreen auth={auth} settings={settings} reloadSettings={reloadSettings} theme={theme} />
+    </>
+  );
+}
+
+interface PanicBannerProps {
+  panic: AppPanicPayload;
+  onDismiss: () => void;
+}
+
+/** Aviso persistente de panic — o backend segue vivo, mas algo quebrou. */
+function PanicBanner({ panic, onDismiss }: PanicBannerProps) {
+  const { t } = useTranslation();
+  return (
+    <div className="panic-banner" role="alert">
+      <div>
+        <strong>{t("panic.title")}</strong>
+        <p>{t("panic.body")}</p>
+        <code>
+          {panic.message}
+          {panic.location ? ` (${t("panic.at")} ${panic.location})` : ""}
+        </code>
+      </div>
+      <Button variant="secondary" size="sm" onClick={onDismiss}>
+        {t("common.dismiss")}
+      </Button>
+    </div>
   );
 }
 
