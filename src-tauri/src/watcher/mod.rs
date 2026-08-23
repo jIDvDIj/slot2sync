@@ -30,6 +30,7 @@ use crate::constants::{
 };
 use crate::emulator;
 use crate::events::EVT_EMULATOR_STATUS;
+use crate::shutdown::ShutdownHandle;
 use crate::storage::db::Db;
 use crate::storage::emulators;
 use crate::sync::{SyncDirection, SyncEngine};
@@ -58,21 +59,37 @@ struct EmulatorStatusEvent {
 pub type RunningEmulators = Arc<std::sync::Mutex<HashSet<String>>>;
 
 /// Sobe o produtor e o consumidor do watcher. Chamado uma vez no `setup`.
-pub fn start(db: Db, engine: Arc<SyncEngine>, app: AppHandle, running: RunningEmulators) {
+/// Ambas as tasks rodam sob o `tracker` do desligamento e param no
+/// cancelamento do `token`.
+pub fn start(
+    db: Db,
+    engine: Arc<SyncEngine>,
+    app: AppHandle,
+    running: RunningEmulators,
+    shutdown: ShutdownHandle,
+) {
     let (tx, rx) = mpsc::channel::<WatcherEvent>(32);
-    spawn_poll_loop(db.clone(), tx);
-    spawn_consumer(rx, engine, app, db, running);
+    spawn_poll_loop(db.clone(), tx, shutdown.clone());
+    spawn_consumer(rx, engine, app, db, running, shutdown);
 }
 
-fn spawn_poll_loop(db: Db, tx: mpsc::Sender<WatcherEvent>) {
-    tauri::async_runtime::spawn(async move {
+fn spawn_poll_loop(db: Db, tx: mpsc::Sender<WatcherEvent>, shutdown: ShutdownHandle) {
+    shutdown.tracker.spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(WATCHER_POLL_INTERVAL_SECS));
         // System e tracker persistem entre ticks; viajam para dentro do
         // `spawn_blocking` a cada poll e voltam com os eventos.
         let mut sys_state: Option<(System, RunStateTracker)> = None;
 
         loop {
-            interval.tick().await;
+            // O tick é o ponto de parada natural: cancelar aqui evita começar
+            // mais um poll do SO durante o desligamento.
+            tokio::select! {
+                _ = interval.tick() => {}
+                _ = shutdown.token.cancelled() => {
+                    tracing::debug!("watcher: desligamento sinalizado; polling encerrado");
+                    return;
+                }
+            }
 
             let profiles = match db.with(emulators::list).await {
                 Ok(profiles) => profiles,
@@ -134,9 +151,20 @@ fn spawn_consumer(
     app: AppHandle,
     db: Db,
     running_set: RunningEmulators,
+    shutdown: ShutdownHandle,
 ) {
-    tauri::async_runtime::spawn(async move {
-        while let Some(event) = rx.recv().await {
+    shutdown.tracker.spawn(async move {
+        loop {
+            let event = tokio::select! {
+                event = rx.recv() => match event {
+                    Some(event) => event,
+                    None => return,
+                },
+                _ = shutdown.token.cancelled() => {
+                    tracing::debug!("watcher: desligamento sinalizado; consumidor encerrado");
+                    return;
+                }
+            };
             let (name, running, direction, trigger) = match event {
                 WatcherEvent::EmulatorStarted(name) => (
                     name,

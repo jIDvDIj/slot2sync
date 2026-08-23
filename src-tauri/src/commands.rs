@@ -1180,6 +1180,7 @@ mod tests {
             secrets.clone(),
         ));
 
+        let shutdown = crate::shutdown::ShutdownHandle::new(engine.cancel_token());
         app.manage(AppState::<MockRuntime> {
             auth: std::sync::RwLock::new(None),
             db,
@@ -1188,6 +1189,7 @@ mod tests {
             storage: Arc::new(DesktopStorage) as Arc<dyn LocalStorage>,
             http: reqwest::Client::new(),
             secrets,
+            shutdown,
         });
 
         (app, tmp)

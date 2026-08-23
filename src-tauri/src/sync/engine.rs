@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Runtime, Wry};
 use tauri_plugin_notification::NotificationExt;
 use tokio::sync::{Mutex, Semaphore};
+use tokio_util::sync::CancellationToken;
 
 use super::conflict::{SyncAction, TIMESTAMP_TOLERANCE_MS};
 use super::diff::{self, CategoryPlan, LocalFile, PlannedOp};
@@ -27,8 +28,8 @@ use crate::constants::{
 };
 use crate::error::{AppError, AppResult};
 use crate::events::{
-    EVT_SYNC_COMPLETED, EVT_SYNC_CONFLICT, EVT_SYNC_ERROR, EVT_SYNC_PROGRESS, EVT_SYNC_STARTED,
-    EVT_SYNC_STATE_CHANGED,
+    EVT_SYNC_CANCELLED, EVT_SYNC_COMPLETED, EVT_SYNC_CONFLICT, EVT_SYNC_ERROR, EVT_SYNC_PROGRESS,
+    EVT_SYNC_STARTED, EVT_SYNC_STATE_CHANGED,
 };
 use crate::remote::{BatchUploadOp, DeviceTag, RemoteProvider};
 use crate::storage::conflicts::{self, Conflict};
@@ -55,6 +56,9 @@ pub struct SyncSummary {
     pub conflicts: u32,
     /// Renomeações detectadas por hash e aplicadas no Drive sem retransferir.
     pub renamed: u32,
+    /// Operações que o desligamento do app cancelou antes de começarem. `> 0`
+    /// significa que este sync ficou incompleto de propósito.
+    pub cancelled: u32,
     pub duration_ms: u64,
 }
 
@@ -68,6 +72,7 @@ impl SyncSummary {
         self.backed_up += other.backed_up;
         self.conflicts += other.conflicts;
         self.renamed += other.renamed;
+        self.cancelled += other.cancelled;
     }
 }
 
@@ -165,6 +170,8 @@ enum OpOutcome {
     Conflicted,
     Queued,
     Failed,
+    /// Op abandonada porque o app está encerrando.
+    Cancelled,
 }
 
 /// Escolha do usuário ao resolver um conflito. (→ ipc.ts)
@@ -253,6 +260,11 @@ pub struct SyncEngine<R: Runtime = Wry> {
     /// `get_recent_errors`/`clear_errors`. Perdido a cada reinício do app —
     /// não é persistido, é só um retrato rápido pra diagnóstico.
     recent_errors: std::sync::Mutex<std::collections::VecDeque<ErrorEntry>>,
+    /// Sinaliza que o app está encerrando. Consultado antes de cada operação
+    /// do plano: cancelado, o restante do plano é abandonado em vez de ser
+    /// interrompido no meio de uma transferência. Compartilhado com o watcher
+    /// e as demais tasks longas via `state::AppState::shutdown`.
+    cancel: CancellationToken,
 }
 
 impl<R: Runtime> SyncEngine<R> {
@@ -284,7 +296,15 @@ impl<R: Runtime> SyncEngine<R> {
             disk_io: Semaphore::new(MAX_DISK_WRITES),
             current_state: std::sync::Mutex::new((SyncState::Idle, None)),
             recent_errors: std::sync::Mutex::new(std::collections::VecDeque::new()),
+            cancel: CancellationToken::new(),
         }
+    }
+
+    /// Clone do token de cancelamento do engine. O `setup` usa este mesmo
+    /// token para montar o `ShutdownHandle`, de modo que cancelar o
+    /// desligamento também interrompa o sync em andamento.
+    pub fn cancel_token(&self) -> CancellationToken {
+        self.cancel.clone()
     }
 
     /// Retrato do histórico de erros em memória, mais antigo primeiro.
@@ -527,6 +547,17 @@ impl<R: Runtime> SyncEngine<R> {
                 continue;
             }
 
+            // Cancelado no meio da lista: não vale escanear o próximo
+            // emulador, todas as ops do plano seriam descartadas de qualquer
+            // forma. Os já processados continuam contabilizados no summary.
+            if self.cancel.is_cancelled() {
+                tracing::info!(
+                    emulador = %target.label,
+                    "desligamento em curso; emuladores restantes não serão sincronizados"
+                );
+                break;
+            }
+
             self.transition(SyncState::Scanning, Some(&target.label));
 
             match self
@@ -593,6 +624,12 @@ impl<R: Runtime> SyncEngine<R> {
             self.notify_completed(&summary);
         }
 
+        // Cancelado: o front precisa distinguir "terminou" de "foi
+        // interrompido pela saída do app" — os dois eventos são emitidos, o
+        // `sync:cancelled` primeiro para chegar antes do `completed`.
+        if self.cancel.is_cancelled() {
+            let _ = self.app.emit(EVT_SYNC_CANCELLED, &summary);
+        }
         let _ = self.app.emit(EVT_SYNC_COMPLETED, &summary);
         Ok(summary)
     }
@@ -919,6 +956,7 @@ impl<R: Runtime> SyncEngine<R> {
                     OpOutcome::Conflicted => summary.conflicts += 1,
                     OpOutcome::Queued => summary.queued += 1,
                     OpOutcome::Failed => summary.failed += 1,
+                    OpOutcome::Cancelled => summary.cancelled += 1,
                 }
             }
             if !synced_entries.is_empty() {
@@ -1211,6 +1249,13 @@ impl<R: Runtime> SyncEngine<R> {
     }
 
     async fn execute_op(&self, ctx: &CategoryCtx, op: PlannedOp) -> OpOutcome {
+        // Checagem entre operações: o plano já está montado e as ops correm
+        // concorrentemente, então o ponto seguro para desistir é antes de
+        // começar mais uma — nunca no meio de uma transferência.
+        if self.cancel.is_cancelled() {
+            return OpOutcome::Cancelled;
+        }
+
         let rel_path = op.rel_path.clone();
         let bytes = op_bytes(&op);
         let result: AppResult<Option<ManifestEntry>> = match op.action {

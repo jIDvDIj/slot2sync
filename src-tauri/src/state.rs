@@ -8,6 +8,7 @@ use tauri::{Runtime, Wry};
 
 use crate::auth::AuthManager;
 use crate::secrets::SecretStore;
+use crate::shutdown::ShutdownHandle;
 use crate::storage::db::Db;
 use crate::sync::{LastSyncStore, LocalStorage, SyncEngine};
 
@@ -28,4 +29,7 @@ pub struct AppState<R: Runtime = Wry> {
     /// na primeira conexão ou ao trocar de provedor.
     pub http: reqwest::Client,
     pub secrets: Arc<dyn SecretStore>,
+    /// Token + tracker do desligamento gracioso. O token é o mesmo do
+    /// `SyncEngine`; as tasks longas (watcher) rodam sob o tracker.
+    pub shutdown: ShutdownHandle,
 }
