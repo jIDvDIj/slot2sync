@@ -51,7 +51,7 @@ rayon = "1"
 globset = "0.4"
 # Confere o conteúdo baixado contra o `md5Checksum` devolvido pela API do Drive.
 md-5 = "0.11"
-rand = "0.9"
+rand = "0.10"
 base64 = "0.23"
 uuid = { version = "1", features = ["v4"] }
 
