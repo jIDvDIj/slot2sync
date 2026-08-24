@@ -1178,3 +1178,113 @@ async fn sync_normal_nao_publica_sync_cancelled() {
         .count();
     assert_eq!(cancelados, 0);
 }
+
+/// Liga as notificações no nível pedido — os demais cenários rodam com
+/// `None`, então as três funções `notify_*` do engine nunca disparariam.
+async fn set_notif(h: &Harness, level: NotificationLevel) {
+    h.db.with(move |conn| settings::set_notification_level(conn, level))
+        .await
+        .unwrap();
+}
+
+/// Coleta os títulos das notificações publicadas no barramento.
+fn notification_titles(rx: &mut tokio::sync::broadcast::Receiver<AppEvent>) -> Vec<String> {
+    let mut out = Vec::new();
+    while let Ok(event) = rx.try_recv() {
+        if let AppEvent::Notify(n) = event {
+            out.push(n.title);
+        }
+    }
+    out
+}
+
+/// Sync com transferência e nível `All` pede a notificação de conclusão. Ela
+/// vira um evento no barramento em vez de uma chamada direta ao plugin do SO,
+/// que é o que torna este caminho testável sem runtime do Tauri.
+#[tokio::test]
+async fn sync_com_transferencia_publica_notificacao_de_conclusao() {
+    let h = Harness::new().await;
+    set_notif(&h, NotificationLevel::All).await;
+    h.write_local("save.bin", b"conteudo", T);
+
+    let mut events = h.subscribe();
+    let summary = h.sync().await;
+
+    assert_eq!(summary.uploaded, 1);
+    let titles = notification_titles(&mut events);
+    assert!(
+        titles.iter().any(|t| t.contains("concluída")),
+        "esperava a notificação de conclusão; recebi {titles:?}"
+    );
+}
+
+/// Sync que não transferiu nada não notifica — senão todo gatilho automático
+/// ocioso viraria um "sync concluído" na bandeja.
+#[tokio::test]
+async fn sync_sem_transferencia_nao_publica_notificacao() {
+    let h = Harness::new().await;
+    set_notif(&h, NotificationLevel::All).await;
+
+    let mut events = h.subscribe();
+    h.sync().await;
+
+    assert!(notification_titles(&mut events).is_empty());
+}
+
+/// Conflito notifica já no nível `ErrorsOnly` — é o caso em que o emulador
+/// fica bloqueado esperando o usuário, então ele precisa saber.
+#[tokio::test]
+async fn conflito_publica_notificacao_no_nivel_de_erros() {
+    let h = Harness::new().await;
+    set_notif(&h, NotificationLevel::ErrorsOnly).await;
+    h.write_local("save.bin", b"v1", T);
+    h.sync().await;
+
+    // Ambos os lados mudam desde a âncora → conflito.
+    h.write_local("save.bin", b"v2-local", T + S10);
+    h.drive.overwrite_as_device(
+        EMU,
+        SyncCategory::Saves,
+        "save.bin",
+        b"v2-drive",
+        T + 2 * S10,
+        "dev-B",
+    );
+
+    let mut events = h.subscribe();
+    let summary = h.sync().await;
+
+    assert_eq!(summary.conflicts, 1);
+    let titles = notification_titles(&mut events);
+    assert!(
+        titles.iter().any(|t| t.contains("conflito")),
+        "esperava a notificação de conflito; recebi {titles:?}"
+    );
+}
+
+/// Com as notificações desligadas, nem o conflito publica — o gating é de
+/// quem produz, não de quem consome.
+#[tokio::test]
+async fn nivel_none_nao_publica_nem_notificacao_de_conflito() {
+    let h = Harness::new().await;
+    set_notif(&h, NotificationLevel::None).await;
+    h.write_local("save.bin", b"v1", T);
+    h.sync().await;
+
+    // Ambos os lados mudam desde a âncora → conflito.
+    h.write_local("save.bin", b"v2-local", T + S10);
+    h.drive.overwrite_as_device(
+        EMU,
+        SyncCategory::Saves,
+        "save.bin",
+        b"v2-drive",
+        T + 2 * S10,
+        "dev-B",
+    );
+
+    let mut events = h.subscribe();
+    let summary = h.sync().await;
+
+    assert_eq!(summary.conflicts, 1);
+    assert!(notification_titles(&mut events).is_empty());
+}
