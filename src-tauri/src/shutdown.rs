@@ -43,3 +43,67 @@ impl ShutdownHandle {
             .is_ok()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    use super::*;
+
+    /// Caminho feliz: as tasks registradas observam o cancelamento, terminam,
+    /// e o `shutdown` devolve `true` dentro do prazo.
+    #[tokio::test]
+    async fn espera_as_tasks_registradas_terminarem() {
+        let handle = ShutdownHandle::new(CancellationToken::new());
+
+        let token = handle.token.clone();
+        let terminou = Arc::new(AtomicBool::new(false));
+        let flag = terminou.clone();
+        handle.tracker.spawn(async move {
+            token.cancelled().await;
+            flag.store(true, Ordering::SeqCst);
+        });
+
+        assert!(handle.shutdown(Duration::from_secs(5)).await);
+        assert!(
+            terminou.load(Ordering::SeqCst),
+            "a task deveria ter rodado até o fim antes de o shutdown retornar"
+        );
+    }
+
+    /// Task que ignora o cancelamento não pode prender a saída do app: o
+    /// prazo estoura, `shutdown` devolve `false` e quem chama encerra assim
+    /// mesmo (registrando o caso no log).
+    #[tokio::test]
+    async fn devolve_false_quando_a_task_ignora_o_cancelamento() {
+        let handle = ShutdownHandle::new(CancellationToken::new());
+        handle
+            .tracker
+            .spawn(async { tokio::time::sleep(Duration::from_secs(30)).await });
+
+        assert!(!handle.shutdown(Duration::from_millis(50)).await);
+    }
+
+    /// Sem nenhuma task registrada, o shutdown retorna de imediato — é o caso
+    /// do app que ainda não terminou de subir quando o usuário manda sair.
+    #[tokio::test]
+    async fn sem_tasks_registradas_retorna_na_hora() {
+        let handle = ShutdownHandle::new(CancellationToken::new());
+        assert!(handle.shutdown(Duration::from_millis(50)).await);
+    }
+
+    /// O token é compartilhado por clonagem: cancelar pelo handle sinaliza
+    /// quem guardou uma cópia (o `SyncEngine` guarda a dele).
+    #[tokio::test]
+    async fn o_cancelamento_alcanca_clones_do_token() {
+        let token = CancellationToken::new();
+        let copia = token.clone();
+        let handle = ShutdownHandle::new(token);
+
+        assert!(!copia.is_cancelled());
+        handle.shutdown(Duration::from_millis(50)).await;
+
+        assert!(copia.is_cancelled());
+    }
+}
