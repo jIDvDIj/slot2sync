@@ -1422,6 +1422,14 @@ impl<R: Runtime> SyncEngine<R> {
     /// Prepara uma op elegível para o batch: lê o conteúdo com a mesma proteção
     /// de mtime estável do `do_upload` e resolve o `parent_id`. `Err(op)` devolve
     /// a op original para o caminho per-file quando não pôde ser preparada.
+    ///
+    /// O `Err` não é um caminho de erro: é o fallback normal, consumido no
+    /// único chamador por um `match` que empurra a op de volta para a fila
+    /// per-file. Nada é propagado com `?`, então o tamanho do `Result` não
+    /// atravessa a pilha. Boxar o `Err` também não encolheria nada — o `Ok`
+    /// (`PreparedBatchOp`) carrega o mesmo `PlannedOp` mais o conteúdo lido,
+    /// e é ele quem determina o tamanho do `Result`.
+    #[allow(clippy::result_large_err)]
     async fn prepare_batch_op(
         &self,
         ctx: &CategoryCtx,
