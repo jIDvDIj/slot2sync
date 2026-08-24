@@ -21,6 +21,7 @@ use crate::secrets::{MemSecrets, SecretStore};
 use crate::storage::db::Db;
 use crate::storage::settings::NotificationLevel;
 use crate::storage::{conflicts, emulators, manifest, settings};
+use crate::sync::FileLoc;
 
 const EMU: &str = "PPSSPP";
 const T: i64 = 1_700_000_000_000;
@@ -41,6 +42,12 @@ struct Harness {
 
 impl Harness {
     async fn new() -> Self {
+        Self::with_storage(Arc::new(DesktopStorage)).await
+    }
+
+    /// Fixture com um [`LocalStorage`] escolhido pelo teste — usado pelo
+    /// cenário de FAT32, que precisa de um filesystem que arredonde o mtime.
+    async fn with_storage(storage: Arc<dyn crate::sync::LocalStorage>) -> Self {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("emulador");
         let saves_dir = root.join("saves");
@@ -80,7 +87,7 @@ impl Harness {
             app.handle().clone(),
             LastSyncStore::default(),
             backups_dir.clone(),
-            Arc::new(DesktopStorage),
+            storage,
             secrets,
         );
 
@@ -922,5 +929,159 @@ async fn edicao_real_invalida_o_override_e_sobe() {
     assert!(
         restantes.is_empty(),
         "override obsoleto deveria ter sido descartado"
+    );
+}
+
+/// `LocalStorage` que imita a granularidade do FAT32: toda escrita com mtime
+/// definido é arredondada para baixo, para o múltiplo de 2 segundos mais
+/// próximo. Delega o resto ao [`DesktopStorage`].
+///
+/// Existe porque o `tempdir` dos testes fica num filesystem de granularidade
+/// fina, onde o mtime pedido é exatamente o mtime gravado — e é justamente a
+/// divergência entre os dois que faz o engine registrar um override.
+struct RoundingStorage {
+    inner: DesktopStorage,
+}
+
+/// Granularidade do FAT32 para mtime.
+const FAT32_GRANULARITY_MS: i64 = 2_000;
+
+fn round_down_to_fat32(mtime_ms: i64) -> i64 {
+    mtime_ms - mtime_ms.rem_euclid(FAT32_GRANULARITY_MS)
+}
+
+#[async_trait::async_trait]
+impl crate::sync::LocalStorage for RoundingStorage {
+    async fn scan(
+        &self,
+        root: &std::path::Path,
+        bases: &[PathBuf],
+    ) -> crate::error::AppResult<Vec<crate::sync::diff::LocalFile>> {
+        self.inner.scan(root, bases).await
+    }
+
+    fn join(&self, base: &FileLoc, rel_path: &str) -> FileLoc {
+        self.inner.join(base, rel_path)
+    }
+
+    fn root_loc(&self, root: &std::path::Path) -> FileLoc {
+        self.inner.root_loc(root)
+    }
+
+    fn loc_to_stored(&self, loc: &FileLoc) -> String {
+        self.inner.loc_to_stored(loc)
+    }
+
+    fn loc_from_stored(&self, stored: &str) -> FileLoc {
+        self.inner.loc_from_stored(stored)
+    }
+
+    async fn exists(&self, loc: &FileLoc) -> bool {
+        self.inner.exists(loc).await
+    }
+
+    async fn mtime_ms(&self, loc: &FileLoc) -> crate::error::AppResult<i64> {
+        self.inner.mtime_ms(loc).await
+    }
+
+    async fn read(&self, loc: &FileLoc) -> crate::error::AppResult<Vec<u8>> {
+        self.inner.read(loc).await
+    }
+
+    async fn write_atomic(
+        &self,
+        dest: &FileLoc,
+        bytes: &[u8],
+        mtime_ms: Option<i64>,
+    ) -> crate::error::AppResult<()> {
+        self.inner
+            .write_atomic(dest, bytes, mtime_ms.map(round_down_to_fat32))
+            .await
+    }
+
+    async fn copy_to(&self, src: &FileLoc, dest: &FileLoc) -> crate::error::AppResult<()> {
+        self.inner.copy_to(src, dest).await
+    }
+
+    async fn is_valid_root(&self, loc: &FileLoc) -> bool {
+        self.inner.is_valid_root(loc).await
+    }
+
+    async fn subdir_exists(&self, root: &FileLoc, rel: &str) -> bool {
+        self.inner.subdir_exists(root, rel).await
+    }
+}
+
+/// Num filesystem que arredonda, o download registra o override sozinho: o
+/// mtime pedido (vindo do provedor) e o gravado no disco divergem, e é esse
+/// par que fica anotado.
+#[tokio::test]
+async fn download_em_filesystem_que_arredonda_registra_o_override() {
+    let h = Harness::with_storage(Arc::new(RoundingStorage {
+        inner: DesktopStorage,
+    }))
+    .await;
+    // Mtime que NÃO cai numa fronteira de 2s, para o arredondamento morder.
+    let remoto_ms = T + 1_234;
+    h.seed_remote("save.bin", b"conteudo", remoto_ms, None);
+
+    h.sync().await;
+
+    let overrides =
+        h.db.with(|conn| {
+            crate::storage::mtime_overrides::list_for_category(conn, EMU, SyncCategory::Saves)
+        })
+        .await
+        .unwrap();
+
+    let anotado = overrides
+        .get("save.bin")
+        .expect("o download deveria ter registrado o override");
+    assert_eq!(
+        anotado.virtual_ms, remoto_ms,
+        "o mtime lógico é o do provedor"
+    );
+    assert_eq!(
+        anotado.ondisk_ms,
+        round_down_to_fat32(remoto_ms),
+        "o mtime anotado é o que o filesystem de fato gravou"
+    );
+}
+
+/// Fecha o ciclo: gravado o override pelo download, o sync seguinte não sobe
+/// nada — sem ele, o mtime arredondado faria o arquivo parecer modificado.
+#[tokio::test]
+async fn segundo_sync_apos_download_arredondado_nao_sobe_nada() {
+    let h = Harness::with_storage(Arc::new(RoundingStorage {
+        inner: DesktopStorage,
+    }))
+    .await;
+    h.seed_remote("save.bin", b"conteudo", T + 1_234, None);
+    h.sync().await;
+
+    let segundo = h.sync().await;
+
+    assert_eq!(segundo.uploaded, 0, "nada mudou; nada deveria subir");
+    assert_eq!(segundo.downloaded, 0);
+}
+
+/// Num filesystem de granularidade fina o mtime pedido é o gravado, então não
+/// há nada a compensar e nenhuma linha é criada.
+#[tokio::test]
+async fn download_em_filesystem_preciso_nao_registra_override() {
+    let h = Harness::new().await;
+    h.seed_remote("save.bin", b"conteudo", T + 1_234, None);
+
+    h.sync().await;
+
+    let overrides =
+        h.db.with(|conn| {
+            crate::storage::mtime_overrides::list_for_category(conn, EMU, SyncCategory::Saves)
+        })
+        .await
+        .unwrap();
+    assert!(
+        overrides.is_empty(),
+        "sem divergência de mtime, não há override a registrar"
     );
 }
