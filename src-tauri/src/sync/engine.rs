@@ -34,6 +34,7 @@ use crate::remote::{BatchUploadOp, DeviceTag, RemoteProvider};
 use crate::storage::conflicts::{self, Conflict};
 use crate::storage::db::Db;
 use crate::storage::manifest::{self, ManifestEntry, FLAG_CONFLICT, FLAG_PENDING};
+use crate::storage::mtime_overrides;
 use crate::storage::settings::{self, NotificationLevel};
 use crate::storage::{emulators, queue, stats};
 use crate::versioning::Versioner;
@@ -718,6 +719,13 @@ impl<R: Runtime> SyncEngine<R> {
 
             let mut local = self.storage.scan(&target.root, bases).await?;
 
+            // Camada de mtime virtual: em FAT32 o mtime que o download gravou
+            // não é o que o disco guardou. Onde há override válido, o diff
+            // passa a ver o valor lógico e não conclui "mudou" por causa do
+            // arredondamento do filesystem.
+            self.apply_mtime_overrides(&target.label, *category, &mut local)
+                .await;
+
             // Exclusões: arquivos que casam com os padrões do emulador ficam
             // fora do sync nas duas direções (nem sobem nem descem).
             let mut remote = remote;
@@ -922,6 +930,60 @@ impl<R: Runtime> SyncEngine<R> {
         }
 
         Ok(summary)
+    }
+
+    /// Substitui, nos arquivos varridos, o mtime arredondado pelo filesystem
+    /// pelo mtime lógico registrado em `mtime_overrides` (ver o módulo para o
+    /// porquê). Um override só vale enquanto o mtime no disco continuar
+    /// exatamente igual ao `ondisk_ms` que foi anotado: quando muda, o arquivo
+    /// foi realmente editado e a linha é descartada.
+    ///
+    /// Best-effort: falha ao ler a tabela deixa os mtimes como vieram do disco
+    /// — o pré-filtro de hash ainda evita o upload inútil, só mais caro.
+    async fn apply_mtime_overrides(
+        &self,
+        emulator: &str,
+        category: SyncCategory,
+        local: &mut [LocalFile],
+    ) {
+        let (emu, cat) = (emulator.to_string(), category);
+        let Ok(overrides) = self
+            .db
+            .with(move |conn| mtime_overrides::list_for_category(conn, &emu, cat))
+            .await
+        else {
+            return;
+        };
+        if overrides.is_empty() {
+            return;
+        }
+
+        let mut stale = Vec::new();
+        for file in local.iter_mut() {
+            let Some(entry) = overrides.get(&file.rel_path) else {
+                continue;
+            };
+            if file.mtime_ms == entry.ondisk_ms {
+                file.mtime_ms = entry.virtual_ms;
+                // O remanescente sub-ms é do carimbo arredondado, não do mtime
+                // lógico que acabou de substituí-lo — mantê-lo faria
+                // `hash_touched_files` comparar um ns com o outro.
+                file.mtime_ns = 0;
+            } else {
+                stale.push(file.rel_path.clone());
+            }
+        }
+
+        // Overrides de arquivos que sumiram da varredura também são lixo, mas
+        // ficam para a remoção do emulador: um arquivo pode estar
+        // temporariamente fora (drive desmontado) sem ter sido apagado.
+        if !stale.is_empty() {
+            let (emu, cat) = (emulator.to_string(), category);
+            let _ = self
+                .db
+                .with(move |conn| mtime_overrides::remove_batch(conn, &emu, cat, &stale))
+                .await;
+        }
     }
 
     /// Pré-passo do diff: calcula o SHA-256 dos arquivos locais cujo mtime
@@ -1735,6 +1797,8 @@ impl<R: Runtime> SyncEngine<R> {
                 .await?;
         }
         self.mark_recent_download(&dest);
+        self.record_mtime_override(ctx, &op.rel_path, &dest, drive_mtime)
+            .await;
 
         Ok(self.record_synced(
             ctx,
@@ -1747,6 +1811,53 @@ impl<R: Runtime> SyncEngine<R> {
             size_bytes,
             Some(content_hash),
         ))
+    }
+
+    /// Depois de gravar o mtime remoto no arquivo baixado, confere o que o
+    /// filesystem de fato registrou. Divergiu (FAT32 arredonda para múltiplos
+    /// de 2s), guarda o par `(ondisk, virtual)` para o próximo scan enxergar o
+    /// valor lógico no lugar do arredondado — sem isso o arquivo pareceria
+    /// modificado e subiria de novo sem ter mudado.
+    ///
+    /// Best-effort em todas as pontas: sem mtime remoto, ou se o `stat` falhar,
+    /// simplesmente não há override (o pré-filtro de hash segue como rede de
+    /// segurança).
+    async fn record_mtime_override(
+        &self,
+        ctx: &CategoryCtx,
+        rel_path: &str,
+        dest: &FileLoc,
+        drive_mtime: Option<i64>,
+    ) {
+        let Some(virtual_ms) = drive_mtime else {
+            return;
+        };
+        let Ok(ondisk_ms) = self.storage.mtime_ms(dest).await else {
+            return;
+        };
+        if ondisk_ms == virtual_ms {
+            // Filesystem com granularidade suficiente (NTFS, ext4, APFS): o
+            // valor pedido é o valor gravado, não há nada a compensar.
+            return;
+        }
+
+        let (emulator, category, rel_path) =
+            (ctx.emulator.clone(), ctx.category, rel_path.to_string());
+        let value = mtime_overrides::MtimeOverride {
+            ondisk_ms,
+            virtual_ms,
+        };
+        tracing::debug!(
+            emulador = %emulator,
+            arquivo = %rel_path,
+            ondisk_ms,
+            virtual_ms,
+            "filesystem arredondou o mtime; override registrado"
+        );
+        let _ = self
+            .db
+            .with(move |conn| mtime_overrides::upsert(conn, &emulator, category, &rel_path, value))
+            .await;
     }
 
     /// Registra um conflito (ambos os lados mudaram desde o último sync). Não

@@ -117,6 +117,7 @@ pub fn upsert_resetting_on_path_change(
 
     if path_changed {
         crate::storage::manifest::remove_for_emulator(conn, &profile.name)?;
+        crate::storage::mtime_overrides::remove_for_emulator(conn, &profile.name)?;
         crate::storage::conflicts::remove_for_emulator(conn, &profile.name)?;
         crate::storage::queue::remove_for_emulator(conn, &profile.name)?;
     }

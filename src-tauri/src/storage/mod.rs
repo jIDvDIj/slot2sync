@@ -17,6 +17,7 @@ pub mod drive_folders;
 pub mod emulators;
 pub mod kv;
 pub mod manifest;
+pub mod mtime_overrides;
 pub mod queue;
 pub mod schema_version;
 pub mod settings;
