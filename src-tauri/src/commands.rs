@@ -1370,8 +1370,12 @@ mod tests {
             .await
             .unwrap();
 
-        let status = disconnect_provider_impl(&state).await.unwrap();
+        // Pelo comando público, não pelo `_impl`: cobre o wrapper que o
+        // frontend de fato invoca.
+        let status = disconnect_provider(state).await.unwrap();
         assert!(!status.connected);
+
+        let state = app.state::<AppState>();
         assert!(state.auth.read().unwrap().is_none());
         let stored = state.db.with(settings::storage_provider).await.unwrap();
         assert_eq!(stored, None);

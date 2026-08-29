@@ -1288,3 +1288,24 @@ async fn nivel_none_nao_publica_nem_notificacao_de_conflito() {
     assert_eq!(summary.conflicts, 1);
     assert!(notification_titles(&mut events).is_empty());
 }
+
+/// Falha dura no sync de um emulador (aqui, a raiz sumiu — pendrive removido,
+/// pasta de rede fora do ar) notifica no nível de erros. É o caso que mais
+/// precisa da notificação: o gatilho costuma ser automático e a janela, oculta.
+#[tokio::test]
+async fn falha_de_sync_publica_notificacao_de_erro() {
+    let h = Harness::new().await;
+    set_notif(&h, NotificationLevel::ErrorsOnly).await;
+    // Remove a raiz inteira do emulador: o scan falha com FolderNotMounted.
+    std::fs::remove_dir_all(h.saves_dir.parent().unwrap()).unwrap();
+
+    let mut events = h.subscribe();
+    let summary = h.sync().await;
+
+    assert_eq!(summary.failed, 1);
+    let titles = notification_titles(&mut events);
+    assert!(
+        titles.iter().any(|t| t.contains("falha")),
+        "esperava a notificação de erro; recebi {titles:?}"
+    );
+}

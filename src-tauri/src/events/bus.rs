@@ -145,6 +145,18 @@ mod tests {
         }
     }
 
+    /// `Default` existe para o barramento poder ser construído por derive em
+    /// quem o contém; precisa ser o mesmo canal que `new`.
+    #[test]
+    fn default_produz_um_barramento_utilizavel() {
+        let bus = EventBus::default();
+        let mut rx = bus.subscribe();
+
+        bus.publish(notification("via default"));
+
+        assert!(matches!(rx.try_recv(), Ok(AppEvent::Notify(_))));
+    }
+
     /// O canal é de perda declarada: assinante que não drena perde as
     /// mensagens mais antigas e recebe `Lagged`. A ponte em `lib.rs` trata
     /// esse caso registrando quantas se perderam e seguindo em frente.
