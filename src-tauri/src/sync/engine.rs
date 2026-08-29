@@ -13,8 +13,6 @@ use std::time::{Duration, Instant};
 
 use futures::stream::{self, StreamExt};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Runtime, Wry};
-use tauri_plugin_notification::NotificationExt;
 use tokio::sync::{Mutex, Semaphore};
 use tokio_util::sync::CancellationToken;
 
@@ -27,10 +25,7 @@ use crate::constants::{
     DRIVE_SIMPLE_UPLOAD_MAX_BYTES, MAX_BYTES_IN_FLIGHT, MAX_DISK_WRITES, MAX_NETWORK_OPS,
 };
 use crate::error::{AppError, AppResult};
-use crate::events::{
-    EVT_SYNC_CANCELLED, EVT_SYNC_COMPLETED, EVT_SYNC_CONFLICT, EVT_SYNC_ERROR, EVT_SYNC_PROGRESS,
-    EVT_SYNC_STARTED, EVT_SYNC_STATE_CHANGED,
-};
+use crate::events::bus::{AppEvent, EventBus};
 use crate::remote::{BatchUploadOp, DeviceTag, RemoteProvider};
 use crate::storage::conflicts::{self, Conflict};
 use crate::storage::db::Db;
@@ -219,16 +214,17 @@ struct CategoryCtx {
     last_file: std::sync::Mutex<String>,
 }
 
-/// Genérico sobre o runtime do Tauri para ser testável: em produção é o `Wry`
-/// (default); nos testes de cenário (`sync::scenarios`), o `MockRuntime` do
-/// `tauri::test`. O storage remoto entra pelo trait [`RemoteProvider`] —
+/// O storage remoto entra pelo trait [`RemoteProvider`] —
 /// `DriveClient`/`DropboxClient`/`OneDriveClient`/`FolderProvider` reais ou
 /// `MockDrive` em memória. Trocável em tempo de execução (troca de provedor
 /// sem reiniciar o app): `None` antes da primeira conexão.
-pub struct SyncEngine<R: Runtime = Wry> {
+pub struct SyncEngine {
     db: Db,
     remote_provider: std::sync::RwLock<Option<Arc<dyn RemoteProvider>>>,
-    app: AppHandle<R>,
+    /// Saída do engine para o resto do app: eventos de UI e pedidos de
+    /// notificação nativa. Substitui o `AppHandle` que antes obrigava este
+    /// tipo a ser genérico sobre o runtime do Tauri. Ver [`crate::events::bus`].
+    bus: EventBus,
     last_sync: LastSyncStore,
     /// Raiz dos backups locais (`<app_data>/backups`).
     backup_dir: PathBuf,
@@ -267,7 +263,7 @@ pub struct SyncEngine<R: Runtime = Wry> {
     cancel: CancellationToken,
 }
 
-impl<R: Runtime> SyncEngine<R> {
+impl SyncEngine {
     // Construtor de injeção: recebe o wiring completo do app montado no setup.
     // `remote_provider` entra vazio quando nenhum provedor foi configurado
     // ainda (primeira execução) — preenchido depois via `set_remote_provider`.
@@ -275,7 +271,7 @@ impl<R: Runtime> SyncEngine<R> {
     pub fn new(
         db: Db,
         remote_provider: Option<Arc<dyn RemoteProvider>>,
-        app: AppHandle<R>,
+        bus: EventBus,
         last_sync: LastSyncStore,
         backup_dir: PathBuf,
         storage: Arc<dyn LocalStorage>,
@@ -284,7 +280,7 @@ impl<R: Runtime> SyncEngine<R> {
         Self {
             db,
             remote_provider: std::sync::RwLock::new(remote_provider),
-            app,
+            bus,
             last_sync,
             versioner: Arc::new(crate::versioning::FsVersioner::new(backup_dir.clone())),
             backup_dir,
@@ -357,15 +353,13 @@ impl<R: Runtime> SyncEngine<R> {
         *guard = (to, emulator.map(str::to_string));
         drop(guard);
 
-        let _ = self.app.emit(
-            EVT_SYNC_STATE_CHANGED,
-            &SyncStateChanged {
+        self.bus
+            .publish(AppEvent::SyncStateChanged(SyncStateChanged {
                 from: from_str,
                 to: to_str,
                 emulator: emulator.map(str::to_string),
                 error_message,
-            },
-        );
+            }));
     }
 
     /// Troca o provedor de storage ativo (conectar pela primeira vez ou mudar
@@ -519,13 +513,10 @@ impl<R: Runtime> SyncEngine<R> {
             emuladores = targets.len(),
             "sync iniciado"
         );
-        let _ = self.app.emit(
-            EVT_SYNC_STARTED,
-            &SyncStarted {
-                trigger: trigger.to_string(),
-                direction,
-            },
-        );
+        self.bus.publish(AppEvent::SyncStarted(SyncStarted {
+            trigger: trigger.to_string(),
+            direction,
+        }));
         self.transition(SyncState::Scanning, None);
 
         // Rótulo desta execução, usado para agrupar os backups locais do
@@ -586,13 +577,10 @@ impl<R: Runtime> SyncEngine<R> {
                     tracing::error!(emulador = %target.label, error = %err, "sync do emulador falhou");
                     self.transition(SyncState::Error(err.to_string()), Some(&target.label));
                     self.record_error(Some(&target.label), err.to_string());
-                    let _ = self.app.emit(
-                        EVT_SYNC_ERROR,
-                        &SyncError {
-                            emulator: Some(target.label.clone()),
-                            message: err.to_string(),
-                        },
-                    );
+                    self.bus.publish(AppEvent::SyncError(SyncError {
+                        emulator: Some(target.label.clone()),
+                        message: err.to_string(),
+                    }));
                     if notif.notifies_errors() {
                         self.notify_error(&target.label, &err.to_string());
                     }
@@ -625,61 +613,41 @@ impl<R: Runtime> SyncEngine<R> {
         }
 
         // Cancelado: o front precisa distinguir "terminou" de "foi
-        // interrompido pela saída do app" — os dois eventos são emitidos, o
-        // `sync:cancelled` primeiro para chegar antes do `completed`.
+        // interrompido pela saída do app" — os dois eventos são publicados, o
+        // `SyncCancelled` primeiro para chegar antes do `SyncCompleted`.
         if self.cancel.is_cancelled() {
-            let _ = self.app.emit(EVT_SYNC_CANCELLED, &summary);
+            self.bus.publish(AppEvent::SyncCancelled(summary.clone()));
         }
-        let _ = self.app.emit(EVT_SYNC_COMPLETED, &summary);
+        self.bus.publish(AppEvent::SyncCompleted(summary.clone()));
         Ok(summary)
     }
 
     /// Notificação nativa do SO de sync concluído (nível `all`).
     fn notify_completed(&self, summary: &SyncSummary) {
-        if let Err(err) = self
-            .app
-            .notification()
-            .builder()
-            .title("Slot2Sync — sincronização concluída")
-            .body(format!(
+        self.bus.notify(
+            "Slot2Sync — sincronização concluída",
+            format!(
                 "↑ {} enviados · ↓ {} baixados",
                 summary.uploaded, summary.downloaded
-            ))
-            .show()
-        {
-            tracing::debug!(error = %err, "não foi possível exibir notificação nativa");
-        }
+            ),
+        );
     }
 
     /// Notificação nativa do SO de conflito (gated pelo nível de notificação).
     fn notify_conflict(&self, emulator: &str, rel_path: &str) {
-        if let Err(err) = self
-            .app
-            .notification()
-            .builder()
-            .title("Slot2Sync — conflito de sincronização")
-            .body(format!(
-                "{emulator}: \"{rel_path}\" mudou nos dois lados. Resolva no app."
-            ))
-            .show()
-        {
-            tracing::debug!(error = %err, "não foi possível exibir notificação nativa");
-        }
+        self.bus.notify(
+            "Slot2Sync — conflito de sincronização",
+            format!("{emulator}: \"{rel_path}\" mudou nos dois lados. Resolva no app."),
+        );
     }
 
     /// Notificação nativa do SO para erro crítico de sync. Útil quando o
     /// gatilho é automático (startup/watcher/shutdown) e a janela está oculta.
     fn notify_error(&self, emulator: &str, message: &str) {
-        if let Err(err) = self
-            .app
-            .notification()
-            .builder()
-            .title("Slot2Sync — falha na sincronização")
-            .body(format!("{emulator}: {message}"))
-            .show()
-        {
-            tracing::debug!(error = %err, "não foi possível exibir notificação nativa");
-        }
+        self.bus.notify(
+            "Slot2Sync — falha na sincronização",
+            format!("{emulator}: {message}"),
+        );
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1405,18 +1373,15 @@ impl<R: Runtime> SyncEngine<R> {
         let completed = ctx.completed.load(Ordering::Relaxed);
         let bytes_done = ctx.bytes_done.load(Ordering::Relaxed);
         let current_file = ctx.last_file.lock().map(|s| s.clone()).unwrap_or_default();
-        let _ = self.app.emit(
-            EVT_SYNC_PROGRESS,
-            &SyncProgress {
-                emulator: ctx.emulator.clone(),
-                current_file,
-                completed,
-                total: ctx.total,
-                bytes_done,
-                bytes_total: ctx.bytes_total,
-                direction: ctx.direction,
-            },
-        );
+        self.bus.publish(AppEvent::SyncProgress(SyncProgress {
+            emulator: ctx.emulator.clone(),
+            current_file,
+            completed,
+            total: ctx.total,
+            bytes_done,
+            bytes_total: ctx.bytes_total,
+            direction: ctx.direction,
+        }));
     }
 
     /// Pré-passo de batch: envia em lote os uploads de arquivos
@@ -1953,7 +1918,8 @@ impl<R: Runtime> SyncEngine<R> {
 
         tracing::warn!(emulador = %ctx.emulator, arquivo = %op.rel_path, "conflito detectado: ambos os lados mudaram");
         self.transition(SyncState::Conflict, Some(&ctx.emulator));
-        let _ = self.app.emit(EVT_SYNC_CONFLICT, &conflict);
+        self.bus
+            .publish(AppEvent::SyncConflict(Box::new(conflict.clone())));
         if ctx.notif.notifies_errors() {
             self.notify_conflict(&ctx.emulator, &op.rel_path);
         }

@@ -24,7 +24,8 @@ use serde::{Deserialize, Serialize};
 #[cfg(desktop)]
 pub(crate) use diff::{is_temp_name, tmp_name};
 pub use engine::{
-    ConflictResolution, ErrorEntry, LastSync, LastSyncStore, SyncEngine, SyncState, SyncSummary,
+    ConflictResolution, ErrorEntry, LastSync, LastSyncStore, SyncEngine, SyncError, SyncStarted,
+    SyncState, SyncStateChanged, SyncSummary,
 };
 #[cfg(desktop)]
 pub use storage::DesktopStorage;

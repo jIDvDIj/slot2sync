@@ -12,6 +12,7 @@ use tauri::{App, AppHandle, Manager, WindowEvent};
 use tauri_plugin_autostart::ManagerExt;
 
 use crate::constants;
+use crate::events::bus::EventBus;
 use crate::shutdown::ShutdownHandle;
 use crate::storage::db::Db;
 use crate::sync::SyncEngine;
@@ -22,6 +23,7 @@ pub fn setup(
     db: Db,
     engine: Arc<SyncEngine>,
     shutdown: ShutdownHandle,
+    bus: EventBus,
 ) -> Result<(), Box<dyn std::error::Error>> {
     setup_tray(app.handle())?;
     maybe_show_window(app.handle());
@@ -29,7 +31,7 @@ pub fn setup(
     start_watcher(
         db.clone(),
         engine.clone(),
-        app.handle().clone(),
+        bus,
         running.clone(),
         shutdown.clone(),
     );
@@ -163,11 +165,11 @@ fn maybe_show_window(app: &AppHandle) {
 fn start_watcher(
     db: Db,
     engine: Arc<SyncEngine>,
-    app: AppHandle,
+    bus: EventBus,
     running: crate::watcher::RunningEmulators,
     shutdown: ShutdownHandle,
 ) {
-    crate::watcher::start(db, engine, app, running, shutdown);
+    crate::watcher::start(db, engine, bus, running, shutdown);
 }
 
 /// Scan periódico em background: a cada `scan_interval_minutes` (com jitter de

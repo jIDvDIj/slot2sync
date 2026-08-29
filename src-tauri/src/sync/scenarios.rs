@@ -1,13 +1,12 @@
-//! Cenários de integração do `SyncEngine`: engine real de ponta a
-//! ponta — SQLite em memória, filesystem em `tempdir`, `AppHandle` do
-//! `MockRuntime` — com o Drive substituído pelo [`MockDrive`] em memória.
+//! Cenários de integração do `SyncEngine`: engine real de ponta a ponta —
+//! SQLite em memória e filesystem em `tempdir` — com o Drive substituído pelo
+//! [`MockDrive`] em memória. O engine não depende do runtime do Tauri: os
+//! eventos que ele produz vão para um [`EventBus`] sem assinantes.
 //! Sem rede e sem credenciais; testes com credenciais reais ficam atrás da
 //! feature `integration-tests` (hoje vazia).
 
 use std::path::PathBuf;
 use std::sync::Arc;
-
-use tauri::test::MockRuntime;
 
 use super::engine::ConflictResolution;
 use super::{
@@ -16,6 +15,7 @@ use super::{
 use crate::constants::{DRIVE_BATCH_MIN_OPS, DRIVE_MANIFEST_FILE};
 use crate::drive::mock::MockDrive;
 use crate::emulator::EmulatorProfile;
+use crate::events::bus::{AppEvent, EventBus};
 use crate::remote::RemoteProvider;
 use crate::secrets::{MemSecrets, SecretStore};
 use crate::storage::db::Db;
@@ -31,10 +31,10 @@ const S10: i64 = 10_000; // 10s — bem além da tolerância de ±2s do diff.
 /// categoria de saves, contra um Drive falso.
 struct Harness {
     _tmp: tempfile::TempDir,
-    _app: tauri::App<MockRuntime>,
     db: Db,
+    bus: EventBus,
     drive: Arc<MockDrive>,
-    engine: SyncEngine<MockRuntime>,
+    engine: SyncEngine,
     saves_dir: PathBuf,
     backups_dir: PathBuf,
     device_id: String,
@@ -66,7 +66,8 @@ impl Harness {
         db.with(move |conn| emulators::upsert(conn, &profile))
             .await
             .unwrap();
-        // Sem notificações nativas: o MockRuntime não registra o plugin.
+        // Sem notificações nativas: nada assina o barramento nestes testes,
+        // mas o nível `None` deixa isso explícito no cenário.
         db.with(|conn| settings::set_notification_level(conn, NotificationLevel::None))
             .await
             .unwrap();
@@ -76,15 +77,12 @@ impl Harness {
 
         let drive = Arc::new(MockDrive::new());
 
-        let app = tauri::test::mock_builder()
-            .build(tauri::test::mock_context(tauri::test::noop_assets()))
-            .unwrap();
-
+        let bus = EventBus::new();
         let remote_provider = drive.clone() as Arc<dyn RemoteProvider>;
         let engine = SyncEngine::new(
             db.clone(),
             Some(remote_provider),
-            app.handle().clone(),
+            bus.clone(),
             LastSyncStore::default(),
             backups_dir.clone(),
             storage,
@@ -93,14 +91,21 @@ impl Harness {
 
         Self {
             _tmp: tmp,
-            _app: app,
             db,
+            bus,
             drive,
             engine,
             saves_dir,
             backups_dir,
             device_id,
         }
+    }
+
+    /// Assina o barramento. O canal bufferiza até a capacidade dele, então o
+    /// teste pode assinar, rodar o sync e só depois drenar o que foi
+    /// publicado.
+    fn subscribe(&self) -> tokio::sync::broadcast::Receiver<AppEvent> {
+        self.bus.subscribe()
     }
 
     /// Grava um save local com mtime controlado.
@@ -289,33 +294,27 @@ async fn conflito_bloqueia_emulador_e_resolucao_desbloqueia() {
 /// passar a falhar e ser invertido.
 #[tokio::test]
 async fn progresso_emite_retrato_final_com_completed_igual_a_total() {
-    use std::sync::{Arc, Mutex};
-    use tauri::Listener;
-
     let h = Harness::new().await;
     h.write_local("a.bin", b"1", T);
     h.write_local("b.bin", b"2", T);
     h.write_local("c.bin", b"3", T);
 
-    let last_progress: Arc<Mutex<Option<serde_json::Value>>> = Arc::new(Mutex::new(None));
-    let captured = last_progress.clone();
-    h._app
-        .handle()
-        .listen(crate::events::EVT_SYNC_PROGRESS, move |event| {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(event.payload()) {
-                *captured.lock().unwrap() = Some(v);
-            }
-        });
-
+    let mut events = h.subscribe();
     h.sync().await;
 
-    let last = last_progress
-        .lock()
-        .unwrap()
-        .clone()
-        .expect("deveria ter emitido ao menos um sync:progress (o retrato final garantido)");
-    assert_eq!(last["completed"], last["total"]);
-    assert_eq!(last["total"], 3);
+    let mut last = None;
+    while let Ok(event) = events.try_recv() {
+        if let AppEvent::SyncProgress(p) = event {
+            last = Some(p);
+        }
+    }
+
+    let last = last.expect("deveria ter publicado ao menos um retrato de progresso");
+    assert_eq!(last.total, 3);
+    assert_eq!(
+        last.completed, last.total,
+        "o retrato final precisa fechar em completed == total"
+    );
 }
 
 #[tokio::test]
@@ -355,9 +354,6 @@ async fn sync_state_comeca_e_termina_ocioso() {
 
 #[tokio::test]
 async fn sync_state_emite_transicao_para_conflict() {
-    use std::sync::{Arc, Mutex};
-    use tauri::Listener;
-
     let h = Harness::new().await;
     h.write_local("save.bin", b"v1", T);
     h.sync().await;
@@ -373,22 +369,20 @@ async fn sync_state_emite_transicao_para_conflict() {
         "dev-B",
     );
 
-    let seen_conflict = Arc::new(Mutex::new(false));
-    let flag = seen_conflict.clone();
-    h._app
-        .handle()
-        .listen(crate::events::EVT_SYNC_STATE_CHANGED, move |event| {
-            if event.payload().contains("\"to\":\"conflict\"") {
-                *flag.lock().unwrap() = true;
-            }
-        });
-
+    let mut events = h.subscribe();
     let summary = h.sync().await;
+
+    let mut seen_conflict = false;
+    while let Ok(event) = events.try_recv() {
+        if let AppEvent::SyncStateChanged(p) = event {
+            seen_conflict |= p.to == "conflict";
+        }
+    }
 
     assert_eq!(summary.conflicts, 1);
     assert!(
-        *seen_conflict.lock().unwrap(),
-        "deveria ter emitido sync:state-changed com to=conflict"
+        seen_conflict,
+        "deveria ter publicado SyncStateChanged com to=conflict"
     );
     // O sync sempre volta a Idle ao final da leva, mesmo após um conflito.
     assert_eq!(h.engine.current_sync_state(), (SyncState::Idle, None));
@@ -1142,4 +1136,176 @@ async fn sync_normal_nao_marca_operacoes_como_canceladas() {
 
     assert_eq!(summary.cancelled, 0);
     assert_eq!(summary.uploaded, 1);
+}
+
+/// O cancelamento chega ao frontend pelo barramento, e antes da conclusão: a
+/// UI precisa distinguir "terminou" de "foi interrompido pela saída do app".
+#[tokio::test]
+async fn cancelamento_publica_sync_cancelled_antes_de_completed() {
+    let h = Harness::new().await;
+    h.write_local("sobe.bin", b"conteudo", T);
+
+    let mut events = h.subscribe();
+    h.engine.cancel_token().cancel();
+    h.sync().await;
+
+    let ordem: Vec<&str> = std::iter::from_fn(|| events.try_recv().ok())
+        .filter_map(|e| match e {
+            AppEvent::SyncCancelled(_) => Some("cancelled"),
+            AppEvent::SyncCompleted(_) => Some("completed"),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(
+        ordem,
+        vec!["cancelled", "completed"],
+        "o cancelamento precisa chegar antes da conclusão"
+    );
+}
+
+/// Sync normal não publica cancelamento — só a conclusão.
+#[tokio::test]
+async fn sync_normal_nao_publica_sync_cancelled() {
+    let h = Harness::new().await;
+    h.write_local("sobe.bin", b"conteudo", T);
+
+    let mut events = h.subscribe();
+    h.sync().await;
+
+    let cancelados = std::iter::from_fn(|| events.try_recv().ok())
+        .filter(|e| matches!(e, AppEvent::SyncCancelled(_)))
+        .count();
+    assert_eq!(cancelados, 0);
+}
+
+/// Liga as notificações no nível pedido — os demais cenários rodam com
+/// `None`, então as três funções `notify_*` do engine nunca disparariam.
+async fn set_notif(h: &Harness, level: NotificationLevel) {
+    h.db.with(move |conn| settings::set_notification_level(conn, level))
+        .await
+        .unwrap();
+}
+
+/// Coleta os títulos das notificações publicadas no barramento.
+fn notification_titles(rx: &mut tokio::sync::broadcast::Receiver<AppEvent>) -> Vec<String> {
+    let mut out = Vec::new();
+    while let Ok(event) = rx.try_recv() {
+        if let AppEvent::Notify(n) = event {
+            out.push(n.title);
+        }
+    }
+    out
+}
+
+/// Sync com transferência e nível `All` pede a notificação de conclusão. Ela
+/// vira um evento no barramento em vez de uma chamada direta ao plugin do SO,
+/// que é o que torna este caminho testável sem runtime do Tauri.
+#[tokio::test]
+async fn sync_com_transferencia_publica_notificacao_de_conclusao() {
+    let h = Harness::new().await;
+    set_notif(&h, NotificationLevel::All).await;
+    h.write_local("save.bin", b"conteudo", T);
+
+    let mut events = h.subscribe();
+    let summary = h.sync().await;
+
+    assert_eq!(summary.uploaded, 1);
+    let titles = notification_titles(&mut events);
+    assert!(
+        titles.iter().any(|t| t.contains("concluída")),
+        "esperava a notificação de conclusão; recebi {titles:?}"
+    );
+}
+
+/// Sync que não transferiu nada não notifica — senão todo gatilho automático
+/// ocioso viraria um "sync concluído" na bandeja.
+#[tokio::test]
+async fn sync_sem_transferencia_nao_publica_notificacao() {
+    let h = Harness::new().await;
+    set_notif(&h, NotificationLevel::All).await;
+
+    let mut events = h.subscribe();
+    h.sync().await;
+
+    assert!(notification_titles(&mut events).is_empty());
+}
+
+/// Conflito notifica já no nível `ErrorsOnly` — é o caso em que o emulador
+/// fica bloqueado esperando o usuário, então ele precisa saber.
+#[tokio::test]
+async fn conflito_publica_notificacao_no_nivel_de_erros() {
+    let h = Harness::new().await;
+    set_notif(&h, NotificationLevel::ErrorsOnly).await;
+    h.write_local("save.bin", b"v1", T);
+    h.sync().await;
+
+    // Ambos os lados mudam desde a âncora → conflito.
+    h.write_local("save.bin", b"v2-local", T + S10);
+    h.drive.overwrite_as_device(
+        EMU,
+        SyncCategory::Saves,
+        "save.bin",
+        b"v2-drive",
+        T + 2 * S10,
+        "dev-B",
+    );
+
+    let mut events = h.subscribe();
+    let summary = h.sync().await;
+
+    assert_eq!(summary.conflicts, 1);
+    let titles = notification_titles(&mut events);
+    assert!(
+        titles.iter().any(|t| t.contains("conflito")),
+        "esperava a notificação de conflito; recebi {titles:?}"
+    );
+}
+
+/// Com as notificações desligadas, nem o conflito publica — o gating é de
+/// quem produz, não de quem consome.
+#[tokio::test]
+async fn nivel_none_nao_publica_nem_notificacao_de_conflito() {
+    let h = Harness::new().await;
+    set_notif(&h, NotificationLevel::None).await;
+    h.write_local("save.bin", b"v1", T);
+    h.sync().await;
+
+    // Ambos os lados mudam desde a âncora → conflito.
+    h.write_local("save.bin", b"v2-local", T + S10);
+    h.drive.overwrite_as_device(
+        EMU,
+        SyncCategory::Saves,
+        "save.bin",
+        b"v2-drive",
+        T + 2 * S10,
+        "dev-B",
+    );
+
+    let mut events = h.subscribe();
+    let summary = h.sync().await;
+
+    assert_eq!(summary.conflicts, 1);
+    assert!(notification_titles(&mut events).is_empty());
+}
+
+/// Falha dura no sync de um emulador (aqui, a raiz sumiu — pendrive removido,
+/// pasta de rede fora do ar) notifica no nível de erros. É o caso que mais
+/// precisa da notificação: o gatilho costuma ser automático e a janela, oculta.
+#[tokio::test]
+async fn falha_de_sync_publica_notificacao_de_erro() {
+    let h = Harness::new().await;
+    set_notif(&h, NotificationLevel::ErrorsOnly).await;
+    // Remove a raiz inteira do emulador: o scan falha com FolderNotMounted.
+    std::fs::remove_dir_all(h.saves_dir.parent().unwrap()).unwrap();
+
+    let mut events = h.subscribe();
+    let summary = h.sync().await;
+
+    assert_eq!(summary.failed, 1);
+    let titles = notification_titles(&mut events);
+    assert!(
+        titles.iter().any(|t| t.contains("falha")),
+        "esperava a notificação de erro; recebi {titles:?}"
+    );
 }
