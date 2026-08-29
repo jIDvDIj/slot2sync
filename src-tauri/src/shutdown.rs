@@ -93,6 +93,38 @@ mod tests {
         assert!(handle.shutdown(Duration::from_millis(50)).await);
     }
 
+    /// Regressão: as tasks longas são registradas no `setup()` do Tauri, que
+    /// roda na thread main FORA do contexto do runtime. `TaskTracker::spawn`
+    /// chama `tokio::spawn` por dentro e entra em pânico ali ("there is no
+    /// reactor running"); `track_future` só embrulha o future, deixando o
+    /// spawn para o `tauri::async_runtime`. Este teste é deliberadamente
+    /// `#[test]`, e não `#[tokio::test]`: sem runtime é justamente a condição
+    /// que reproduzia o pânico.
+    #[test]
+    fn track_future_pode_ser_montado_sem_runtime_ativo() {
+        let handle = ShutdownHandle::new(CancellationToken::new());
+        let _tracked = handle.tracker.track_future(async {});
+    }
+
+    /// A troca de `spawn` por `track_future` não pode afetar a espera: uma
+    /// future rastreada ainda segura o `shutdown` até terminar.
+    #[tokio::test]
+    async fn future_rastreada_e_esperada_como_uma_task_spawnada() {
+        let handle = ShutdownHandle::new(CancellationToken::new());
+
+        let token = handle.token.clone();
+        let terminou = Arc::new(AtomicBool::new(false));
+        let flag = terminou.clone();
+        let tracked = handle.tracker.track_future(async move {
+            token.cancelled().await;
+            flag.store(true, Ordering::SeqCst);
+        });
+        tokio::spawn(tracked);
+
+        assert!(handle.shutdown(Duration::from_secs(5)).await);
+        assert!(terminou.load(Ordering::SeqCst));
+    }
+
     /// O token é compartilhado por clonagem: cancelar pelo handle sinaliza
     /// quem guardou uma cópia (o `SyncEngine` guarda a dele).
     #[tokio::test]
