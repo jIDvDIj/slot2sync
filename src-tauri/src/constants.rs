@@ -76,6 +76,11 @@ pub const MAX_BYTES_IN_FLIGHT: u32 = 64 * 1024 * 1024;
 /// chegam.
 pub const MAX_RECENT_ERRORS: usize = 100;
 
+/// Prazo máximo, no menu "Sair", para as tasks de longa duração drenarem
+/// depois do cancelamento. Estourou o prazo, o app encerra assim mesmo — não
+/// vale prender o usuário numa saída que não termina.
+pub const SHUTDOWN_GRACE_SECS: u64 = 10;
+
 /// Chamadas de rede (upload/download) simultâneas com o provedor remoto —
 /// separado do limite de I/O de disco (`MAX_DISK_WRITES`): são recursos
 /// diferentes, um não deveria esperar o outro.

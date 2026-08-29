@@ -183,6 +183,8 @@ export interface SyncSummary {
   conflicts: number;
   /** Renomeações detectadas por hash e aplicadas no Drive sem retransferir. */
   renamed: number;
+  /** Operações abandonadas pelo desligamento do app. `> 0` = sync incompleto. */
+  cancelled: number;
   durationMs: number;
 }
 
@@ -302,6 +304,7 @@ export const EVT = {
   SYNC_ERROR: "sync:error",
   SYNC_CONFLICT: "sync:conflict",
   SYNC_STATE_CHANGED: "sync:state-changed",
+  SYNC_CANCELLED: "sync:cancelled",
   AUTH_STATUS: "auth:status",
   EMULATOR_STATUS: "emulator:status",
   APP_PANIC: "app:panic",

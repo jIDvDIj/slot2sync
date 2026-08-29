@@ -4094,6 +4094,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.19",
  "tokio",
+ "tokio-util",
  "toml 1.1.2+spec-1.1.0",
  "tracing",
  "tracing-appender",
@@ -4936,6 +4937,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
+ "futures-util",
  "pin-project-lite",
  "tokio",
 ]

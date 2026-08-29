@@ -1085,3 +1085,61 @@ async fn download_em_filesystem_preciso_nao_registra_override() {
         "sem divergência de mtime, não há override a registrar"
     );
 }
+
+/// Desligamento sinalizado antes do sync: nenhum emulador chega a ser
+/// escaneado e nada é transferido. Sair do app não deixa trabalho pela metade.
+#[tokio::test]
+async fn cancelamento_antes_do_sync_nao_transfere_nada() {
+    let h = Harness::new().await;
+    h.write_local("sobe.bin", b"conteudo", T);
+    h.seed_remote("desce.bin", b"conteudo", T, None);
+
+    h.engine.cancel_token().cancel();
+    let summary = h.sync().await;
+
+    assert_eq!(summary.uploaded, 0);
+    assert_eq!(summary.downloaded, 0);
+    assert!(
+        h.remote_content("sobe.bin").is_none(),
+        "nada subiu depois do cancelamento"
+    );
+    assert!(!h.saves_dir.join("desce.bin").exists());
+}
+
+/// Cancelamento no meio do plano: o primeiro download dispara o cancelamento
+/// e as operações que ainda não começaram são abandonadas em vez de
+/// interrompidas no meio de uma transferência.
+#[tokio::test]
+async fn cancelamento_durante_o_sync_abandona_as_ops_restantes() {
+    let h = Harness::new().await;
+    for i in 0..30 {
+        h.seed_remote(&format!("save-{i:02}.bin"), b"conteudo", T, None);
+    }
+    let token = h.engine.cancel_token();
+    h.drive.set_on_download(move || token.cancel());
+
+    let summary = h.sync().await;
+
+    assert!(
+        summary.cancelled > 0,
+        "alguma op deveria ter sido abandonada; summary = {summary:?}"
+    );
+    assert_eq!(
+        summary.downloaded + summary.cancelled,
+        30,
+        "toda op ou foi executada ou foi abandonada, nunca as duas"
+    );
+}
+
+/// Sem cancelamento, `cancelled` fica zerado — o campo novo não contamina o
+/// caminho normal.
+#[tokio::test]
+async fn sync_normal_nao_marca_operacoes_como_canceladas() {
+    let h = Harness::new().await;
+    h.write_local("sobe.bin", b"conteudo", T);
+
+    let summary = h.sync().await;
+
+    assert_eq!(summary.cancelled, 0);
+    assert_eq!(summary.uploaded, 1);
+}

@@ -12,6 +12,7 @@ use tauri::{App, AppHandle, Manager, WindowEvent};
 use tauri_plugin_autostart::ManagerExt;
 
 use crate::constants;
+use crate::shutdown::ShutdownHandle;
 use crate::storage::db::Db;
 use crate::sync::SyncEngine;
 
@@ -20,6 +21,7 @@ pub fn setup(
     app: &mut App,
     db: Db,
     engine: Arc<SyncEngine>,
+    shutdown: ShutdownHandle,
 ) -> Result<(), Box<dyn std::error::Error>> {
     setup_tray(app.handle())?;
     maybe_show_window(app.handle());
@@ -29,9 +31,15 @@ pub fn setup(
         engine.clone(),
         app.handle().clone(),
         running.clone(),
+        shutdown.clone(),
     );
-    start_scheduled_scan(db.clone(), engine.clone(), running.clone());
-    crate::watcher::fs_watcher::start(db.clone(), engine, running);
+    start_scheduled_scan(
+        db.clone(),
+        engine.clone(),
+        running.clone(),
+        shutdown.clone(),
+    );
+    crate::watcher::fs_watcher::start(db.clone(), engine, running, shutdown);
     setup_default_autostart(app.handle().clone(), db);
     Ok(())
 }
@@ -110,6 +118,8 @@ pub(crate) fn show_main_window(app: &AppHandle) {
 /// Dispara um sync bidirecional em background. Se `then_exit`, encerra o app
 /// ao terminar — é o sync de despedida do menu "Sair".
 fn spawn_sync(app: AppHandle, trigger: &'static str, then_exit: bool) {
+    use std::time::Duration;
+
     use crate::state::AppState;
     use crate::sync::SyncDirection;
     tauri::async_runtime::spawn(async move {
@@ -121,6 +131,17 @@ fn spawn_sync(app: AppHandle, trigger: &'static str, then_exit: bool) {
             let db = app.state::<AppState>().db.clone();
             if let Err(err) = db.run_maintenance_if_due().await {
                 tracing::warn!(error = %err, "manutenção do SQLite no shutdown falhou");
+            }
+            // Sinaliza o cancelamento e espera as tasks longas drenarem antes
+            // de derrubar o processo — sem isso, `exit` interrompia o watcher
+            // e qualquer sync ainda em curso no meio de uma transferência.
+            let shutdown = app.state::<AppState>().shutdown.clone();
+            let grace = Duration::from_secs(constants::SHUTDOWN_GRACE_SECS);
+            if !shutdown.shutdown(grace).await {
+                tracing::warn!(
+                    segundos = constants::SHUTDOWN_GRACE_SECS,
+                    "tasks não terminaram no prazo; encerrando assim mesmo"
+                );
             }
             app.exit(0);
         }
@@ -144,8 +165,9 @@ fn start_watcher(
     engine: Arc<SyncEngine>,
     app: AppHandle,
     running: crate::watcher::RunningEmulators,
+    shutdown: ShutdownHandle,
 ) {
-    crate::watcher::start(db, engine, app, running);
+    crate::watcher::start(db, engine, app, running, shutdown);
 }
 
 /// Scan periódico em background: a cada `scan_interval_minutes` (com jitter de
@@ -157,23 +179,34 @@ fn start_scheduled_scan(
     db: Db,
     engine: Arc<SyncEngine>,
     running: crate::watcher::RunningEmulators,
+    shutdown: ShutdownHandle,
 ) {
     use rand::Rng;
-    tauri::async_runtime::spawn(async move {
+    shutdown.tracker.clone().spawn(async move {
         loop {
+            if shutdown.token.is_cancelled() {
+                return;
+            }
             let minutes = db
                 .with(crate::storage::settings::scan_interval_minutes)
                 .await
                 .unwrap_or(constants::SCAN_INTERVAL_MINUTES_DEFAULT);
             if minutes == 0 {
                 // Desativado: reconfere a cada minuto se o usuário religou.
-                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-                continue;
+                tokio::select! {
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(60)) => continue,
+                    _ = shutdown.token.cancelled() => return,
+                }
             }
 
             let jitter = rand::rng().random_range(0.75..1.25);
             let delay = std::time::Duration::from_secs_f64(f64::from(minutes) * 60.0 * jitter);
-            tokio::time::sleep(delay).await;
+            // Esperas longas (dezenas de minutos) não podem segurar a saída do
+            // app: o cancelamento acorda o sleep imediatamente.
+            tokio::select! {
+                _ = tokio::time::sleep(delay) => {}
+                _ = shutdown.token.cancelled() => return,
+            }
 
             let busy = running.lock().map(|set| !set.is_empty()).unwrap_or(false);
             if busy {
