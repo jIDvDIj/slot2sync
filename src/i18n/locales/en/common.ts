@@ -14,4 +14,9 @@ export const common = {
     switchToLightTheme: "☀ Light theme",
     switchToDarkTheme: "🌙 Dark theme",
   },
+  panic: {
+    title: "Something failed unexpectedly",
+    body: "An internal operation crashed. The app is still running, but the action that triggered it may not have completed. Details are in the log file.",
+    at: "at",
+  },
 } as const;

@@ -76,6 +76,9 @@ pub fn run() {
     builder
         .setup(|app| {
             init_logging(app.handle())?;
+            // Depois do subscriber: o hook loga via `tracing` e precisa que o
+            // appender de arquivo já esteja instalado para persistir o panic.
+            install_panic_hook(app.handle().clone());
             tracing::info!(version = env!("CARGO_PKG_VERSION"), "Slot2Sync iniciado");
             #[cfg(windows)]
             lower_process_priority();
@@ -458,4 +461,64 @@ mod prune_old_logs_tests {
     fn diretorio_ausente_nao_causa_panico() {
         prune_old_logs(std::path::Path::new("/nao/existe/mesmo"), 7);
     }
+}
+
+/// Payload de [`events::EVT_APP_PANIC`]. Espelhado em `src/types/ipc.ts`
+/// (`AppPanicPayload`).
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AppPanicPayload {
+    message: String,
+    location: Option<String>,
+    thread: String,
+}
+
+/// Instala o hook global de panic: registra o panic no log (arquivo + stderr),
+/// avisa a UI via [`events::EVT_APP_PANIC`] e delega ao hook padrão.
+///
+/// Um panic numa task do runtime derruba só aquela task — o app segue vivo na
+/// bandeja e o usuário não recebia sinal nenhum de que algo quebrou. O hook
+/// transforma esse silêncio em log persistido e aviso na tela. A recuperação
+/// automática do processo em si é responsabilidade do supervisor do SO
+/// (no Windows, um wrapper de serviço como o NSSM); ver `CONTRIBUTING.md`.
+fn install_panic_hook(app: tauri::AppHandle) {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        // `payload().as_str()` cobre `panic!("literal")`; o `downcast` cobre
+        // `panic!("{fmt}")`, que produz uma `String`.
+        let message = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|s| (*s).to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "panic sem mensagem".to_string());
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()));
+        let thread = std::thread::current()
+            .name()
+            .unwrap_or("<sem nome>")
+            .to_string();
+
+        tracing::error!(
+            panic.message = %message,
+            panic.location = location.as_deref().unwrap_or("<desconhecida>"),
+            panic.thread = %thread,
+            "panic capturado pelo hook global"
+        );
+
+        // Best-effort: se a janela já morreu, o emit falha e não há o que fazer
+        // além de seguir para o hook padrão.
+        let _ = tauri::Emitter::emit(
+            &app,
+            events::EVT_APP_PANIC,
+            AppPanicPayload {
+                message: message.clone(),
+                location: location.clone(),
+                thread: thread.clone(),
+            },
+        );
+
+        default_hook(info);
+    }));
 }
