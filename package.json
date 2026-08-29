@@ -29,7 +29,7 @@
     "@tauri-apps/cli": "^2.11.4",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
-    "@vitejs/plugin-react": "^6.0.5",
+    "@vitejs/plugin-react": "^6.1.0",
     "eslint": "^10",
     "eslint-config-prettier": "^10",
     "eslint-plugin-i18next": "^6.1.5",
