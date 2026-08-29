@@ -712,14 +712,27 @@ mod tests {
         assert_eq!(a.len(), 43);
     }
 
-    /// `option_env!` embute em build-time (via `.env`, ver `build.rs`); o
-    /// `.env` deste repo não define `SLOT2SYNC_*`, então em qualquer ambiente
-    /// de teste normal esses testes exercitam o fallback `std::env::var` em
-    /// runtime. Cada teste só toca as env vars do seu próprio provedor —
-    /// nomes não se sobrepõem entre testes, então rodar em paralelo é seguro.
+    /// `option_env!` embute em build-time (via `.env`, ver `build.rs`) e vem
+    /// ANTES do `.or_else(std::env::var)` em `from_env`. Num ambiente sem
+    /// `.env` (a CI), estes testes exercitam o fallback de runtime, que é o
+    /// que pretendem cobrir. Já numa máquina de desenvolvimento com o `.env`
+    /// preenchido, o valor embutido vence tanto o `remove_var` quanto o
+    /// `set_var`: nem a ausência de config nem o valor de teste são
+    /// observáveis, e o teste não tem o que asseverar. Por isso cada um começa
+    /// checando o `option_env!` do próprio provedor e desiste quando há
+    /// credencial embutida — sem isso a suíte quebraria exatamente para quem
+    /// roda o app localmente.
+    ///
+    /// Cada teste só toca as env vars do seu próprio provedor; os nomes não se
+    /// sobrepõem entre testes, então rodar em paralelo é seguro.
     #[test]
     fn from_env_google_le_proxy_e_client_secret_da_env_var_de_runtime() {
         use crate::remote::ProviderKind;
+
+        // Credencial embutida no binário: ver o comentário do bloco.
+        if option_env!("SLOT2SYNC_GOOGLE_CLIENT_ID").is_some() {
+            return;
+        }
 
         std::env::remove_var("SLOT2SYNC_GOOGLE_CLIENT_ID");
         std::env::remove_var("SLOT2SYNC_TOKEN_PROXY_URL");
@@ -758,6 +771,11 @@ mod tests {
     fn from_env_dropbox_usa_env_var_de_runtime_como_fallback() {
         use crate::remote::ProviderKind;
 
+        // Credencial embutida no binário: ver o comentário do bloco.
+        if option_env!("SLOT2SYNC_DROPBOX_CLIENT_ID").is_some() {
+            return;
+        }
+
         std::env::remove_var("SLOT2SYNC_DROPBOX_CLIENT_ID");
         std::env::remove_var("SLOT2SYNC_DROPBOX_TOKEN_PROXY_URL");
         assert!(OAuthConfig::from_env(ProviderKind::Dropbox).is_none());
@@ -783,6 +801,11 @@ mod tests {
     #[test]
     fn from_env_onedrive_usa_env_var_de_runtime_como_fallback() {
         use crate::remote::ProviderKind;
+
+        // Credencial embutida no binário: ver o comentário do bloco.
+        if option_env!("SLOT2SYNC_ONEDRIVE_CLIENT_ID").is_some() {
+            return;
+        }
 
         std::env::remove_var("SLOT2SYNC_ONEDRIVE_CLIENT_ID");
         assert!(OAuthConfig::from_env(ProviderKind::OneDrive).is_none());
