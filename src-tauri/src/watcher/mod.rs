@@ -63,7 +63,8 @@ pub fn start(
 }
 
 fn spawn_poll_loop(db: Db, tx: mpsc::Sender<WatcherEvent>, shutdown: ShutdownHandle) {
-    shutdown.tracker.spawn(async move {
+    let tracker = shutdown.tracker.clone();
+    tauri::async_runtime::spawn(tracker.track_future(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(WATCHER_POLL_INTERVAL_SECS));
         // System e tracker persistem entre ticks; viajam para dentro do
         // `spawn_blocking` a cada poll e voltam com os eventos.
@@ -131,7 +132,7 @@ fn spawn_poll_loop(db: Db, tx: mpsc::Sender<WatcherEvent>, shutdown: ShutdownHan
                 }
             }
         }
-    });
+    }));
 }
 
 fn spawn_consumer(
@@ -142,7 +143,8 @@ fn spawn_consumer(
     running_set: RunningEmulators,
     shutdown: ShutdownHandle,
 ) {
-    shutdown.tracker.spawn(async move {
+    let tracker = shutdown.tracker.clone();
+    tauri::async_runtime::spawn(tracker.track_future(async move {
         loop {
             let event = tokio::select! {
                 event = rx.recv() => match event {
@@ -217,5 +219,5 @@ fn spawn_consumer(
                 tracing::warn!(emulador = %name, error = %err, "sync disparado pelo watcher falhou");
             }
         }
-    });
+    }));
 }

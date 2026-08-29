@@ -157,7 +157,8 @@ pub fn start(
     running: RunningEmulators,
     shutdown: crate::shutdown::ShutdownHandle,
 ) {
-    shutdown.tracker.clone().spawn(async move {
+    let tracker = shutdown.tracker.clone();
+    tauri::async_runtime::spawn(tracker.track_future(async move {
         let (tx, mut rx) = mpsc::channel::<PathBuf>(256);
         let mut watched = watch_list(&db).await;
         // O watcher precisa permanecer vivo — dropar cancela as observações.
@@ -219,7 +220,7 @@ pub fn start(
                 }
             }
         }
-    });
+    }));
 }
 
 #[cfg(test)]

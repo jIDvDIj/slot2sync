@@ -184,7 +184,8 @@ fn start_scheduled_scan(
     shutdown: ShutdownHandle,
 ) {
     use rand::Rng;
-    shutdown.tracker.clone().spawn(async move {
+    let tracker = shutdown.tracker.clone();
+    tauri::async_runtime::spawn(tracker.track_future(async move {
         loop {
             if shutdown.token.is_cancelled() {
                 return;
@@ -226,7 +227,7 @@ fn start_scheduled_scan(
                 tracing::warn!(error = %err, "scan periódico falhou");
             }
         }
-    });
+    }));
 }
 
 /// Na primeiríssima execução registra o autostart para o app subir com o
