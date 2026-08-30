@@ -18,10 +18,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
-use serde::Serialize;
 use sysinfo::System;
-use tauri::{AppHandle, Emitter};
-use tauri_plugin_notification::NotificationExt;
 use tokio::sync::mpsc;
 
 use crate::constants::{
@@ -29,7 +26,8 @@ use crate::constants::{
     WATCHER_POLL_INTERVAL_SECS, WATCHER_STOP_DEBOUNCE_TICKS,
 };
 use crate::emulator;
-use crate::events::EVT_EMULATOR_STATUS;
+use crate::events::bus::{AppEvent, EventBus};
+use crate::shutdown::ShutdownHandle;
 use crate::storage::db::Db;
 use crate::storage::emulators;
 use crate::sync::{SyncDirection, SyncEngine};
@@ -44,35 +42,44 @@ pub enum WatcherEvent {
     EmulatorStopped(String),
 }
 
-/// Payload do evento `emulator:status`. (→ ipc.ts)
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct EmulatorStatusEvent {
-    emulator: String,
-    running: bool,
-}
-
 /// Conjunto dos emuladores atualmente em execução, alimentado pelo watcher e
 /// consultado por quem só deve agir com tudo parado (scan periódico, watcher
 /// de filesystem). `std::sync::Mutex`: locks curtos, sem `await` no meio.
 pub type RunningEmulators = Arc<std::sync::Mutex<HashSet<String>>>;
 
 /// Sobe o produtor e o consumidor do watcher. Chamado uma vez no `setup`.
-pub fn start(db: Db, engine: Arc<SyncEngine>, app: AppHandle, running: RunningEmulators) {
+/// Ambas as tasks rodam sob o `tracker` do desligamento e param no
+/// cancelamento do `token`.
+pub fn start(
+    db: Db,
+    engine: Arc<SyncEngine>,
+    bus: EventBus,
+    running: RunningEmulators,
+    shutdown: ShutdownHandle,
+) {
     let (tx, rx) = mpsc::channel::<WatcherEvent>(32);
-    spawn_poll_loop(db.clone(), tx);
-    spawn_consumer(rx, engine, app, db, running);
+    spawn_poll_loop(db.clone(), tx, shutdown.clone());
+    spawn_consumer(rx, engine, bus, db, running, shutdown);
 }
 
-fn spawn_poll_loop(db: Db, tx: mpsc::Sender<WatcherEvent>) {
-    tauri::async_runtime::spawn(async move {
+fn spawn_poll_loop(db: Db, tx: mpsc::Sender<WatcherEvent>, shutdown: ShutdownHandle) {
+    let tracker = shutdown.tracker.clone();
+    tauri::async_runtime::spawn(tracker.track_future(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(WATCHER_POLL_INTERVAL_SECS));
         // System e tracker persistem entre ticks; viajam para dentro do
         // `spawn_blocking` a cada poll e voltam com os eventos.
         let mut sys_state: Option<(System, RunStateTracker)> = None;
 
         loop {
-            interval.tick().await;
+            // O tick é o ponto de parada natural: cancelar aqui evita começar
+            // mais um poll do SO durante o desligamento.
+            tokio::select! {
+                _ = interval.tick() => {}
+                _ = shutdown.token.cancelled() => {
+                    tracing::debug!("watcher: desligamento sinalizado; polling encerrado");
+                    return;
+                }
+            }
 
             let profiles = match db.with(emulators::list).await {
                 Ok(profiles) => profiles,
@@ -125,18 +132,30 @@ fn spawn_poll_loop(db: Db, tx: mpsc::Sender<WatcherEvent>) {
                 }
             }
         }
-    });
+    }));
 }
 
 fn spawn_consumer(
     mut rx: mpsc::Receiver<WatcherEvent>,
     engine: Arc<SyncEngine>,
-    app: AppHandle,
+    bus: EventBus,
     db: Db,
     running_set: RunningEmulators,
+    shutdown: ShutdownHandle,
 ) {
-    tauri::async_runtime::spawn(async move {
-        while let Some(event) = rx.recv().await {
+    let tracker = shutdown.tracker.clone();
+    tauri::async_runtime::spawn(tracker.track_future(async move {
+        loop {
+            let event = tokio::select! {
+                event = rx.recv() => match event {
+                    Some(event) => event,
+                    None => return,
+                },
+                _ = shutdown.token.cancelled() => {
+                    tracing::debug!("watcher: desligamento sinalizado; consumidor encerrado");
+                    return;
+                }
+            };
             let (name, running, direction, trigger) = match event {
                 WatcherEvent::EmulatorStarted(name) => (
                     name,
@@ -164,13 +183,10 @@ fn spawn_consumer(
 
             // O status sempre é emitido (a UI mostra "em execução"); só o sync
             // automático respeita o gatilho desativado pelo usuário.
-            let _ = app.emit(
-                EVT_EMULATOR_STATUS,
-                &EmulatorStatusEvent {
-                    emulator: name.clone(),
-                    running,
-                },
-            );
+            bus.publish(AppEvent::EmulatorStatus {
+                emulator: name.clone(),
+                running,
+            });
             tracing::info!(emulador = %name, running, trigger, "transição de emulador detectada");
 
             let settings = db
@@ -180,15 +196,7 @@ fn spawn_consumer(
 
             // Notificação "emulador detectado" (só na abertura, nível `all`).
             if running && settings.notification_level.notifies_info() {
-                if let Err(err) = app
-                    .notification()
-                    .builder()
-                    .title("Slot2Sync")
-                    .body(format!("Emulador detectado: {name}"))
-                    .show()
-                {
-                    tracing::debug!(error = %err, "não foi possível exibir notificação nativa");
-                }
+                bus.notify("Slot2Sync", format!("Emulador detectado: {name}"));
             }
 
             let enabled = if running {
@@ -211,5 +219,5 @@ fn spawn_consumer(
                 tracing::warn!(emulador = %name, error = %err, "sync disparado pelo watcher falhou");
             }
         }
-    });
+    }));
 }

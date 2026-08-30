@@ -17,6 +17,7 @@ mod onedrive;
 mod platform;
 mod remote;
 mod secrets;
+mod shutdown;
 mod state;
 mod storage;
 mod sync;
@@ -76,6 +77,9 @@ pub fn run() {
     builder
         .setup(|app| {
             init_logging(app.handle())?;
+            // Depois do subscriber: o hook loga via `tracing` e precisa que o
+            // appender de arquivo já esteja instalado para persistir o panic.
+            install_panic_hook(app.handle().clone());
             tracing::info!(version = env!("CARGO_PKG_VERSION"), "Slot2Sync iniciado");
             #[cfg(windows)]
             lower_process_priority();
@@ -178,15 +182,25 @@ pub fn run() {
             #[cfg(mobile)]
             let storage: Arc<dyn sync::LocalStorage> = sync::mobile_storage::storage(app.handle())?;
 
+            // Barramento de saída: o engine e os comandos publicam aqui, e a
+            // ponte abaixo traduz para `emit`/notificação nativa. É o que
+            // permite ao engine não conhecer o `AppHandle`.
+            let bus = events::bus::EventBus::new();
+            spawn_event_bridge(app.handle().clone(), bus.subscribe());
+
             let engine = Arc::new(sync::SyncEngine::new(
                 db.clone(),
                 remote_provider,
-                app.handle().clone(),
+                bus.clone(),
                 last_sync.clone(),
                 locations::AppPath::BackupDir.resolve(app.handle())?,
                 storage.clone(),
                 secret_store.clone(),
             ));
+
+            // O token vem do engine: cancelar o desligamento interrompe o
+            // sync em andamento pelo mesmo sinal que para o watcher.
+            let shutdown = shutdown::ShutdownHandle::new(engine.cancel_token());
 
             app.manage(AppState {
                 auth: std::sync::RwLock::new(auth),
@@ -196,13 +210,15 @@ pub fn run() {
                 storage,
                 http,
                 secrets: secret_store,
+                shutdown: shutdown.clone(),
+                bus: bus.clone(),
             });
 
             // Bandeja, janela escondível, autostart e process watcher são
             // exclusivos do desktop. No mobile o webview único já é exibido pelo
             // sistema e os gatilhos automáticos por processo não existem.
             #[cfg(desktop)]
-            platform::desktop::setup(app, db.clone(), engine.clone())?;
+            platform::desktop::setup(app, db.clone(), engine.clone(), shutdown, bus.clone())?;
             #[cfg(mobile)]
             platform::mobile::setup(app)?;
 
@@ -428,6 +444,73 @@ fn prune_old_logs(log_dir: &std::path::Path, retention_days: u32) {
     }
 }
 
+/// Ponte barramento → Tauri: consome os [`AppEvent`](events::bus::AppEvent)
+/// publicados pelo backend e os traduz em eventos para o frontend e
+/// notificações nativas do SO.
+///
+/// É o único lugar do app que chama `emit`/`notification()` para eventos de
+/// sync — por isso o `SyncEngine` não precisa mais de um `AppHandle`, e deixou
+/// de ser genérico sobre o runtime do Tauri.
+///
+/// O canal é `broadcast`, então um consumidor lento perde as mensagens mais
+/// antigas. Aqui isso é aceitável: cada evento carrega o estado completo e o
+/// frontend só depende do mais recente. O log registra quantas se perderam.
+fn spawn_event_bridge(
+    app: tauri::AppHandle,
+    mut rx: tokio::sync::broadcast::Receiver<events::bus::AppEvent>,
+) {
+    use events::bus::AppEvent;
+    tauri::async_runtime::spawn(async move {
+        loop {
+            let event = match rx.recv().await {
+                Ok(event) => event,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
+                    tracing::warn!(perdidos = missed, "ponte de eventos ficou para trás");
+                    continue;
+                }
+                // Todos os produtores foram derrubados: o app está encerrando.
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+            };
+
+            match event {
+                AppEvent::SyncStarted(p) => emit(&app, events::EVT_SYNC_STARTED, &p),
+                AppEvent::SyncProgress(p) => emit(&app, events::EVT_SYNC_PROGRESS, &p),
+                AppEvent::SyncCompleted(p) => emit(&app, events::EVT_SYNC_COMPLETED, &p),
+                AppEvent::SyncCancelled(p) => emit(&app, events::EVT_SYNC_CANCELLED, &p),
+                AppEvent::SyncError(p) => emit(&app, events::EVT_SYNC_ERROR, &p),
+                AppEvent::SyncConflict(p) => emit(&app, events::EVT_SYNC_CONFLICT, &*p),
+                AppEvent::SyncStateChanged(p) => emit(&app, events::EVT_SYNC_STATE_CHANGED, &p),
+                AppEvent::AuthStatus(p) => emit(&app, events::EVT_AUTH_STATUS, &*p),
+                AppEvent::EmulatorStatus { emulator, running } => emit(
+                    &app,
+                    events::EVT_EMULATOR_STATUS,
+                    &serde_json::json!({ "emulator": emulator, "running": running }),
+                ),
+                AppEvent::Notify(n) => show_native_notification(&app, &n),
+            }
+        }
+    });
+}
+
+/// Emissão best-effort: a janela pode já ter sido fechada.
+fn emit<T: serde::Serialize + Clone>(app: &tauri::AppHandle, name: &str, payload: &T) {
+    use tauri::Emitter;
+    let _ = app.emit(name, payload);
+}
+
+fn show_native_notification(app: &tauri::AppHandle, n: &events::bus::NativeNotification) {
+    use tauri_plugin_notification::NotificationExt;
+    if let Err(err) = app
+        .notification()
+        .builder()
+        .title(&n.title)
+        .body(&n.body)
+        .show()
+    {
+        tracing::debug!(error = %err, "não foi possível exibir notificação nativa");
+    }
+}
+
 #[cfg(test)]
 mod prune_old_logs_tests {
     use super::prune_old_logs;
@@ -458,4 +541,64 @@ mod prune_old_logs_tests {
     fn diretorio_ausente_nao_causa_panico() {
         prune_old_logs(std::path::Path::new("/nao/existe/mesmo"), 7);
     }
+}
+
+/// Payload de [`events::EVT_APP_PANIC`]. Espelhado em `src/types/ipc.ts`
+/// (`AppPanicPayload`).
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AppPanicPayload {
+    message: String,
+    location: Option<String>,
+    thread: String,
+}
+
+/// Instala o hook global de panic: registra o panic no log (arquivo + stderr),
+/// avisa a UI via [`events::EVT_APP_PANIC`] e delega ao hook padrão.
+///
+/// Um panic numa task do runtime derruba só aquela task — o app segue vivo na
+/// bandeja e o usuário não recebia sinal nenhum de que algo quebrou. O hook
+/// transforma esse silêncio em log persistido e aviso na tela. A recuperação
+/// automática do processo em si é responsabilidade do supervisor do SO
+/// (no Windows, um wrapper de serviço como o NSSM); ver `CONTRIBUTING.md`.
+fn install_panic_hook(app: tauri::AppHandle) {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        // `payload().as_str()` cobre `panic!("literal")`; o `downcast` cobre
+        // `panic!("{fmt}")`, que produz uma `String`.
+        let message = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|s| (*s).to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "panic sem mensagem".to_string());
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()));
+        let thread = std::thread::current()
+            .name()
+            .unwrap_or("<sem nome>")
+            .to_string();
+
+        tracing::error!(
+            panic.message = %message,
+            panic.location = location.as_deref().unwrap_or("<desconhecida>"),
+            panic.thread = %thread,
+            "panic capturado pelo hook global"
+        );
+
+        // Best-effort: se a janela já morreu, o emit falha e não há o que fazer
+        // além de seguir para o hook padrão.
+        let _ = tauri::Emitter::emit(
+            &app,
+            events::EVT_APP_PANIC,
+            AppPanicPayload {
+                message: message.clone(),
+                location: location.clone(),
+                thread: thread.clone(),
+            },
+        );
+
+        default_hook(info);
+    }));
 }

@@ -183,6 +183,8 @@ export interface SyncSummary {
   conflicts: number;
   /** Renomeações detectadas por hash e aplicadas no Drive sem retransferir. */
   renamed: number;
+  /** Operações abandonadas pelo desligamento do app. `> 0` = sync incompleto. */
+  cancelled: number;
   durationMs: number;
 }
 
@@ -284,6 +286,16 @@ export interface AppErrorPayload {
   detail: string;
 }
 
+/** Payload do evento `app:panic` — panic capturado pelo hook global */
+export interface AppPanicPayload {
+  /** Mensagem do panic (payload do `panic!`), já convertida para texto. */
+  message: string;
+  /** `arquivo:linha:coluna` de origem, quando o runtime informa. */
+  location: string | null;
+  /** Nome da thread onde o panic ocorreu. */
+  thread: string;
+}
+
 /** Espelho de `src-tauri/src/events.rs` */
 export const EVT = {
   SYNC_STARTED: "sync:started",
@@ -292,8 +304,10 @@ export const EVT = {
   SYNC_ERROR: "sync:error",
   SYNC_CONFLICT: "sync:conflict",
   SYNC_STATE_CHANGED: "sync:state-changed",
+  SYNC_CANCELLED: "sync:cancelled",
   AUTH_STATUS: "auth:status",
   EMULATOR_STATUS: "emulator:status",
+  APP_PANIC: "app:panic",
 } as const;
 
 export type EventName = (typeof EVT)[keyof typeof EVT];

@@ -1,13 +1,12 @@
-//! Cenários de integração do `SyncEngine`: engine real de ponta a
-//! ponta — SQLite em memória, filesystem em `tempdir`, `AppHandle` do
-//! `MockRuntime` — com o Drive substituído pelo [`MockDrive`] em memória.
+//! Cenários de integração do `SyncEngine`: engine real de ponta a ponta —
+//! SQLite em memória e filesystem em `tempdir` — com o Drive substituído pelo
+//! [`MockDrive`] em memória. O engine não depende do runtime do Tauri: os
+//! eventos que ele produz vão para um [`EventBus`] sem assinantes.
 //! Sem rede e sem credenciais; testes com credenciais reais ficam atrás da
 //! feature `integration-tests` (hoje vazia).
 
 use std::path::PathBuf;
 use std::sync::Arc;
-
-use tauri::test::MockRuntime;
 
 use super::engine::ConflictResolution;
 use super::{
@@ -16,11 +15,13 @@ use super::{
 use crate::constants::{DRIVE_BATCH_MIN_OPS, DRIVE_MANIFEST_FILE};
 use crate::drive::mock::MockDrive;
 use crate::emulator::EmulatorProfile;
+use crate::events::bus::{AppEvent, EventBus};
 use crate::remote::RemoteProvider;
 use crate::secrets::{MemSecrets, SecretStore};
 use crate::storage::db::Db;
 use crate::storage::settings::NotificationLevel;
 use crate::storage::{conflicts, emulators, manifest, settings};
+use crate::sync::FileLoc;
 
 const EMU: &str = "PPSSPP";
 const T: i64 = 1_700_000_000_000;
@@ -30,10 +31,10 @@ const S10: i64 = 10_000; // 10s — bem além da tolerância de ±2s do diff.
 /// categoria de saves, contra um Drive falso.
 struct Harness {
     _tmp: tempfile::TempDir,
-    _app: tauri::App<MockRuntime>,
     db: Db,
+    bus: EventBus,
     drive: Arc<MockDrive>,
-    engine: SyncEngine<MockRuntime>,
+    engine: SyncEngine,
     saves_dir: PathBuf,
     backups_dir: PathBuf,
     device_id: String,
@@ -41,6 +42,12 @@ struct Harness {
 
 impl Harness {
     async fn new() -> Self {
+        Self::with_storage(Arc::new(DesktopStorage)).await
+    }
+
+    /// Fixture com um [`LocalStorage`] escolhido pelo teste — usado pelo
+    /// cenário de FAT32, que precisa de um filesystem que arredonde o mtime.
+    async fn with_storage(storage: Arc<dyn crate::sync::LocalStorage>) -> Self {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("emulador");
         let saves_dir = root.join("saves");
@@ -59,7 +66,8 @@ impl Harness {
         db.with(move |conn| emulators::upsert(conn, &profile))
             .await
             .unwrap();
-        // Sem notificações nativas: o MockRuntime não registra o plugin.
+        // Sem notificações nativas: nada assina o barramento nestes testes,
+        // mas o nível `None` deixa isso explícito no cenário.
         db.with(|conn| settings::set_notification_level(conn, NotificationLevel::None))
             .await
             .unwrap();
@@ -69,31 +77,35 @@ impl Harness {
 
         let drive = Arc::new(MockDrive::new());
 
-        let app = tauri::test::mock_builder()
-            .build(tauri::test::mock_context(tauri::test::noop_assets()))
-            .unwrap();
-
+        let bus = EventBus::new();
         let remote_provider = drive.clone() as Arc<dyn RemoteProvider>;
         let engine = SyncEngine::new(
             db.clone(),
             Some(remote_provider),
-            app.handle().clone(),
+            bus.clone(),
             LastSyncStore::default(),
             backups_dir.clone(),
-            Arc::new(DesktopStorage),
+            storage,
             secrets,
         );
 
         Self {
             _tmp: tmp,
-            _app: app,
             db,
+            bus,
             drive,
             engine,
             saves_dir,
             backups_dir,
             device_id,
         }
+    }
+
+    /// Assina o barramento. O canal bufferiza até a capacidade dele, então o
+    /// teste pode assinar, rodar o sync e só depois drenar o que foi
+    /// publicado.
+    fn subscribe(&self) -> tokio::sync::broadcast::Receiver<AppEvent> {
+        self.bus.subscribe()
     }
 
     /// Grava um save local com mtime controlado.
@@ -282,33 +294,27 @@ async fn conflito_bloqueia_emulador_e_resolucao_desbloqueia() {
 /// passar a falhar e ser invertido.
 #[tokio::test]
 async fn progresso_emite_retrato_final_com_completed_igual_a_total() {
-    use std::sync::{Arc, Mutex};
-    use tauri::Listener;
-
     let h = Harness::new().await;
     h.write_local("a.bin", b"1", T);
     h.write_local("b.bin", b"2", T);
     h.write_local("c.bin", b"3", T);
 
-    let last_progress: Arc<Mutex<Option<serde_json::Value>>> = Arc::new(Mutex::new(None));
-    let captured = last_progress.clone();
-    h._app
-        .handle()
-        .listen(crate::events::EVT_SYNC_PROGRESS, move |event| {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(event.payload()) {
-                *captured.lock().unwrap() = Some(v);
-            }
-        });
-
+    let mut events = h.subscribe();
     h.sync().await;
 
-    let last = last_progress
-        .lock()
-        .unwrap()
-        .clone()
-        .expect("deveria ter emitido ao menos um sync:progress (o retrato final garantido)");
-    assert_eq!(last["completed"], last["total"]);
-    assert_eq!(last["total"], 3);
+    let mut last = None;
+    while let Ok(event) = events.try_recv() {
+        if let AppEvent::SyncProgress(p) = event {
+            last = Some(p);
+        }
+    }
+
+    let last = last.expect("deveria ter publicado ao menos um retrato de progresso");
+    assert_eq!(last.total, 3);
+    assert_eq!(
+        last.completed, last.total,
+        "o retrato final precisa fechar em completed == total"
+    );
 }
 
 #[tokio::test]
@@ -348,9 +354,6 @@ async fn sync_state_comeca_e_termina_ocioso() {
 
 #[tokio::test]
 async fn sync_state_emite_transicao_para_conflict() {
-    use std::sync::{Arc, Mutex};
-    use tauri::Listener;
-
     let h = Harness::new().await;
     h.write_local("save.bin", b"v1", T);
     h.sync().await;
@@ -366,22 +369,20 @@ async fn sync_state_emite_transicao_para_conflict() {
         "dev-B",
     );
 
-    let seen_conflict = Arc::new(Mutex::new(false));
-    let flag = seen_conflict.clone();
-    h._app
-        .handle()
-        .listen(crate::events::EVT_SYNC_STATE_CHANGED, move |event| {
-            if event.payload().contains("\"to\":\"conflict\"") {
-                *flag.lock().unwrap() = true;
-            }
-        });
-
+    let mut events = h.subscribe();
     let summary = h.sync().await;
+
+    let mut seen_conflict = false;
+    while let Ok(event) = events.try_recv() {
+        if let AppEvent::SyncStateChanged(p) = event {
+            seen_conflict |= p.to == "conflict";
+        }
+    }
 
     assert_eq!(summary.conflicts, 1);
     assert!(
-        *seen_conflict.lock().unwrap(),
-        "deveria ter emitido sync:state-changed com to=conflict"
+        seen_conflict,
+        "deveria ter publicado SyncStateChanged com to=conflict"
     );
     // O sync sempre volta a Idle ao final da leva, mesmo após um conflito.
     assert_eq!(h.engine.current_sync_state(), (SyncState::Idle, None));
@@ -818,4 +819,493 @@ async fn set_remote_provider_troca_o_provedor_ativo_sem_restart() {
     let summary = h.sync().await;
     assert_eq!(summary.downloaded, 1, "baixa b.bin do provedor novo");
     assert_eq!(h.read_local("b.bin"), b"do-provedor-novo");
+}
+
+/// Cenário FAT32: o filesystem arredonda o mtime que o download carimbou, e o
+/// scan seguinte vê um timestamp que não bate com a âncora do manifest.
+///
+/// Os dois testes abaixo isolam o efeito com uma entrada de manifest sem hash
+/// (como as gravadas antes da migração v7), justamente o caso em que o
+/// pré-filtro de hash do diff não entra para segurar o upload inútil.
+async fn arredondamento_de_fat32(com_override: bool) -> SyncSummary {
+    let h = Harness::new().await;
+    h.seed_remote("save.bin", b"conteudo", T, None);
+    h.sync().await;
+
+    // O disco "arredondou": mesmo conteúdo, mtime deslocado para fora da
+    // tolerância de ±2s do diff.
+    let ondisk = T - S10;
+    h.write_local("save.bin", b"conteudo", ondisk);
+    h.db.with(|conn| {
+        conn.execute("UPDATE sync_manifest SET file_hash = NULL", [])
+            .map(|_| ())
+            .map_err(Into::into)
+    })
+    .await
+    .unwrap();
+
+    if com_override {
+        h.db.with(move |conn| {
+            crate::storage::mtime_overrides::upsert(
+                conn,
+                EMU,
+                SyncCategory::Saves,
+                "save.bin",
+                crate::storage::mtime_overrides::MtimeOverride {
+                    ondisk_ms: ondisk,
+                    virtual_ms: T,
+                },
+            )
+        })
+        .await
+        .unwrap();
+    }
+
+    h.sync().await
+}
+
+/// Sem a camada de mtime virtual, o arredondamento do filesystem faz o arquivo
+/// subir de novo sem ter mudado — é o desperdício que a tabela existe para
+/// evitar.
+#[tokio::test]
+async fn sem_override_o_arredondamento_causa_upload_inutil() {
+    let summary = arredondamento_de_fat32(false).await;
+    assert_eq!(summary.uploaded, 1);
+}
+
+/// Com o override registrado, o diff enxerga o mtime lógico e conclui
+/// corretamente que nada mudou.
+#[tokio::test]
+async fn override_de_mtime_evita_o_upload_causado_pelo_arredondamento() {
+    let summary = arredondamento_de_fat32(true).await;
+    assert_eq!(summary.uploaded, 0);
+}
+
+/// O override é uma âncora para UM estado do disco: quando o arquivo é
+/// realmente editado, o mtime deixa de bater com `ondisk_ms`, o override é
+/// descartado e a mudança sobe normalmente.
+#[tokio::test]
+async fn edicao_real_invalida_o_override_e_sobe() {
+    let h = Harness::new().await;
+    h.seed_remote("save.bin", b"conteudo", T, None);
+    h.sync().await;
+
+    let ondisk = T - S10;
+    h.db.with(move |conn| {
+        crate::storage::mtime_overrides::upsert(
+            conn,
+            EMU,
+            SyncCategory::Saves,
+            "save.bin",
+            crate::storage::mtime_overrides::MtimeOverride {
+                ondisk_ms: ondisk,
+                virtual_ms: T,
+            },
+        )
+    })
+    .await
+    .unwrap();
+
+    // O emulador gravou de verdade: conteúdo novo e mtime que não é o
+    // `ondisk_ms` anotado.
+    h.write_local("save.bin", b"conteudo-novo", T + S10);
+    let summary = h.sync().await;
+
+    assert_eq!(summary.uploaded, 1);
+    assert_eq!(h.remote_content("save.bin").unwrap(), b"conteudo-novo");
+
+    let restantes =
+        h.db.with(|conn| {
+            crate::storage::mtime_overrides::list_for_category(conn, EMU, SyncCategory::Saves)
+        })
+        .await
+        .unwrap();
+    assert!(
+        restantes.is_empty(),
+        "override obsoleto deveria ter sido descartado"
+    );
+}
+
+/// `LocalStorage` que imita a granularidade do FAT32: toda escrita com mtime
+/// definido é arredondada para baixo, para o múltiplo de 2 segundos mais
+/// próximo. Delega o resto ao [`DesktopStorage`].
+///
+/// Existe porque o `tempdir` dos testes fica num filesystem de granularidade
+/// fina, onde o mtime pedido é exatamente o mtime gravado — e é justamente a
+/// divergência entre os dois que faz o engine registrar um override.
+struct RoundingStorage {
+    inner: DesktopStorage,
+}
+
+/// Granularidade do FAT32 para mtime.
+const FAT32_GRANULARITY_MS: i64 = 2_000;
+
+fn round_down_to_fat32(mtime_ms: i64) -> i64 {
+    mtime_ms - mtime_ms.rem_euclid(FAT32_GRANULARITY_MS)
+}
+
+#[async_trait::async_trait]
+impl crate::sync::LocalStorage for RoundingStorage {
+    async fn scan(
+        &self,
+        root: &std::path::Path,
+        bases: &[PathBuf],
+    ) -> crate::error::AppResult<Vec<crate::sync::diff::LocalFile>> {
+        self.inner.scan(root, bases).await
+    }
+
+    fn join(&self, base: &FileLoc, rel_path: &str) -> FileLoc {
+        self.inner.join(base, rel_path)
+    }
+
+    fn root_loc(&self, root: &std::path::Path) -> FileLoc {
+        self.inner.root_loc(root)
+    }
+
+    fn loc_to_stored(&self, loc: &FileLoc) -> String {
+        self.inner.loc_to_stored(loc)
+    }
+
+    fn loc_from_stored(&self, stored: &str) -> FileLoc {
+        self.inner.loc_from_stored(stored)
+    }
+
+    async fn exists(&self, loc: &FileLoc) -> bool {
+        self.inner.exists(loc).await
+    }
+
+    async fn mtime_ms(&self, loc: &FileLoc) -> crate::error::AppResult<i64> {
+        self.inner.mtime_ms(loc).await
+    }
+
+    async fn read(&self, loc: &FileLoc) -> crate::error::AppResult<Vec<u8>> {
+        self.inner.read(loc).await
+    }
+
+    async fn write_atomic(
+        &self,
+        dest: &FileLoc,
+        bytes: &[u8],
+        mtime_ms: Option<i64>,
+    ) -> crate::error::AppResult<()> {
+        self.inner
+            .write_atomic(dest, bytes, mtime_ms.map(round_down_to_fat32))
+            .await
+    }
+
+    async fn copy_to(&self, src: &FileLoc, dest: &FileLoc) -> crate::error::AppResult<()> {
+        self.inner.copy_to(src, dest).await
+    }
+
+    async fn is_valid_root(&self, loc: &FileLoc) -> bool {
+        self.inner.is_valid_root(loc).await
+    }
+
+    async fn subdir_exists(&self, root: &FileLoc, rel: &str) -> bool {
+        self.inner.subdir_exists(root, rel).await
+    }
+}
+
+/// Num filesystem que arredonda, o download registra o override sozinho: o
+/// mtime pedido (vindo do provedor) e o gravado no disco divergem, e é esse
+/// par que fica anotado.
+#[tokio::test]
+async fn download_em_filesystem_que_arredonda_registra_o_override() {
+    let h = Harness::with_storage(Arc::new(RoundingStorage {
+        inner: DesktopStorage,
+    }))
+    .await;
+    // Mtime que NÃO cai numa fronteira de 2s, para o arredondamento morder.
+    let remoto_ms = T + 1_234;
+    h.seed_remote("save.bin", b"conteudo", remoto_ms, None);
+
+    h.sync().await;
+
+    let overrides =
+        h.db.with(|conn| {
+            crate::storage::mtime_overrides::list_for_category(conn, EMU, SyncCategory::Saves)
+        })
+        .await
+        .unwrap();
+
+    let anotado = overrides
+        .get("save.bin")
+        .expect("o download deveria ter registrado o override");
+    assert_eq!(
+        anotado.virtual_ms, remoto_ms,
+        "o mtime lógico é o do provedor"
+    );
+    assert_eq!(
+        anotado.ondisk_ms,
+        round_down_to_fat32(remoto_ms),
+        "o mtime anotado é o que o filesystem de fato gravou"
+    );
+}
+
+/// Fecha o ciclo: gravado o override pelo download, o sync seguinte não sobe
+/// nada — sem ele, o mtime arredondado faria o arquivo parecer modificado.
+#[tokio::test]
+async fn segundo_sync_apos_download_arredondado_nao_sobe_nada() {
+    let h = Harness::with_storage(Arc::new(RoundingStorage {
+        inner: DesktopStorage,
+    }))
+    .await;
+    h.seed_remote("save.bin", b"conteudo", T + 1_234, None);
+    h.sync().await;
+
+    let segundo = h.sync().await;
+
+    assert_eq!(segundo.uploaded, 0, "nada mudou; nada deveria subir");
+    assert_eq!(segundo.downloaded, 0);
+}
+
+/// Num filesystem de granularidade fina o mtime pedido é o gravado, então não
+/// há nada a compensar e nenhuma linha é criada.
+#[tokio::test]
+async fn download_em_filesystem_preciso_nao_registra_override() {
+    let h = Harness::new().await;
+    h.seed_remote("save.bin", b"conteudo", T + 1_234, None);
+
+    h.sync().await;
+
+    let overrides =
+        h.db.with(|conn| {
+            crate::storage::mtime_overrides::list_for_category(conn, EMU, SyncCategory::Saves)
+        })
+        .await
+        .unwrap();
+    assert!(
+        overrides.is_empty(),
+        "sem divergência de mtime, não há override a registrar"
+    );
+}
+
+/// Desligamento sinalizado antes do sync: nenhum emulador chega a ser
+/// escaneado e nada é transferido. Sair do app não deixa trabalho pela metade.
+#[tokio::test]
+async fn cancelamento_antes_do_sync_nao_transfere_nada() {
+    let h = Harness::new().await;
+    h.write_local("sobe.bin", b"conteudo", T);
+    h.seed_remote("desce.bin", b"conteudo", T, None);
+
+    h.engine.cancel_token().cancel();
+    let summary = h.sync().await;
+
+    assert_eq!(summary.uploaded, 0);
+    assert_eq!(summary.downloaded, 0);
+    assert!(
+        h.remote_content("sobe.bin").is_none(),
+        "nada subiu depois do cancelamento"
+    );
+    assert!(!h.saves_dir.join("desce.bin").exists());
+}
+
+/// Cancelamento no meio do plano: o primeiro download dispara o cancelamento
+/// e as operações que ainda não começaram são abandonadas em vez de
+/// interrompidas no meio de uma transferência.
+#[tokio::test]
+async fn cancelamento_durante_o_sync_abandona_as_ops_restantes() {
+    let h = Harness::new().await;
+    for i in 0..30 {
+        h.seed_remote(&format!("save-{i:02}.bin"), b"conteudo", T, None);
+    }
+    let token = h.engine.cancel_token();
+    h.drive.set_on_download(move || token.cancel());
+
+    let summary = h.sync().await;
+
+    assert!(
+        summary.cancelled > 0,
+        "alguma op deveria ter sido abandonada; summary = {summary:?}"
+    );
+    assert_eq!(
+        summary.downloaded + summary.cancelled,
+        30,
+        "toda op ou foi executada ou foi abandonada, nunca as duas"
+    );
+}
+
+/// Sem cancelamento, `cancelled` fica zerado — o campo novo não contamina o
+/// caminho normal.
+#[tokio::test]
+async fn sync_normal_nao_marca_operacoes_como_canceladas() {
+    let h = Harness::new().await;
+    h.write_local("sobe.bin", b"conteudo", T);
+
+    let summary = h.sync().await;
+
+    assert_eq!(summary.cancelled, 0);
+    assert_eq!(summary.uploaded, 1);
+}
+
+/// O cancelamento chega ao frontend pelo barramento, e antes da conclusão: a
+/// UI precisa distinguir "terminou" de "foi interrompido pela saída do app".
+#[tokio::test]
+async fn cancelamento_publica_sync_cancelled_antes_de_completed() {
+    let h = Harness::new().await;
+    h.write_local("sobe.bin", b"conteudo", T);
+
+    let mut events = h.subscribe();
+    h.engine.cancel_token().cancel();
+    h.sync().await;
+
+    let ordem: Vec<&str> = std::iter::from_fn(|| events.try_recv().ok())
+        .filter_map(|e| match e {
+            AppEvent::SyncCancelled(_) => Some("cancelled"),
+            AppEvent::SyncCompleted(_) => Some("completed"),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(
+        ordem,
+        vec!["cancelled", "completed"],
+        "o cancelamento precisa chegar antes da conclusão"
+    );
+}
+
+/// Sync normal não publica cancelamento — só a conclusão.
+#[tokio::test]
+async fn sync_normal_nao_publica_sync_cancelled() {
+    let h = Harness::new().await;
+    h.write_local("sobe.bin", b"conteudo", T);
+
+    let mut events = h.subscribe();
+    h.sync().await;
+
+    let cancelados = std::iter::from_fn(|| events.try_recv().ok())
+        .filter(|e| matches!(e, AppEvent::SyncCancelled(_)))
+        .count();
+    assert_eq!(cancelados, 0);
+}
+
+/// Liga as notificações no nível pedido — os demais cenários rodam com
+/// `None`, então as três funções `notify_*` do engine nunca disparariam.
+async fn set_notif(h: &Harness, level: NotificationLevel) {
+    h.db.with(move |conn| settings::set_notification_level(conn, level))
+        .await
+        .unwrap();
+}
+
+/// Coleta os títulos das notificações publicadas no barramento.
+fn notification_titles(rx: &mut tokio::sync::broadcast::Receiver<AppEvent>) -> Vec<String> {
+    let mut out = Vec::new();
+    while let Ok(event) = rx.try_recv() {
+        if let AppEvent::Notify(n) = event {
+            out.push(n.title);
+        }
+    }
+    out
+}
+
+/// Sync com transferência e nível `All` pede a notificação de conclusão. Ela
+/// vira um evento no barramento em vez de uma chamada direta ao plugin do SO,
+/// que é o que torna este caminho testável sem runtime do Tauri.
+#[tokio::test]
+async fn sync_com_transferencia_publica_notificacao_de_conclusao() {
+    let h = Harness::new().await;
+    set_notif(&h, NotificationLevel::All).await;
+    h.write_local("save.bin", b"conteudo", T);
+
+    let mut events = h.subscribe();
+    let summary = h.sync().await;
+
+    assert_eq!(summary.uploaded, 1);
+    let titles = notification_titles(&mut events);
+    assert!(
+        titles.iter().any(|t| t.contains("concluída")),
+        "esperava a notificação de conclusão; recebi {titles:?}"
+    );
+}
+
+/// Sync que não transferiu nada não notifica — senão todo gatilho automático
+/// ocioso viraria um "sync concluído" na bandeja.
+#[tokio::test]
+async fn sync_sem_transferencia_nao_publica_notificacao() {
+    let h = Harness::new().await;
+    set_notif(&h, NotificationLevel::All).await;
+
+    let mut events = h.subscribe();
+    h.sync().await;
+
+    assert!(notification_titles(&mut events).is_empty());
+}
+
+/// Conflito notifica já no nível `ErrorsOnly` — é o caso em que o emulador
+/// fica bloqueado esperando o usuário, então ele precisa saber.
+#[tokio::test]
+async fn conflito_publica_notificacao_no_nivel_de_erros() {
+    let h = Harness::new().await;
+    set_notif(&h, NotificationLevel::ErrorsOnly).await;
+    h.write_local("save.bin", b"v1", T);
+    h.sync().await;
+
+    // Ambos os lados mudam desde a âncora → conflito.
+    h.write_local("save.bin", b"v2-local", T + S10);
+    h.drive.overwrite_as_device(
+        EMU,
+        SyncCategory::Saves,
+        "save.bin",
+        b"v2-drive",
+        T + 2 * S10,
+        "dev-B",
+    );
+
+    let mut events = h.subscribe();
+    let summary = h.sync().await;
+
+    assert_eq!(summary.conflicts, 1);
+    let titles = notification_titles(&mut events);
+    assert!(
+        titles.iter().any(|t| t.contains("conflito")),
+        "esperava a notificação de conflito; recebi {titles:?}"
+    );
+}
+
+/// Com as notificações desligadas, nem o conflito publica — o gating é de
+/// quem produz, não de quem consome.
+#[tokio::test]
+async fn nivel_none_nao_publica_nem_notificacao_de_conflito() {
+    let h = Harness::new().await;
+    set_notif(&h, NotificationLevel::None).await;
+    h.write_local("save.bin", b"v1", T);
+    h.sync().await;
+
+    // Ambos os lados mudam desde a âncora → conflito.
+    h.write_local("save.bin", b"v2-local", T + S10);
+    h.drive.overwrite_as_device(
+        EMU,
+        SyncCategory::Saves,
+        "save.bin",
+        b"v2-drive",
+        T + 2 * S10,
+        "dev-B",
+    );
+
+    let mut events = h.subscribe();
+    let summary = h.sync().await;
+
+    assert_eq!(summary.conflicts, 1);
+    assert!(notification_titles(&mut events).is_empty());
+}
+
+/// Falha dura no sync de um emulador (aqui, a raiz sumiu — pendrive removido,
+/// pasta de rede fora do ar) notifica no nível de erros. É o caso que mais
+/// precisa da notificação: o gatilho costuma ser automático e a janela, oculta.
+#[tokio::test]
+async fn falha_de_sync_publica_notificacao_de_erro() {
+    let h = Harness::new().await;
+    set_notif(&h, NotificationLevel::ErrorsOnly).await;
+    // Remove a raiz inteira do emulador: o scan falha com FolderNotMounted.
+    std::fs::remove_dir_all(h.saves_dir.parent().unwrap()).unwrap();
+
+    let mut events = h.subscribe();
+    let summary = h.sync().await;
+
+    assert_eq!(summary.failed, 1);
+    let titles = notification_titles(&mut events);
+    assert!(
+        titles.iter().any(|t| t.contains("falha")),
+        "esperava a notificação de erro; recebi {titles:?}"
+    );
 }

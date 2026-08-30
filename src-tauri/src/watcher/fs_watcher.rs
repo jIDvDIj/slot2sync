@@ -151,8 +151,14 @@ fn build_watcher(
 
 /// Sobe o watcher de filesystem. Reconciliação periódica reabsorve mudanças na
 /// lista de emuladores (adicionados/removidos/raiz trocada).
-pub fn start(db: Db, engine: Arc<SyncEngine>, running: RunningEmulators) {
-    tauri::async_runtime::spawn(async move {
+pub fn start(
+    db: Db,
+    engine: Arc<SyncEngine>,
+    running: RunningEmulators,
+    shutdown: crate::shutdown::ShutdownHandle,
+) {
+    let tracker = shutdown.tracker.clone();
+    tauri::async_runtime::spawn(tracker.track_future(async move {
         let (tx, mut rx) = mpsc::channel::<PathBuf>(256);
         let mut watched = watch_list(&db).await;
         // O watcher precisa permanecer vivo — dropar cancela as observações.
@@ -200,6 +206,10 @@ pub fn start(db: Db, engine: Arc<SyncEngine>, running: RunningEmulators) {
                         }
                     }
                 }
+                _ = shutdown.token.cancelled() => {
+                    tracing::debug!("fs-watcher: desligamento sinalizado; observação encerrada");
+                    return;
+                }
                 _ = reconcile.tick() => {
                     let fresh = watch_list(&db).await;
                     if watch_list_changed(&watched, &fresh) {
@@ -210,7 +220,7 @@ pub fn start(db: Db, engine: Arc<SyncEngine>, running: RunningEmulators) {
                 }
             }
         }
-    });
+    }));
 }
 
 #[cfg(test)]

@@ -50,6 +50,10 @@ pub struct MockDrive {
     pub upload_new_calls: AtomicU32,
     fail_next_batch: AtomicBool,
     fail_downloads: AtomicBool,
+    /// Gancho disparado no início de cada `download`, para o teste injetar um
+    /// efeito colateral no meio do plano (ex.: cancelar o desligamento).
+    #[allow(clippy::type_complexity)]
+    on_download: Mutex<Option<Box<dyn Fn() + Send>>>,
 }
 
 impl MockDrive {
@@ -67,6 +71,12 @@ impl MockDrive {
     /// (`pending_ops`) do engine.
     pub fn set_fail_downloads(&self, fail: bool) {
         self.fail_downloads.store(fail, Ordering::SeqCst);
+    }
+
+    /// Registra um gancho executado no início de cada `download`. Permite ao
+    /// teste agir enquanto o plano ainda está em execução.
+    pub fn set_on_download(&self, hook: impl Fn() + Send + 'static) {
+        *self.on_download.lock().unwrap() = Some(Box::new(hook));
     }
 
     fn folder_id(cache_key: &str) -> String {
@@ -296,6 +306,9 @@ impl RemoteProvider for MockDrive {
     }
 
     async fn download(&self, file_id: &str) -> AppResult<Vec<u8>> {
+        if let Some(hook) = self.on_download.lock().unwrap().as_ref() {
+            hook();
+        }
         if self.fail_downloads.load(Ordering::SeqCst) {
             // FileBusy é um erro retryable para o engine (Network exigiria
             // construir um reqwest::Error, que não tem construtor público).

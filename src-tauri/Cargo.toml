@@ -30,6 +30,9 @@ thiserror = "2"
 async-trait = "0.1"
 
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs"] }
+# `rt` traz CancellationToken e TaskTracker — o desligamento gracioso do
+# menu "Sair" (cancela o sync em andamento e espera as tasks drenarem).
+tokio-util = { version = "0.7", features = ["rt"] }
 reqwest = { version = "0.12", default-features = false, features = [
   "json",
   "stream",
