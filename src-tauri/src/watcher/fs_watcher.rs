@@ -156,6 +156,7 @@ pub fn start(
     engine: Arc<SyncEngine>,
     running: RunningEmulators,
     shutdown: crate::shutdown::ShutdownHandle,
+    mut settings: crate::settings_signal::SettingsWatch,
 ) {
     let tracker = shutdown.tracker.clone();
     tauri::async_runtime::spawn(tracker.track_future(async move {
@@ -210,17 +211,37 @@ pub fn start(
                     tracing::debug!("fs-watcher: desligamento sinalizado; observação encerrada");
                     return;
                 }
-                _ = reconcile.tick() => {
-                    let fresh = watch_list(&db).await;
-                    if watch_list_changed(&watched, &fresh) {
-                        watched = fresh;
-                        _watcher = build_watcher(&watched, tx.clone());
-                        tracing::info!(emuladores = watched.len(), "fs-watcher: pastas observadas reconciliadas");
-                    }
+                // Periódico e sob demanda: a reconciliação de 60s cobre
+                // mudanças feitas fora dos comandos, e o sinal cobre o caso
+                // comum de o usuário acabar de adicionar ou remover um
+                // emulador.
+                _ = reconcile.tick() => reconcile_watched(&db, &mut watched, &mut _watcher, &tx).await,
+                Ok(()) = settings.changed() => {
+                    reconcile_watched(&db, &mut watched, &mut _watcher, &tx).await;
                 }
             }
         }
     }));
+}
+
+/// Reconstrói o observador quando a lista de pastas mudou. Sem mudança, o
+/// observador atual é preservado — recriá-lo perderia os eventos em voo.
+async fn reconcile_watched(
+    db: &Db,
+    watched: &mut Vec<WatchedEmulator>,
+    watcher: &mut Option<RecommendedWatcher>,
+    tx: &mpsc::Sender<PathBuf>,
+) {
+    let fresh = watch_list(db).await;
+    if !watch_list_changed(watched, &fresh) {
+        return;
+    }
+    *watched = fresh;
+    *watcher = build_watcher(watched, tx.clone());
+    tracing::info!(
+        emuladores = watched.len(),
+        "fs-watcher: pastas observadas reconciliadas"
+    );
 }
 
 #[cfg(test)]

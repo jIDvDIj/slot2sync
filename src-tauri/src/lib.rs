@@ -18,6 +18,7 @@ mod onedrive;
 mod platform;
 mod remote;
 mod secrets;
+mod settings_signal;
 mod shutdown;
 mod state;
 mod storage;
@@ -203,6 +204,7 @@ pub fn run() {
             // O token vem do engine: cancelar o desligamento interrompe o
             // sync em andamento pelo mesmo sinal que para o watcher.
             let shutdown = shutdown::ShutdownHandle::new(engine.cancel_token());
+            let settings = settings_signal::SettingsSignal::new();
 
             app.manage(AppState {
                 auth: std::sync::RwLock::new(auth),
@@ -214,13 +216,21 @@ pub fn run() {
                 secrets: secret_store,
                 shutdown: shutdown.clone(),
                 bus: bus.clone(),
+                settings: settings.clone(),
             });
 
             // Bandeja, janela escondível, autostart e process watcher são
             // exclusivos do desktop. No mobile o webview único já é exibido pelo
             // sistema e os gatilhos automáticos por processo não existem.
             #[cfg(desktop)]
-            platform::desktop::setup(app, db.clone(), engine.clone(), shutdown, bus.clone())?;
+            platform::desktop::setup(
+                app,
+                db.clone(),
+                engine.clone(),
+                shutdown,
+                bus.clone(),
+                &settings,
+            )?;
             #[cfg(mobile)]
             platform::mobile::setup(app)?;
 
