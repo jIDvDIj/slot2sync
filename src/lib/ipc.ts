@@ -13,6 +13,7 @@ import type {
   DiscoveredEmulator,
   EmulatorProfile,
   EmulatorStats,
+  EmulatorSummary,
   ErrorEntry,
   FileVersion,
   HealthStatus,
@@ -120,6 +121,16 @@ export function getEmulatorStats(name: string): Promise<EmulatorStats | null> {
 /** Estatísticas acumuladas de todos os emuladores com atividade. */
 export function listEmulatorStats(): Promise<EmulatorStats[]> {
   return invoke<EmulatorStats[]>("list_emulator_stats");
+}
+
+/** Retrato do emulador para o card: volume local, remoto conhecido e pendências. */
+export function getEmulatorSummary(name: string): Promise<EmulatorSummary> {
+  return invoke<EmulatorSummary>("get_emulator_summary", { name });
+}
+
+/** Resumo de todos os emuladores configurados, numa chamada só. */
+export function listEmulatorSummaries(): Promise<EmulatorSummary[]> {
+  return invoke<EmulatorSummary[]>("list_emulator_summaries");
 }
 
 /** Remove da sincronização; nada é apagado no Drive nem no disco. */

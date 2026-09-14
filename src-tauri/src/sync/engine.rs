@@ -407,10 +407,10 @@ impl SyncEngine {
             .unwrap_or(false)
     }
 
-    /// Acesso ao armazenamento local — usado pela detecção automática mobile
-    /// (`commands::detect_emulator_mobile`), que precisa checar existência de
-    /// pastas via SAF fora do fluxo normal de sync.
-    #[cfg(mobile)]
+    /// Acesso ao armazenamento local para quem precisa varrer o disco fora do
+    /// fluxo normal de sync: a detecção automática mobile
+    /// (`commands::detect_emulator_mobile`) e o resumo por emulador
+    /// (`commands::get_emulator_summary`).
     pub fn storage(&self) -> &Arc<dyn LocalStorage> {
         &self.storage
     }

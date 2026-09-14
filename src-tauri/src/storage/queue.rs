@@ -260,6 +260,14 @@ pub fn remove_for_emulator(conn: &Connection, emulator: &str) -> AppResult<()> {
     Ok(())
 }
 
+/// Pendências de um único emulador — badge e resumo do card.
+pub fn count_for_emulator(conn: &Connection, emulator: &str) -> AppResult<i64> {
+    let count = conn
+        .prepare_cached("SELECT COUNT(*) FROM pending_ops WHERE emulator = ?1")?
+        .query_row(params![emulator], |row| row.get(0))?;
+    Ok(count)
+}
+
 pub fn count(conn: &Connection) -> AppResult<i64> {
     let count = conn
         .prepare_cached("SELECT COUNT(*) FROM pending_ops")?

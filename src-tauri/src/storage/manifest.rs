@@ -206,6 +206,19 @@ pub fn list_for_category(
     Ok(entries)
 }
 
+/// Todas as entradas de um emulador, de todas as categorias — base do resumo
+/// por emulador (`commands::get_emulator_summary`), que compara a âncora do
+/// último sync com o estado atual do disco.
+pub fn list_for_emulator(conn: &Connection, emulator: &str) -> AppResult<Vec<ManifestEntry>> {
+    let mut stmt = conn.prepare_cached(&format!(
+        "SELECT {COLS} FROM sync_manifest WHERE emulator = ?1 ORDER BY category, rel_path"
+    ))?;
+    let entries = stmt
+        .query_map(params![emulator], from_row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(entries)
+}
+
 /// Todas as entradas — base do snapshot `sync_manifest.json` publicado no provedor remoto.
 pub fn list_all(conn: &Connection) -> AppResult<Vec<ManifestEntry>> {
     let mut stmt = conn.prepare_cached(&format!(

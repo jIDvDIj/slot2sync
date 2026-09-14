@@ -76,6 +76,22 @@ export interface EmulatorStats {
   lastScanAtMs: number | null;
 }
 
+/** `commands::EmulatorSummary` — retrato do emulador para o card */
+export interface EmulatorSummary {
+  emulator: string;
+  /** Arquivos encontrados agora no disco, nas categorias ativas. */
+  localFiles: number;
+  localBytes: number;
+  /** O que o manifest sabe existir no provedor remoto (sem chamada de rede). */
+  remoteFiles: number;
+  remoteBytes: number;
+  /** Estimativa por mtime de quantos arquivos estão fora de dia. */
+  needSync: number;
+  state: SyncStateKind;
+  lastSyncAtMs: number | null;
+  pendingOps: number;
+}
+
 /** `versioning::FileVersion` — versão arquivada de um arquivo no histórico */
 export interface FileVersion {
   /** Carimbo `YYYYMMDD-HHMMSS` extraído do nome arquivado. */
