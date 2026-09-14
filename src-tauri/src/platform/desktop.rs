@@ -186,7 +186,7 @@ fn start_scheduled_scan(
     shutdown: ShutdownHandle,
     mut settings: crate::settings_signal::SettingsWatch,
 ) {
-    use rand::Rng;
+    use rand::RngExt;
     let tracker = shutdown.tracker.clone();
     tauri::async_runtime::spawn(tracker.track_future(async move {
         loop {
