@@ -1,0 +1,227 @@
+.login {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: var(--space-8) var(--space-4);
+}
+
+.login-card {
+  width: min(420px, 100%);
+  display: grid;
+  gap: var(--space-8);
+  animation: login-enter var(--duration-spring) var(--ease-spring);
+}
+
+.login-header {
+  display: grid;
+  justify-items: center;
+  text-align: center;
+  gap: var(--space-2);
+}
+
+.login-mark {
+  position: relative;
+  display: grid;
+  place-items: center;
+  margin-bottom: var(--space-2);
+}
+
+/* Soft brand halo: one of the two places the gradient appears. */
+.login-mark::before {
+  content: "";
+  position: absolute;
+  inset: calc(var(--space-6) * -1);
+  border-radius: 50%;
+  background: var(--gradient-brand);
+  opacity: 0.22;
+  filter: blur(var(--space-6));
+}
+
+.login-mark img {
+  position: relative;
+  border-radius: var(--radius-dialog);
+}
+
+.login-title {
+  font-family: var(--font-display);
+  font-size: var(--text-large-title);
+  line-height: var(--leading-large-title);
+  letter-spacing: var(--tracking-large-title);
+  font-weight: var(--weight-bold);
+}
+
+.login-tagline {
+  color: var(--color-label-secondary);
+  max-width: 22rem;
+}
+
+.login-form {
+  display: grid;
+  gap: var(--space-5);
+}
+
+.login-providers {
+  display: grid;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+
+.login-providers legend {
+  padding: 0;
+  margin-bottom: var(--space-1);
+}
+
+.login-provider-group {
+  background: var(--color-surface);
+  border-radius: var(--radius-group);
+  box-shadow: var(--shadow-raised);
+  padding: var(--space-1);
+  display: grid;
+  gap: var(--space-0);
+}
+
+.login-provider {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: var(--row-min-height);
+  padding: var(--space-2) var(--space-3);
+  border-radius: calc(var(--radius-group) - var(--space-1));
+  transition: background-color var(--duration-fast) var(--ease-standard);
+}
+
+.login-provider:hover:not([data-unavailable]) {
+  background: var(--color-fill);
+}
+
+.login-provider[data-selected] {
+  background: var(--color-accent-soft);
+}
+
+.login-provider:has(.login-provider-input:focus-visible) {
+  outline: 3px solid var(--color-focus-ring);
+  outline-offset: -1px;
+}
+
+.login-provider-input {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+}
+
+.login-provider-icon {
+  color: var(--color-accent-text);
+}
+
+.login-provider[data-unavailable] .login-provider-icon,
+.login-provider[data-unavailable] .login-provider-name {
+  color: var(--color-label-secondary);
+}
+
+.login-provider-text {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: var(--space-0);
+}
+
+.login-provider-name {
+  font-weight: var(--weight-medium);
+}
+
+.login-provider-hint {
+  font-size: var(--text-callout);
+  line-height: var(--leading-callout);
+  color: var(--color-label-secondary);
+}
+
+.login-provider-check {
+  color: var(--color-accent-text);
+  opacity: 0;
+  transform: scale(0.6);
+  transition:
+    opacity var(--duration-fast) var(--ease-standard),
+    transform var(--duration-spring-bouncy) var(--ease-spring-bouncy);
+}
+
+.login-provider[data-selected] .login-provider-check {
+  opacity: 1;
+  transform: none;
+}
+
+.login-providers:disabled .login-provider {
+  opacity: 0.6;
+}
+
+.login-folder-row {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.login-folder-row .text-field {
+  flex: 1;
+}
+
+.login-privacy {
+  display: flex;
+  gap: var(--space-2);
+  font-size: var(--text-callout);
+  line-height: var(--leading-callout);
+  color: var(--color-label-secondary);
+}
+
+.login-privacy-icon {
+  margin-top: var(--space-0);
+}
+
+.login-privacy strong {
+  color: var(--color-label);
+  font-weight: var(--weight-semibold);
+}
+
+.login-actions {
+  display: grid;
+  gap: var(--space-2);
+  justify-items: center;
+  text-align: center;
+}
+
+.login-waiting {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-callout);
+  color: var(--color-label-secondary);
+}
+
+@keyframes login-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+@media (max-width: 480px) {
+  .login-folder-row {
+    flex-direction: column;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .login-card {
+    animation-name: login-fade;
+    animation-duration: var(--duration-base);
+  }
+
+  @keyframes login-fade {
+    from {
+      opacity: 0;
+    }
+  }
+}

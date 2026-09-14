@@ -1,0 +1,60 @@
+.add-emulator-searching {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--row-min-height);
+  padding: var(--space-2) var(--space-4);
+  color: var(--color-label-secondary);
+}
+
+.add-emulator-hint {
+  font-size: var(--text-callout);
+  color: var(--color-label-secondary);
+}
+
+.add-emulator-path {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: var(--text-callout);
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.add-emulator-path-input {
+  width: 14rem;
+  max-width: 100%;
+  font-family: var(--font-mono);
+}
+
+.add-emulator-manual {
+  display: grid;
+  gap: var(--space-4);
+  animation: add-emulator-reveal var(--duration-spring) var(--ease-spring);
+}
+
+.add-emulator-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+@keyframes add-emulator-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .add-emulator-manual {
+    animation-name: add-emulator-fade;
+  }
+
+  @keyframes add-emulator-fade {
+    from {
+      opacity: 0;
+    }
+  }
+}

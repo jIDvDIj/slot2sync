@@ -1,0 +1,35 @@
+.status-label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  height: 20px;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-pill);
+  font-size: var(--text-caption);
+  line-height: 1;
+  letter-spacing: var(--tracking-caption);
+  font-weight: var(--weight-semibold);
+  white-space: nowrap;
+  background: var(--color-fill);
+  color: var(--color-label-secondary);
+}
+
+.status-label[data-tone="accent"] {
+  background: var(--color-accent-soft);
+  color: var(--color-accent-text);
+}
+
+.status-label[data-tone="success"] {
+  background: var(--color-success-soft);
+  color: var(--color-success);
+}
+
+.status-label[data-tone="warning"] {
+  background: var(--color-warning-soft);
+  color: var(--color-warning);
+}
+
+.status-label[data-tone="danger"] {
+  background: var(--color-danger-soft);
+  color: var(--color-danger);
+}

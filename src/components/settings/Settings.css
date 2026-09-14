@@ -1,0 +1,81 @@
+.settings-page {
+  display: grid;
+  gap: var(--space-8);
+}
+
+.settings-sections {
+  display: flex;
+  justify-content: flex-start;
+  margin-top: calc(var(--space-2) * -1);
+}
+
+.settings-panel {
+  display: grid;
+  gap: var(--space-8);
+}
+
+.setting-input-group {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.setting-number {
+  width: 6.5rem;
+  text-align: end;
+}
+
+.setting-unit {
+  min-width: 2.5rem;
+  font-size: var(--text-callout);
+  color: var(--color-label-secondary);
+}
+
+.setting-unit:empty {
+  display: none;
+}
+
+.setting-text {
+  width: 16rem;
+  max-width: 100%;
+}
+
+.choice-row {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: start;
+  transition: background-color var(--duration-instant) var(--ease-standard);
+}
+
+.choice-row:first-child {
+  border-radius: var(--radius-group) var(--radius-group) 0 0;
+}
+
+.choice-row:last-child {
+  border-radius: 0 0 var(--radius-group) var(--radius-group);
+}
+
+.choice-row:hover {
+  background: var(--color-fill);
+}
+
+.choice-row:active {
+  background: var(--color-fill-pressed);
+}
+
+.choice-row-check {
+  margin-inline-start: auto;
+  color: var(--color-accent-text);
+  opacity: 0;
+  transform: scale(0.6);
+  transition:
+    opacity var(--duration-fast) var(--ease-standard),
+    transform var(--duration-spring-bouncy) var(--ease-spring-bouncy);
+}
+
+.choice-row[aria-checked="true"] .choice-row-check {
+  opacity: 1;
+  transform: none;
+}

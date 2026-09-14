@@ -3,18 +3,23 @@ import type { auth as AuthEn } from "../en/auth";
 
 export const auth: Localized<typeof AuthEn> = {
   login: {
-    tagline: "Sincronize saves, savestates e configs dos seus emuladores com a nuvem.",
-    permissionNote:
-      "O Slot2Sync <strong>não acessa seus dados pessoais</strong>. Ele só consegue ver e modificar os arquivos que ele mesmo cria no provedor escolhido.",
-    connecting: "Aguardando autorização no navegador…",
-    connectFolder: "Conectar pasta",
-    connect: "Conectar ao {{provider}}",
-    providerLabel: "Provedor de storage",
-    providerLocalFolder: "Pasta local/rede",
-    comingSoon: "em breve",
-    folderPathLabel: "Caminho da pasta",
+    tagline: "Mantenha os saves e savestates dos seus emuladores sincronizados entre dispositivos.",
+    providerLabel: "Onde guardar seus saves",
+    googleDriveHint: "Guardados numa pasta Slot2Sync no seu Drive",
+    cloudHint: "Guardados numa pasta Slot2Sync na sua conta",
+    localFolderHint: "Uma pasta neste computador ou num compartilhamento de rede",
+    comingSoon: "Em breve",
+    folderPathLabel: "Pasta",
     folderPathPlaceholder: "ex.: D:\\Slot2Sync ou \\\\servidor\\compartilhamento",
-    selectFolder: "Selecionar pasta…",
+    chooseFolder: "Escolher pasta…",
+    folderPickerTitle: "Escolha onde o Slot2Sync guarda seus saves",
+    deviceHint: "Aparece ao lado de cada save, para você saber qual dispositivo o alterou.",
+    permissionNote:
+      "O Slot2Sync <strong>não enxerga seus arquivos pessoais</strong>. Ele só lê e altera os arquivos que ele mesmo cria.",
+    continueWith: "Continuar com {{provider}}",
+    connectFolder: "Conectar pasta",
+    waitingForBrowser: "Aguardando sua autorização no navegador…",
+    connectingFolder: "Conectando à pasta…",
   },
   device: {
     nameLabel: "Nome deste dispositivo",

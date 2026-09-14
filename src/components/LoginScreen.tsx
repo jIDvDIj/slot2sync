@@ -1,7 +1,9 @@
-import { useCallback, useState } from "react";
+import { useCallback, useId, useState, type FormEvent } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 
+import logo from "../assets/logo.png";
+import { usePlatform } from "../hooks/usePlatform";
 import { useErrorMessage } from "../lib/errors";
 import {
   connectDropbox,
@@ -11,44 +13,38 @@ import {
   setDeviceName,
 } from "../lib/ipc";
 import { providerLabel } from "../lib/providerLabels";
-import { usePlatform } from "../hooks/usePlatform";
-import type { Theme } from "../hooks/useTheme";
 import type { AuthStatus, ProviderKind } from "../types/ipc";
 import { Button } from "./ui/Button";
-import { Card } from "./ui/Card";
+import { Field, InlineStatus, TextField } from "./ui/Form";
+import { Icon } from "./ui/Icon";
+import { Spinner } from "./ui/Spinner";
+import { StatusLabel } from "./ui/StatusLabel";
 
-interface Props {
-  /** Nome do dispositivo já salvo, usado para pré-preencher o campo. */
+import "./LoginScreen.css";
+
+export interface LoginScreenProps {
+  /** Device name already saved, used to prefill the field. */
   initialDeviceName: string | null;
-  /** Chamado com o novo status após o login concluir com sucesso. */
+  /** Called with the new status once sign-in completes. */
   onConnected: (status: AuthStatus) => void;
-  theme: Theme;
-  onToggleTheme: () => void;
 }
 
 const OAUTH_PROVIDERS = ["google_drive", "dropbox", "one_drive"] as const;
+type OAuthProvider = (typeof OAUTH_PROVIDERS)[number];
 
-const OAUTH_CONNECT: Record<(typeof OAUTH_PROVIDERS)[number], () => Promise<AuthStatus>> = {
+const OAUTH_CONNECT: Record<OAuthProvider, () => Promise<AuthStatus>> = {
   google_drive: connectGoogleDrive,
   dropbox: connectDropbox,
   one_drive: connectOneDrive,
 };
 
 /**
- * Provedores com o backend pronto, mas ainda sem credenciais cadastradas nos
- * consoles externos ficam visíveis e desativados em vez de somem, sinalizando o que já está a
- * caminho sem deixar o usuário cair num fluxo OAuth que só falharia.
+ * Backend support exists but the external consoles have no credentials yet:
+ * shown disabled so people see what's coming without entering an OAuth flow that would fail.
  */
-const UNAVAILABLE_PROVIDERS = new Set<(typeof OAUTH_PROVIDERS)[number]>(["dropbox", "one_drive"]);
+const UNAVAILABLE_PROVIDERS = new Set<OAuthProvider>(["dropbox", "one_drive"]);
 
-/**
- * Tela de login dedicada. É a única coisa renderizada enquanto o usuário não
- * está conectado — a tela principal só aparece depois que o login conclui.
- *
- * O nome do dispositivo é obrigatório: identifica esta máquina nos metadados de
- * sync no provedor escolhido e é gravado antes de concluir a autenticação.
- */
-export function LoginScreen({ initialDeviceName, onConnected, theme, onToggleTheme }: Props) {
+export function LoginScreen({ initialDeviceName, onConnected }: LoginScreenProps) {
   const { t } = useTranslation();
   const errorMessage = useErrorMessage();
   const { isMobile } = usePlatform();
@@ -57,26 +53,35 @@ export function LoginScreen({ initialDeviceName, onConnected, theme, onToggleThe
   const [folderPath, setFolderPath] = useState("");
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const folderId = useId();
+  const deviceId = useId();
+  const pickerLabelId = useId();
 
-  // Pré-preenche com o nome já salvo, sem sobrescrever o que o usuário digita.
-  // Ajuste durante o render (em vez de useEffect): initialDeviceName pode
-  // chegar depois da primeira renderização (carregado de forma assíncrona).
+  // The saved name can arrive after the first render; adjust during render without overwriting typing.
   const [prevInitialDeviceName, setPrevInitialDeviceName] = useState(initialDeviceName);
   if (initialDeviceName !== prevInitialDeviceName) {
     setPrevInitialDeviceName(initialDeviceName);
-    setDevice((cur) => cur || initialDeviceName || "");
+    setDevice((current) => current || initialDeviceName || "");
   }
 
-  const pickFolder = useCallback(async () => {
-    const selected = await openDialog({ directory: true, multiple: false });
-    if (typeof selected === "string") {
-      setFolderPath(selected);
-    }
-  }, []);
+  const isFolder = provider === "local_folder";
 
-  const handleConnect = useCallback(async () => {
+  const pickFolder = useCallback(async () => {
+    const selected = await openDialog({
+      directory: true,
+      multiple: false,
+      title: t("login.folderPickerTitle"),
+    });
+    if (typeof selected === "string") setFolderPath(selected);
+  }, [t]);
+
+  const canConnect =
+    device.trim().length > 0 && !connecting && (!isFolder || folderPath.trim().length > 0);
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
     const name = device.trim();
-    if (!name) return;
+    if (!canConnect) return;
     setConnecting(true);
     setError(null);
     try {
@@ -91,105 +96,134 @@ export function LoginScreen({ initialDeviceName, onConnected, theme, onToggleThe
     } finally {
       setConnecting(false);
     }
-  }, [device, folderPath, provider, onConnected, errorMessage]);
+  };
 
-  const canConnect =
-    device.trim().length > 0 &&
-    !connecting &&
-    (provider !== "local_folder" || folderPath.trim().length > 0);
+  const options: { kind: ProviderKind; hint: string; unavailable: boolean }[] = [
+    ...OAUTH_PROVIDERS.map((kind) => ({
+      kind,
+      hint: kind === "google_drive" ? t("login.googleDriveHint") : t("login.cloudHint"),
+      unavailable: UNAVAILABLE_PROVIDERS.has(kind),
+    })),
+    ...(isMobile
+      ? []
+      : [{ kind: "local_folder" as const, hint: t("login.localFolderHint"), unavailable: false }]),
+  ];
 
   return (
-    <main className="login-screen">
-      <Button variant="secondary" size="sm" className="theme-toggle" onClick={onToggleTheme}>
-        {theme === "dark" ? t("app.switchToLightTheme") : t("app.switchToDarkTheme")}
-      </Button>
-      <Card as="div" padding="lg" className="login-card">
-        <h1>Slot2Sync</h1>
-        <p className="login-tagline">{t("login.tagline")}</p>
+    <main className="login">
+      <div className="login-card">
+        <header className="login-header">
+          <span className="login-mark">
+            <img src={logo} alt="" width={72} height={72} />
+          </span>
+          <h1 className="login-title">Slot2Sync</h1>
+          <p className="login-tagline">{t("login.tagline")}</p>
+        </header>
 
-        <div className="field">
-          <span>{t("login.providerLabel")}</span>
-          <div className="provider-picker">
-            {OAUTH_PROVIDERS.map((kind) => {
-              const unavailable = UNAVAILABLE_PROVIDERS.has(kind);
-              return (
-                <Button
+        <form className="login-form" onSubmit={(event) => void handleSubmit(event)}>
+          <fieldset className="login-providers" disabled={connecting}>
+            <legend id={pickerLabelId} className="field-label">
+              {t("login.providerLabel")}
+            </legend>
+            <div className="login-provider-group" role="radiogroup" aria-labelledby={pickerLabelId}>
+              {options.map(({ kind, hint, unavailable }) => (
+                <label
                   key={kind}
-                  type="button"
-                  variant={provider === kind ? "primary" : "secondary"}
-                  size="sm"
-                  disabled={unavailable}
-                  title={unavailable ? t("login.comingSoon") : undefined}
-                  onClick={() => setProvider(kind)}
+                  className="login-provider"
+                  data-selected={provider === kind || undefined}
+                  data-unavailable={unavailable || undefined}
                 >
-                  {providerLabel(kind, t)}
-                  {unavailable ? <span className="muted"> ({t("login.comingSoon")})</span> : null}
-                </Button>
-              );
-            })}
-            {!isMobile ? (
-              <Button
-                type="button"
-                variant={provider === "local_folder" ? "primary" : "secondary"}
-                size="sm"
-                onClick={() => setProvider("local_folder")}
-              >
-                {providerLabel("local_folder", t)}
-              </Button>
-            ) : null}
-          </div>
-        </div>
-
-        {provider === "local_folder" ? (
-          <label className="field">
-            <span>{t("login.folderPathLabel")}</span>
-            <div className="folder-path-row">
-              <input
-                type="text"
-                value={folderPath}
-                onChange={(e) => setFolderPath(e.target.value)}
-                placeholder={t("login.folderPathPlaceholder")}
-                disabled={connecting}
-              />
-              <Button type="button" variant="secondary" size="sm" onClick={() => void pickFolder()}>
-                {t("login.selectFolder")}
-              </Button>
+                  <input
+                    type="radio"
+                    name="provider"
+                    className="login-provider-input"
+                    value={kind}
+                    checked={provider === kind}
+                    disabled={unavailable}
+                    onChange={() => setProvider(kind)}
+                  />
+                  <Icon
+                    name={kind === "local_folder" ? "folder" : "cloud"}
+                    size={20}
+                    className="login-provider-icon"
+                  />
+                  <span className="login-provider-text">
+                    <span className="login-provider-name">{providerLabel(kind, t)}</span>
+                    <span className="login-provider-hint">{hint}</span>
+                  </span>
+                  {unavailable ? (
+                    <StatusLabel icon="clock">{t("login.comingSoon")}</StatusLabel>
+                  ) : (
+                    <Icon name="check" size={16} className="login-provider-check" />
+                  )}
+                </label>
+              ))}
             </div>
-          </label>
-        ) : (
-          <p className="permission-note">
-            <Trans i18nKey="login.permissionNote" components={{ strong: <strong /> }} />
-          </p>
-        )}
+          </fieldset>
 
-        <label className="field">
-          <span>{t("device.nameLabel")}</span>
-          <input
-            type="text"
-            value={device}
-            onChange={(e) => setDevice(e.target.value)}
-            placeholder={t("device.namePlaceholder")}
-            disabled={connecting}
-            maxLength={60}
-            autoFocus
-          />
-        </label>
+          {isFolder ? (
+            <Field label={t("login.folderPathLabel")} htmlFor={folderId}>
+              <div className="login-folder-row">
+                <TextField
+                  id={folderId}
+                  value={folderPath}
+                  onChange={(event) => setFolderPath(event.target.value)}
+                  placeholder={t("login.folderPathPlaceholder")}
+                  disabled={connecting}
+                  spellCheck={false}
+                />
+                <Button icon="folder" disabled={connecting} onClick={() => void pickFolder()}>
+                  {t("login.chooseFolder")}
+                </Button>
+              </div>
+            </Field>
+          ) : null}
 
-        <Button
-          variant="primary"
-          fullWidth
-          onClick={() => void handleConnect()}
-          disabled={!canConnect}
-        >
-          {connecting
-            ? t("login.connecting")
-            : provider === "local_folder"
-              ? t("login.connectFolder")
-              : t("login.connect", { provider: providerLabel(provider, t) })}
-        </Button>
+          <Field label={t("device.nameLabel")} htmlFor={deviceId} hint={t("login.deviceHint")}>
+            <TextField
+              id={deviceId}
+              value={device}
+              onChange={(event) => setDevice(event.target.value)}
+              placeholder={t("device.namePlaceholder")}
+              disabled={connecting}
+              maxLength={60}
+              required
+              autoFocus
+            />
+          </Field>
 
-        {error ? <p className="error">{error}</p> : null}
-      </Card>
+          {isFolder ? null : (
+            <p className="login-privacy">
+              <Icon name="lock" size={14} className="login-privacy-icon" />
+              <span>
+                <Trans i18nKey="login.permissionNote" components={{ strong: <strong /> }} />
+              </span>
+            </p>
+          )}
+
+          <div className="login-actions">
+            <Button
+              type="submit"
+              variant="prominent"
+              size="large"
+              fullWidth
+              loading={connecting}
+              disabled={!canConnect}
+            >
+              {isFolder
+                ? t("login.connectFolder")
+                : t("login.continueWith", { provider: providerLabel(provider, t) })}
+            </Button>
+            {connecting ? (
+              <p className="login-waiting" role="status">
+                <Spinner size="small" />
+                {isFolder ? t("login.connectingFolder") : t("login.waitingForBrowser")}
+              </p>
+            ) : null}
+            {error ? <InlineStatus tone="danger">{error}</InlineStatus> : null}
+          </div>
+        </form>
+      </div>
     </main>
   );
 }

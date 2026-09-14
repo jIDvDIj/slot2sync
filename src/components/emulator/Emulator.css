@@ -1,0 +1,225 @@
+.emulator-card {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border-radius: var(--radius-group);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-raised);
+  min-width: 0;
+}
+
+.emulator-mono {
+  font-family: var(--font-mono);
+  font-size: var(--text-callout);
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* Conflicts */
+
+.conflict-section {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.conflict-card-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.conflict-path {
+  flex: 1 1 12rem;
+  font-weight: var(--weight-medium);
+}
+
+.conflict-sides {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  gap: var(--space-3);
+}
+
+.conflict-side {
+  display: grid;
+  align-content: start;
+  gap: var(--space-1);
+  padding: var(--space-3);
+  border-radius: calc(var(--radius-control) + 2px);
+  background: var(--color-fill);
+}
+
+.conflict-side[data-newer] {
+  box-shadow: inset 0 0 0 1px var(--color-accent-soft-strong);
+}
+
+.conflict-side-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  font-weight: var(--weight-semibold);
+}
+
+.conflict-side-title .icon {
+  color: var(--color-label-secondary);
+}
+
+.conflict-side-meta {
+  font-size: var(--text-callout);
+  color: var(--color-label-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.conflict-side .button {
+  justify-self: start;
+  margin-top: var(--space-2);
+}
+
+.conflict-card-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* Progress */
+
+.emulator-progress-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-4);
+}
+
+.emulator-progress-heading {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-weight: var(--weight-semibold);
+}
+
+.emulator-progress-heading .icon {
+  color: var(--color-accent-text);
+}
+
+.emulator-progress-meta {
+  font-size: var(--text-callout);
+  color: var(--color-label-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.emulator-progress-file {
+  color: var(--color-label-secondary);
+  font-size: var(--text-caption);
+}
+
+/* Summary */
+
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(10.5rem, 1fr));
+  gap: var(--space-3);
+  margin: 0;
+}
+
+.summary-tile {
+  display: grid;
+  align-content: start;
+  gap: var(--space-1);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-group);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-raised);
+  min-width: 0;
+}
+
+.summary-tile dd {
+  margin: 0;
+}
+
+.summary-tile-label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-callout);
+  color: var(--color-label-secondary);
+}
+
+.summary-tile[data-tone="warning"] .summary-tile-label .icon,
+.summary-tile[data-tone="warning"] .summary-tile-value {
+  color: var(--color-warning);
+}
+
+.summary-tile-value {
+  font-size: var(--text-title2);
+  line-height: var(--leading-title2);
+  letter-spacing: var(--tracking-title2);
+  font-weight: var(--weight-semibold);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.summary-tile-detail {
+  font-size: var(--text-callout);
+  color: var(--color-label-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Rows shared by pending ops and games */
+
+.row-path {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.row-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.row-error {
+  font-size: var(--text-callout);
+  color: var(--color-danger);
+  overflow-wrap: anywhere;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.row-size {
+  font-size: var(--text-callout);
+  color: var(--color-label-secondary);
+  font-variant-numeric: tabular-nums;
+  min-width: 4.5rem;
+  text-align: end;
+}
+
+.section-footer-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-3);
+}
+
+.patterns-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.patterns-row .text-field {
+  flex: 1 1 14rem;
+}
+
+.games-search {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-separator);
+}
