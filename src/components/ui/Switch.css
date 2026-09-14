@@ -1,0 +1,73 @@
+.switch {
+  --switch-width: 34px;
+  --switch-height: 20px;
+  --switch-inset: 2px;
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+  width: var(--switch-width);
+  height: var(--switch-height);
+}
+
+@media (pointer: coarse) {
+  .switch {
+    --switch-width: 51px;
+    --switch-height: 31px;
+  }
+}
+
+.switch-input {
+  position: absolute;
+  inset: -6px;
+  width: calc(100% + 12px);
+  height: calc(100% + 12px);
+  margin: 0;
+  opacity: 0;
+  z-index: 1;
+}
+
+.switch-track {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  border-radius: var(--radius-pill);
+  background: var(--color-fill-pressed);
+  transition: background-color var(--duration-base) var(--ease-standard);
+}
+
+.switch-thumb {
+  position: absolute;
+  top: var(--switch-inset);
+  left: var(--switch-inset);
+  width: calc(var(--switch-height) - var(--switch-inset) * 2);
+  height: calc(var(--switch-height) - var(--switch-inset) * 2);
+  border-radius: 50%;
+  background: var(--color-switch-thumb);
+  box-shadow: var(--shadow-thumb);
+  transition: transform var(--duration-spring-bouncy) var(--ease-spring-bouncy);
+}
+
+.switch-input:checked + .switch-track {
+  background: var(--color-accent);
+}
+
+.switch-input:checked + .switch-track .switch-thumb {
+  transform: translateX(calc(var(--switch-width) - var(--switch-height)));
+}
+
+.switch-input:active:not(:disabled) + .switch-track .switch-thumb {
+  width: calc(var(--switch-height) - var(--switch-inset) * 2 + 4px);
+}
+
+.switch-input:checked:active:not(:disabled) + .switch-track .switch-thumb {
+  transform: translateX(calc(var(--switch-width) - var(--switch-height) - 4px));
+}
+
+.switch-input:focus-visible + .switch-track {
+  outline: 3px solid var(--color-focus-ring);
+  outline-offset: 1px;
+}
+
+.switch-input:disabled + .switch-track {
+  opacity: 0.45;
+}

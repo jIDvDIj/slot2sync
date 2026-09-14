@@ -1,13 +1,13 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
+import { applyAppearance, readStoredAppearance } from "./hooks/useAppearance";
 import "./i18n";
 import "./styles/tokens.css";
+import "./styles/base.css";
 
-// Aplica a preferência salva (ou dark como padrão) antes do primeiro paint,
-// para não piscar o tema errado; o toggle em useTheme mantém isso em sincronia.
-document.documentElement.dataset.theme =
-  localStorage.getItem("rs-theme") === "light" ? "light" : "dark";
+// Before the first paint, so a forced appearance never flashes the OS one.
+applyAppearance(readStoredAppearance());
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>

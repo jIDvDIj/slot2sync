@@ -1,0 +1,90 @@
+import type { Localized } from "../types";
+import type { emulators as EmulatorsEn } from "../en/emulator";
+
+export const emulators: Localized<typeof EmulatorsEn> = {
+  emulatorPage: {
+    summaryHeading: "Resumo",
+    localTitle: "Neste dispositivo",
+    remoteTitle: "No armazenamento remoto",
+    outOfDateTitle: "Desatualizados",
+    outOfDateNone: "Tudo em dia",
+    outOfDateSome: "Sincronizam na próxima execução",
+    lastSyncTitle: "Última sincronização",
+    never: "Nunca",
+    neverDetail: "Nenhum arquivo sincronizado ainda",
+    transfersTitle: "Transferidos",
+    transfersValue: "{{up}} enviados · {{down}} baixados",
+    transfersDetail: "{{up}} enviados, {{down}} baixados",
+    files_one: "{{count}} arquivo",
+    files_other: "{{count}} arquivos",
+    progressPercent: "{{percent}}%",
+  },
+  conflict: {
+    bannerTitle_one: "Um arquivo mudou em dois lugares",
+    bannerTitle_other: "{{count}} arquivos mudaram em dois lugares",
+    bannerBody:
+      "A sincronização de {{emulator}} está pausada até você escolher qual versão manter. A versão local que você não mantiver é guardada como backup, então nada se perde.",
+    thisDevice: "Este dispositivo",
+    remote: "Armazenamento remoto",
+    unknownDevice: "Dispositivo desconhecido",
+    newer: "Mais recente",
+    keepThis: "Manter esta versão",
+    keepLocalLabel: "Manter a versão deste dispositivo de {{file}}",
+    keepRemoteLabel: "Manter a versão remota de {{file}}",
+    showCopy: "Mostrar cópia local",
+  },
+  pending: {
+    heading: "Transferências pendentes",
+    description:
+      "Estes arquivos não puderam ser transferidos por um problema de rede ou porque estavam em uso. Eles são retentados a cada sincronização.",
+    upload: "Envio",
+    download: "Download",
+    attempts_one: "{{count}} tentativa",
+    attempts_other: "{{count}} tentativas",
+    queued: "na fila {{when}}",
+    stopped: "Parou de tentar",
+    prioritized: "Priorizado",
+    retry: "Tentar de novo",
+    prioritize: "Priorizar",
+    retryAll: "Tentar todos de novo",
+  },
+  options: {
+    heading: "O que sincroniza",
+    description: "Escolha o que o Slot2Sync mantém sincronizado para este emulador.",
+    saves: "Saves",
+    savesHint: "Arquivos de save dos jogos e memory cards",
+    savestates: "Savestates",
+    savestatesHint: "Estados salvos criados pelo emulador",
+    allOff: "Nada deste emulador sincroniza enquanto as duas opções estiverem desligadas.",
+    ignoreLabel: "Padrões a ignorar",
+    ignoreHint:
+      "Padrões separados por vírgula, como *.tmp ou cache/**. Arquivos que casam nunca sincronizam, em nenhuma direção.",
+    ignorePlaceholder: "*.tmp, cache/**",
+  },
+  games: {
+    heading: "Jogos",
+    count_one: "{{count}} jogo com arquivos sincronizados",
+    count_other: "{{count}} jogos com arquivos sincronizados",
+    searchLabel: "Buscar jogos",
+    searchPlaceholder: "Buscar por nome ou serial",
+    empty: "Nenhum jogo sincronizado ainda",
+    emptyHint: "Os jogos aparecem aqui depois que os saves deles sincronizam.",
+    noMatches: "Nenhum jogo corresponde a “{{query}}”",
+    synced: "sincronizado {{when}}",
+  },
+  remove: {
+    heading: "Remover emulador",
+    description:
+      "Para de sincronizar este emulador. Os arquivos neste dispositivo e no armazenamento remoto são mantidos.",
+    button: "Remover da sincronização",
+    confirmTitle: "Remover {{emulator}} da sincronização?",
+    confirmMessage:
+      "O Slot2Sync vai parar de sincronizar este emulador. Nenhum arquivo é apagado neste dispositivo nem no armazenamento remoto, e você pode adicioná-lo de novo quando quiser.",
+    confirm: "Remover",
+  },
+  categories: {
+    saves: "Saves",
+    savestates: "Savestates",
+    config: "Config",
+  },
+};

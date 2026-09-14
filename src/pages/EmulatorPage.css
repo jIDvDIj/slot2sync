@@ -1,0 +1,16 @@
+.emulator-path {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--text-callout);
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.emulator-sections {
+  display: grid;
+  gap: var(--space-8);
+}

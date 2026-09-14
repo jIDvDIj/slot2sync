@@ -1,25 +1,15 @@
-import { useEffect, useState, type ReactNode } from "react";
-import { useTranslation } from "react-i18next";
+import { useEffect, useState } from "react";
 
 import { dismissNotice, listDismissedNotices } from "../../lib/ipc";
+import { Banner, type BannerProps } from "./Banner";
 
-import "./NoticeBanner.css";
-
-interface Props {
-  /** Identificador persistente: uma vez dispensado, o banner não reaparece. */
+interface NoticeBannerProps extends Omit<BannerProps, "onDismiss"> {
+  /** Persistent id: once dismissed the banner never shows again, across restarts. */
   id: string;
-  tone?: "info" | "warning" | "success" | "danger";
-  children: ReactNode;
 }
 
-/**
- * Banner informativo descartável:
- * cada banner tem um ID; ao fechar, o ID é persistido no backend e o banner
- * não volta a ser exibido — nem após reiniciar o app.
- */
-export function NoticeBanner({ id, tone = "info", children }: Props) {
-  const { t } = useTranslation();
-  // `null` = ainda não sabemos se foi dispensado; não renderiza (evita flash).
+export function NoticeBanner({ id, ...banner }: NoticeBannerProps) {
+  // `null` until the dismissed list arrives, so a dismissed banner never flashes.
   const [visible, setVisible] = useState<boolean | null>(null);
 
   useEffect(() => {
@@ -40,21 +30,9 @@ export function NoticeBanner({ id, tone = "info", children }: Props) {
 
   const dismiss = () => {
     setVisible(false);
-    // Persistência best-effort: falha só faz o banner voltar na próxima sessão.
+    // Best effort: a failed write only brings the banner back next session.
     dismissNotice(id).catch(() => {});
   };
 
-  return (
-    <div className={`notice-banner notice-${tone}`}>
-      <div className="notice-content">{children}</div>
-      <button
-        className="notice-dismiss"
-        onClick={dismiss}
-        aria-label={t("common.dismiss")}
-        title={t("common.dismiss")}
-      >
-        ×
-      </button>
-    </div>
-  );
+  return <Banner {...banner} onDismiss={dismiss} />;
 }

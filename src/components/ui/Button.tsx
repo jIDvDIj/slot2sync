@@ -1,33 +1,60 @@
-import type { ButtonHTMLAttributes } from "react";
+import type { ComponentPropsWithRef } from "react";
+
+import { cx } from "../../lib/cx";
+import { Icon, type IconName } from "./Icon";
+import { Spinner } from "./Spinner";
 
 import "./Button.css";
 
-interface Props extends ButtonHTMLAttributes<HTMLButtonElement> {
-  variant?: "primary" | "secondary" | "ghost" | "danger";
-  size?: "sm" | "md";
+export type ButtonVariant =
+  "prominent" | "bordered" | "plain" | "destructive" | "destructiveProminent";
+
+export type ButtonSize = "small" | "regular" | "large";
+
+export interface ButtonProps extends ComponentPropsWithRef<"button"> {
+  variant?: ButtonVariant;
+  size?: ButtonSize;
+  icon?: IconName;
+  /** Replaces the icon with a spinner and blocks further clicks. */
+  loading?: boolean;
   fullWidth?: boolean;
 }
 
-/**
- * Botão base do app. Toda ação clicável fora dos modais (que mantêm o botão
- * cru como rede de segurança) deve usar este primitivo em vez de `<button>`.
- */
+const ICON_SIZE: Record<ButtonSize, number> = { small: 14, regular: 16, large: 18 };
+
+/** Icon-only buttons (no children) must receive an `aria-label`. */
 export function Button({
-  variant = "primary",
-  size = "md",
+  variant = "bordered",
+  size = "regular",
+  icon,
+  loading = false,
   fullWidth = false,
   className,
+  children,
+  disabled,
+  type = "button",
   ...rest
-}: Props) {
-  const classes = [
-    "rs-button",
-    `rs-button-${variant}`,
-    `rs-button-${size}`,
-    fullWidth ? "rs-button-full" : "",
-    className ?? "",
-  ]
-    .filter(Boolean)
-    .join(" ");
+}: ButtonProps) {
+  const iconOnly = icon !== undefined && (children === undefined || children === null);
 
-  return <button className={classes} {...rest} />;
+  return (
+    <button
+      type={type}
+      className={cx("button", className)}
+      data-variant={variant}
+      data-size={size}
+      data-icon-only={iconOnly || undefined}
+      data-full-width={fullWidth || undefined}
+      disabled={disabled || loading}
+      aria-busy={loading || undefined}
+      {...rest}
+    >
+      {loading ? (
+        <Spinner size="small" />
+      ) : icon ? (
+        <Icon name={icon} size={ICON_SIZE[size]} />
+      ) : null}
+      {iconOnly ? null : <span className="button-label">{children}</span>}
+    </button>
+  );
 }
