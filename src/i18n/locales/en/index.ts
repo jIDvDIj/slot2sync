@@ -1,11 +1,19 @@
 import { auth } from "./auth";
 import { common } from "./common";
+import { emulators } from "./emulator";
 import { errors } from "./errors";
+import { library } from "./library";
 import { settings } from "./settings";
-import { sync } from "./sync";
 
-/** Inglês — idioma padrão. A forma deste objeto é a fonte da verdade (`Resources`). */
-export const en = { ...common, ...auth, ...sync, ...settings, ...errors } as const;
+/** English is the default language; the shape of this object is the source of truth (`Resources`). */
+export const en = {
+  ...common,
+  ...auth,
+  ...emulators,
+  ...library,
+  ...settings,
+  ...errors,
+} as const;
 
 export type Resources = typeof en;
 

@@ -1,0 +1,79 @@
+.spinner {
+  --spinner-size: 16px;
+  display: inline-block;
+  flex-shrink: 0;
+  width: var(--spinner-size);
+  height: var(--spinner-size);
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, currentColor 22%, transparent);
+  border-top-color: currentColor;
+  animation: icon-spin 0.8s linear infinite;
+}
+
+.spinner[data-size="small"] {
+  --spinner-size: 12px;
+  border-width: 1.75px;
+}
+
+.spinner[data-size="large"] {
+  --spinner-size: 28px;
+  border-width: 2.5px;
+}
+
+.progress-bar {
+  --progress-height: 6px;
+  position: relative;
+  width: 100%;
+  height: var(--progress-height);
+  border-radius: var(--radius-pill);
+  background: var(--color-fill);
+  overflow: hidden;
+}
+
+.progress-bar[data-size="thin"] {
+  --progress-height: 4px;
+}
+
+.progress-bar-fill {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--color-accent);
+  transform-origin: left center;
+  transition: transform var(--duration-spring) var(--ease-spring);
+}
+
+.progress-bar[data-indeterminate] .progress-bar-fill {
+  width: 38%;
+  animation: progress-indeterminate 1.3s var(--ease-standard) infinite;
+}
+
+@keyframes progress-indeterminate {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(270%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation-duration: 2.4s;
+  }
+
+  .progress-bar[data-indeterminate] .progress-bar-fill {
+    width: 100%;
+    animation: progress-pulse 2s ease-in-out infinite;
+  }
+
+  @keyframes progress-pulse {
+    0%,
+    100% {
+      opacity: 0.35;
+    }
+    50% {
+      opacity: 0.8;
+    }
+  }
+}

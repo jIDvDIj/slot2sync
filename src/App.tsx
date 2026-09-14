@@ -1,191 +1,315 @@
-import { useState } from "react";
+import { useCallback, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
-import type { AppPanicPayload } from "./types/ipc";
-
-import { AccountStatus } from "./components/AccountStatus";
-import { AddEmulator } from "./components/AddEmulator";
-import { EmulatorCard } from "./components/EmulatorCard";
+import logo from "./assets/logo.png";
+import { AddEmulatorDialog } from "./components/AddEmulatorDialog";
 import { LoginScreen } from "./components/LoginScreen";
-import { SettingsModal } from "./components/SettingsModal";
-import { SyncStatus } from "./components/SyncStatus";
-import { UpdateBanner } from "./components/UpdateBanner";
-import { Button } from "./components/ui/Button";
+import { Spinner } from "./components/ui/Spinner";
+import { useAppearance } from "./hooks/useAppearance";
 import { useAppPanic } from "./hooks/useAppPanic";
-import { useUpdate } from "./hooks/useUpdate";
 import { useAuth } from "./hooks/useAuth";
 import { useConflicts } from "./hooks/useConflicts";
 import { useEmulators } from "./hooks/useEmulators";
+import { useMediaQuery } from "./hooks/useMediaQuery";
 import { usePendingOps } from "./hooks/usePendingOps";
 import { useSettings } from "./hooks/useSettings";
+import { useShortcut } from "./hooks/useShortcut";
 import { useSyncedGames } from "./hooks/useSyncedGames";
 import { useSyncEvents } from "./hooks/useSyncEvents";
-import { useTheme } from "./hooks/useTheme";
-import "./App.css";
+import { useUpdate } from "./hooks/useUpdate";
+import { routeKey, type Route } from "./lib/navigation";
+import { ActivityPage } from "./pages/ActivityPage";
+import { EmulatorPage } from "./pages/EmulatorPage";
+import { OverviewPage } from "./pages/OverviewPage";
+import { SettingsPage } from "./pages/SettingsPage";
+import { GlobalBanners } from "./shell/GlobalBanners";
+import { MainBanners } from "./shell/MainBanners";
+import { SHORTCUTS } from "./shell/shortcuts";
+import { Sidebar } from "./shell/Sidebar";
+import { SyncActivity } from "./shell/SyncActivity";
+import { TabBar } from "./shell/TabBar";
+import { Toolbar } from "./shell/Toolbar";
+import { usePersistentFlag } from "./shell/usePersistentFlag";
+import { useSyncAction } from "./shell/useSyncAction";
+
+import "./shell/Shell.css";
 
 function App() {
   const { t } = useTranslation();
   const auth = useAuth();
   const { settings, reload: reloadSettings } = useSettings();
-  const theme = useTheme();
+  const appearance = useAppearance();
   const { panic, dismiss: dismissPanic } = useAppPanic();
   const { update, dismiss: dismissUpdate } = useUpdate();
 
   const banners = (
-    <>
-      {panic ? <PanicBanner panic={panic} onDismiss={dismissPanic} /> : null}
-      {update ? <UpdateBanner update={update} onDismiss={dismissUpdate} /> : null}
-    </>
+    <GlobalBanners
+      panic={panic}
+      onDismissPanic={dismissPanic}
+      update={update}
+      onDismissUpdate={dismissUpdate}
+    />
   );
 
-  // Enquanto o status de auth não chega, não decide qual tela mostrar.
   if (auth.loading) {
     return (
-      <main className="login-screen">
-        {banners}
-        <p className="muted">{t("app.checkingConnection")}</p>
+      <main className="launch-screen">
+        <img src={logo} alt="" width={64} height={64} className="launch-logo" />
+        <div className="launch-status">
+          <Spinner />
+          <p className="text-secondary">{t("app.checkingConnection")}</p>
+        </div>
       </main>
     );
   }
 
-  // Sem login, a única tela acessível é a de login.
   if (!auth.connected) {
     return (
       <>
-        {banners}
+        <div className="floating-banners">{banners}</div>
         <LoginScreen
           initialDeviceName={settings?.deviceName ?? null}
           onConnected={(status) => {
             auth.setStatus(status);
-            reloadSettings();
+            void reloadSettings();
           }}
-          theme={theme.theme}
-          onToggleTheme={theme.toggle}
         />
       </>
     );
   }
 
   return (
-    <>
-      {banners}
-      <MainScreen auth={auth} settings={settings} reloadSettings={reloadSettings} theme={theme} />
-    </>
-  );
-}
-
-interface PanicBannerProps {
-  panic: AppPanicPayload;
-  onDismiss: () => void;
-}
-
-/** Aviso persistente de panic — o backend segue vivo, mas algo quebrou. */
-function PanicBanner({ panic, onDismiss }: PanicBannerProps) {
-  const { t } = useTranslation();
-  return (
-    <div className="panic-banner" role="alert">
-      <div>
-        <strong>{t("panic.title")}</strong>
-        <p>{t("panic.body")}</p>
-        <code>
-          {panic.message}
-          {panic.location ? ` (${t("panic.at")} ${panic.location})` : ""}
-        </code>
-      </div>
-      <Button variant="secondary" size="sm" onClick={onDismiss}>
-        {t("common.dismiss")}
-      </Button>
-    </div>
+    <MainScreen
+      auth={auth}
+      settings={settings}
+      reloadSettings={reloadSettings}
+      appearance={appearance}
+      banners={banners}
+    />
   );
 }
 
 interface MainScreenProps {
   auth: ReturnType<typeof useAuth>;
   settings: ReturnType<typeof useSettings>["settings"];
-  reloadSettings: () => void;
-  theme: ReturnType<typeof useTheme>;
+  reloadSettings: () => Promise<void>;
+  appearance: ReturnType<typeof useAppearance>;
+  banners: ReactNode;
 }
 
-/**
- * Tela principal — só montada quando o usuário está conectado. Os hooks de
- * emuladores/sync/conflitos vivem aqui para não rodar na tela de login.
- */
-function MainScreen({ auth, settings, reloadSettings, theme }: MainScreenProps) {
+/** Mounted only once connected, so sync and emulator hooks never run on the sign-in screen. */
+function MainScreen({ auth, settings, reloadSettings, appearance, banners }: MainScreenProps) {
   const { t } = useTranslation();
   const sync = useSyncEvents();
   const { emulators, loading, error, refresh, remove } = useEmulators();
   const { conflicts, reload: reloadConflicts } = useConflicts();
-  const { ops: pendingOps } = usePendingOps();
+  const { ops: pendingOps, reload: reloadPending } = usePendingOps();
   const games = useSyncedGames();
-  const [showSettings, setShowSettings] = useState(false);
+  const syncAction = useSyncAction();
+  const compact = useMediaQuery("(max-width: 699px)");
+  const [sidebarHidden, setSidebarHidden] = usePersistentFlag("slot2sync.sidebarHidden");
+  const [route, setRoute] = useState<Route>({ name: "overview" });
+  const [addOpen, setAddOpen] = useState(false);
+  const [scrolled, setScrolled] = useState(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  const navigate = useCallback((next: Route) => {
+    setRoute(next);
+    setScrolled(false);
+    scrollRef.current?.scrollTo({ top: 0 });
+  }, []);
+
+  const activeRoute: Route =
+    route.name === "emulator" && !loading && !emulators.some((e) => e.name === route.emulator)
+      ? { name: "overview" }
+      : route;
+  const selectedProfile =
+    activeRoute.name === "emulator"
+      ? (emulators.find((e) => e.name === activeRoute.emulator) ?? null)
+      : null;
+
+  const syncing = syncAction.busy || sync.phase === "syncing";
+  const issueCount = conflicts.length + pendingOps.filter((op) => op.nextRetryAtMs === null).length;
+
+  useShortcut(SHORTCUTS.sync, () => void syncAction.run());
+  useShortcut(SHORTCUTS.settings, () => navigate({ name: "settings" }));
+  useShortcut(SHORTCUTS.addEmulator, () => setAddOpen(true));
+  useShortcut(SHORTCUTS.overview, () => navigate({ name: "overview" }));
+  useShortcut(SHORTCUTS.activity, () => navigate({ name: "activity" }));
+
+  const openEmulator = (name: string) => navigate({ name: "emulator", emulator: name });
+  const openAddEmulator = () => setAddOpen(true);
+
+  let title: string;
+  let page: ReactNode;
+  switch (activeRoute.name) {
+    case "overview":
+      title = t("nav.overview");
+      page = (
+        <OverviewPage
+          emulators={emulators}
+          loading={loading}
+          error={error}
+          sync={sync}
+          conflicts={conflicts}
+          pendingOps={pendingOps}
+          games={games}
+          onOpenEmulator={openEmulator}
+          onAddEmulator={openAddEmulator}
+          onOpenActivity={() => navigate({ name: "activity" })}
+        />
+      );
+      break;
+    case "emulator":
+      title = activeRoute.emulator;
+      page = selectedProfile ? (
+        <EmulatorPage
+          key={selectedProfile.name}
+          profile={selectedProfile}
+          running={sync.running.has(selectedProfile.name)}
+          syncing={syncing}
+          progress={sync.progress}
+          trigger={sync.trigger}
+          conflicts={conflicts.filter((c) => c.emulator === selectedProfile.name)}
+          pendingOps={pendingOps.filter((op) => op.emulator === selectedProfile.name)}
+          games={games.filter((g) => g.emulator === selectedProfile.name)}
+          onRemove={async (name) => {
+            await remove(name);
+            navigate({ name: "overview" });
+          }}
+          onConflictResolved={reloadConflicts}
+          onPendingChanged={reloadPending}
+          onSyncNow={syncAction.run}
+        />
+      ) : (
+        <PageLoading />
+      );
+      break;
+    case "activity":
+      title = t("nav.activity");
+      page = (
+        <ActivityPage
+          sync={sync}
+          emulators={emulators}
+          conflicts={conflicts}
+          pendingOps={pendingOps}
+          onPendingChanged={reloadPending}
+          onOpenEmulator={openEmulator}
+          onSyncNow={syncAction.run}
+        />
+      );
+      break;
+    case "settings":
+      title = t("nav.settings");
+      page = settings ? (
+        <SettingsPage
+          settings={settings}
+          onSaved={() => void reloadSettings()}
+          onDisconnectProvider={() => void auth.disconnect()}
+          appearance={appearance.appearance}
+          onAppearanceChange={appearance.setAppearance}
+        />
+      ) : (
+        <PageLoading />
+      );
+      break;
+  }
 
   return (
-    <main className="app">
-      <header className="app-header">
-        <h1>Slot2Sync</h1>
-        <div className="header-actions">
-          <AccountStatus
-            email={auth.status?.email ?? null}
-            deviceName={settings?.deviceName ?? null}
-            onDisconnect={auth.disconnect}
-            error={auth.error}
-          />
-          <Button variant="secondary" size="sm" onClick={theme.toggle}>
-            {theme.theme === "dark" ? t("app.switchToLightTheme") : t("app.switchToDarkTheme")}
-          </Button>
-          <Button variant="secondary" size="sm" onClick={() => setShowSettings(true)}>
-            {t("app.settings")}
-          </Button>
-        </div>
-      </header>
-
-      <section className="emulators">
-        <div className="section-head">
-          <h2>{t("app.emulators")}</h2>
-          <AddEmulator onAdded={refresh} existingNames={emulators.map((e) => e.name)} />
-        </div>
-
-        {loading ? (
-          <p className="muted">{t("app.loading")}</p>
-        ) : error ? (
-          <p className="error">{error}</p>
-        ) : emulators.length === 0 ? (
-          <p className="muted empty">{t("app.noEmulators")}</p>
-        ) : (
-          <div className="emulator-grid">
-            {emulators.map((profile) => (
-              <EmulatorCard
-                key={profile.name}
-                profile={profile}
-                running={sync.running.has(profile.name)}
-                conflicts={conflicts.filter((c) => c.emulator === profile.name)}
-                pendingOps={pendingOps.filter((op) => op.emulator === profile.name)}
-                progress={sync.progress}
-                trigger={sync.trigger}
-                games={games.filter((g) => g.emulator === profile.name)}
-                onRemove={remove}
-                onConflictResolved={reloadConflicts}
-              />
-            ))}
-          </div>
-        )}
-      </section>
-
-      <SyncStatus state={sync} />
-
-      {showSettings && settings ? (
-        <SettingsModal
-          settings={settings}
+    <div
+      className="app-shell"
+      data-compact={compact || undefined}
+      data-sidebar={!compact && sidebarHidden ? "hidden" : undefined}
+    >
+      {!compact ? (
+        <Sidebar
+          hidden={sidebarHidden}
+          route={activeRoute}
+          onNavigate={navigate}
           emulators={emulators}
-          onClose={() => setShowSettings(false)}
-          onSaved={reloadSettings}
-          onDisconnectProvider={() => {
-            setShowSettings(false);
-            void auth.disconnect();
-          }}
+          conflicts={conflicts}
+          pendingOps={pendingOps}
+          sync={sync}
+          issueCount={issueCount}
+          deviceName={settings?.deviceName ?? null}
+          provider={settings?.storageProvider ?? null}
+          email={auth.status?.email ?? null}
+          onAddEmulator={openAddEmulator}
+          onSignOut={() => void auth.disconnect()}
         />
       ) : null}
-    </main>
+
+      <div className="main-column">
+        <div
+          className="main-scroll"
+          ref={scrollRef}
+          onScroll={(event) => setScrolled(event.currentTarget.scrollTop > 24)}
+        >
+          <Toolbar
+            title={title}
+            scrolled={scrolled}
+            compact={compact}
+            sidebarHidden={sidebarHidden}
+            onToggleSidebar={() => setSidebarHidden(!sidebarHidden)}
+            onBack={
+              compact && activeRoute.name === "emulator"
+                ? () => navigate({ name: "overview" })
+                : undefined
+            }
+            syncing={syncing}
+            progress={sync.progress}
+            lastSync={sync.lastSync}
+            onSync={() => void syncAction.run()}
+          />
+
+          <main className="content">
+            <div className="banner-stack">
+              {banners}
+              <MainBanners
+                sync={sync}
+                actionError={syncAction.error}
+                onDismissActionError={syncAction.dismissError}
+                onRetrySync={() => void syncAction.run()}
+              />
+            </div>
+            {/* The emulator page renders its own progress for that emulator. */}
+            <SyncActivity
+              syncing={
+                syncing &&
+                !(
+                  activeRoute.name === "emulator" &&
+                  sync.progress?.emulator === activeRoute.emulator
+                )
+              }
+              progress={sync.progress}
+              trigger={sync.trigger}
+            />
+            <div className="page-transition" key={routeKey(activeRoute)}>
+              {page}
+            </div>
+          </main>
+        </div>
+
+        {compact ? (
+          <TabBar route={activeRoute} onNavigate={navigate} issueCount={issueCount} />
+        ) : null}
+      </div>
+
+      <AddEmulatorDialog
+        open={addOpen}
+        existingNames={emulators.map((e) => e.name)}
+        onClose={() => setAddOpen(false)}
+        onAdded={() => void refresh()}
+      />
+    </div>
+  );
+}
+
+function PageLoading() {
+  return (
+    <div className="page-loading">
+      <Spinner size="large" />
+    </div>
   );
 }
 

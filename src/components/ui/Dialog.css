@@ -1,0 +1,178 @@
+.dialog {
+  --dialog-width: 560px;
+  width: min(var(--dialog-width), calc(100vw - var(--space-8)));
+  max-width: none;
+  max-height: min(760px, calc(100vh - var(--space-12)));
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-dialog);
+  background: var(--color-surface-raised);
+  color: var(--color-label);
+  box-shadow: var(--shadow-dialog);
+  overflow: hidden;
+}
+
+.dialog[open] {
+  display: flex;
+  flex-direction: column;
+  animation: dialog-enter var(--duration-spring-bouncy) var(--ease-spring-bouncy);
+}
+
+.dialog::backdrop {
+  background: var(--color-scrim);
+  animation: dialog-backdrop-enter var(--duration-base) var(--ease-standard);
+}
+
+.dialog[data-state="closing"] {
+  animation: dialog-exit 180ms var(--ease-exit) forwards;
+}
+
+.dialog[data-state="closing"]::backdrop {
+  animation: dialog-backdrop-exit 180ms var(--ease-exit) forwards;
+}
+
+.dialog[data-size="small"] {
+  --dialog-width: 420px;
+}
+
+.dialog[data-size="large"] {
+  --dialog-width: 780px;
+}
+
+.dialog-header {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-5) var(--space-5) var(--space-3);
+}
+
+.dialog-heading {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: var(--space-1);
+}
+
+.dialog-title {
+  font-size: var(--text-title3);
+  line-height: var(--leading-title3);
+  font-weight: var(--weight-semibold);
+}
+
+.dialog-description {
+  color: var(--color-label-secondary);
+  font-size: var(--text-body);
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.dialog-close {
+  margin: calc(var(--space-1) * -1) calc(var(--space-2) * -1) 0 0;
+}
+
+.dialog-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-1) var(--space-5) var(--space-5);
+  display: grid;
+  align-content: start;
+  gap: var(--space-4);
+}
+
+.dialog-footer {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-5) var(--space-5);
+}
+
+.dialog-body + .dialog-footer {
+  border-top: 1px solid var(--color-separator);
+  padding-top: var(--space-4);
+}
+
+@keyframes dialog-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.965);
+  }
+}
+
+@keyframes dialog-exit {
+  to {
+    opacity: 0;
+    transform: translateY(4px) scale(0.98);
+  }
+}
+
+@keyframes dialog-backdrop-enter {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes dialog-backdrop-exit {
+  to {
+    opacity: 0;
+  }
+}
+
+/* Compact width: the dialog becomes a bottom sheet. */
+@media (max-width: 699px) {
+  .dialog {
+    width: 100vw;
+    max-height: 92vh;
+    margin: auto 0 0;
+    border-radius: var(--radius-dialog) var(--radius-dialog) 0 0;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  .dialog[open] {
+    animation: sheet-enter var(--duration-spring) var(--ease-spring);
+  }
+
+  .dialog[data-state="closing"] {
+    animation: sheet-exit 180ms var(--ease-exit) forwards;
+  }
+
+  .dialog-footer {
+    flex-direction: column-reverse;
+  }
+
+  .dialog-footer .button {
+    width: 100%;
+  }
+
+  @keyframes sheet-enter {
+    from {
+      transform: translateY(100%);
+    }
+  }
+
+  @keyframes sheet-exit {
+    to {
+      transform: translateY(100%);
+    }
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dialog[open],
+  .dialog[data-state="closing"] {
+    animation-name: dialog-fade;
+    animation-duration: var(--duration-base);
+    animation-timing-function: var(--ease-standard);
+  }
+
+  .dialog[data-state="closing"] {
+    animation-direction: reverse;
+  }
+
+  @keyframes dialog-fade {
+    from {
+      opacity: 0;
+    }
+  }
+}
