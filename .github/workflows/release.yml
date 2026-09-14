@@ -289,6 +289,26 @@ jobs:
           mv tauri.conf.tmp src-tauri/tauri.conf.json
           echo "Versão do bundle definida para $v"
 
+      # Os artefatos do updater só são gerados quando há chave de assinatura:
+      # com `createUpdaterArtifacts` fixo em `true` no tauri.conf.json, um
+      # release sem o secret falharia o build inteiro em vez de sair sem
+      # atualização automática.
+      - name: Habilitar artefatos do updater (se houver chave)
+        id: updater
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::TAURI_SIGNING_PRIVATE_KEY ausente — release sai sem atualização automática."
+            exit 0
+          fi
+          jq '.bundle.createUpdaterArtifacts = true' src-tauri/tauri.conf.json > tauri.conf.tmp
+          mv tauri.conf.tmp src-tauri/tauri.conf.json
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+          echo "Artefatos do updater habilitados."
+
       - name: Install system dependencies (Linux)
         if: matrix.platform == 'ubuntu-22.04'
         run: |
@@ -345,12 +365,19 @@ jobs:
           SLOT2SYNC_GOOGLE_CLIENT_ID: ${{ secrets.SLOT2SYNC_GOOGLE_CLIENT_ID }}
           SLOT2SYNC_TOKEN_PROXY_URL: ${{ secrets.SLOT2SYNC_TOKEN_PROXY_URL }}
           SLOT2SYNC_PROXY_SECRET: ${{ secrets.SLOT2SYNC_PROXY_SECRET }}
+          # Assinatura Ed25519 dos artefatos de atualização. Ausentes, o passo
+          # acima já desligou `createUpdaterArtifacts` e o build ignora as duas.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ needs.version.outputs.tag }}
           releaseName: Slot2Sync v${{ needs.version.outputs.version }}
           releaseBody: ${{ needs.version.outputs.release_body }}
           releaseDraft: false
           prerelease: false
+          # Publica o `latest.json` que o updater consulta, com a assinatura de
+          # cada plataforma.
+          includeUpdaterJson: ${{ steps.updater.outputs.enabled == 'true' }}
           args: ${{ matrix.args }}
 
       # Proveniência SLSA assinada (Sigstore) para os instaladores publicados

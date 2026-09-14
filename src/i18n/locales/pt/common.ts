@@ -17,6 +17,12 @@ export const common: Localized<typeof CommonEn> = {
     switchToLightTheme: "☀ Tema claro",
     switchToDarkTheme: "🌙 Tema escuro",
   },
+  update: {
+    title: "Versão {{version}} disponível",
+    install: "Atualizar e reiniciar",
+    installing: "Atualizando…",
+    later: "Agora não",
+  },
   panic: {
     title: "Algo falhou de forma inesperada",
     body: "Uma operação interna quebrou. O app continua rodando, mas a ação que a disparou pode não ter sido concluída. Os detalhes estão no arquivo de log.",

@@ -24,6 +24,7 @@ import type {
   Settings,
   SyncCategories,
   SyncQueueSnapshot,
+  UpdateInfo,
   SyncedGame,
   SyncStateSnapshot,
   SyncSummary,
@@ -123,6 +124,16 @@ export function getEmulatorStats(name: string): Promise<EmulatorStats | null> {
 /** Estatísticas acumuladas de todos os emuladores com atividade. */
 export function listEmulatorStats(): Promise<EmulatorStats[]> {
   return invoke<EmulatorStats[]>("list_emulator_stats");
+}
+
+/** Procura uma versão nova; `null` = já está na mais recente. */
+export function checkForUpdates(): Promise<UpdateInfo | null> {
+  return invoke<UpdateInfo | null>("check_for_updates");
+}
+
+/** Baixa, instala e reinicia o app na versão nova. */
+export function installUpdate(): Promise<void> {
+  return invoke<void>("install_update");
 }
 
 /** Fila do sync em andamento; vazia fora de um sync. */

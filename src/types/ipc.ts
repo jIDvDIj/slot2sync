@@ -76,6 +76,13 @@ export interface EmulatorStats {
   lastScanAtMs: number | null;
 }
 
+/** `updates::UpdateInfo` — versão nova encontrada por `check_for_updates` */
+export interface UpdateInfo {
+  version: string;
+  notes: string | null;
+  date: string | null;
+}
+
 /** `sync::queue::QueuedOp` — uma operação da fila do sync em andamento */
 export interface QueuedOp {
   emulator: string;
@@ -353,6 +360,7 @@ export const EVT = {
   EMULATOR_STATUS: "emulator:status",
   APP_PANIC: "app:panic",
   LOG_ENTRY: "log:entry",
+  UPDATE_AVAILABLE: "update:available",
 } as const;
 
 export type EventName = (typeof EVT)[keyof typeof EVT];
