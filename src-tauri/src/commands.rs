@@ -470,6 +470,7 @@ async fn persist_detected(
         .db
         .with(move |conn| emulators::upsert_resetting_on_path_change(conn, &to_store))
         .await?;
+    state.settings.bump();
     if path_reset {
         tracing::info!(
             emulador = %profile.name,
@@ -535,6 +536,7 @@ pub async fn add_emulator_manual(
         .db
         .with(move |conn| emulators::upsert(conn, &to_store))
         .await?;
+    state.settings.bump();
     tracing::info!(emulador = %profile.name, raiz = %profile.root_path.display(), "emulador manual adicionado");
     Ok(profile)
 }
@@ -578,7 +580,9 @@ pub async fn remove_emulator(state: State<'_, AppState>, name: String) -> AppRes
             crate::storage::stats::remove_for_emulator(conn, &name)?;
             queue::remove_for_emulator(conn, &name)
         })
-        .await
+        .await?;
+    state.settings.bump();
+    Ok(())
 }
 
 /// Estatísticas acumuladas de um emulador (uploads, downloads, bytes,
@@ -826,7 +830,9 @@ pub async fn set_emulator_categories(
     state
         .db
         .with(move |conn| emulators::set_categories(conn, &name, &categories))
-        .await
+        .await?;
+    state.settings.bump();
+    Ok(())
 }
 
 /// Define os padrões glob de exclusão de um emulador (arquivos que casam ficam
@@ -849,7 +855,21 @@ pub async fn set_exclude_patterns(
     state
         .db
         .with(move |conn| emulators::set_exclude_patterns(conn, &name, &patterns))
-        .await
+        .await?;
+    state.settings.bump();
+    Ok(())
+}
+
+/// Rejeita valor fora da faixa que a UI oferece. Um comando pode ser chamado
+/// de fora dela, e um valor absurdo persistido só apareceria como
+/// comportamento estranho muito depois.
+fn ensure_range(value: u32, min: u32, max: u32, field: &str) -> AppResult<()> {
+    if value < min || value > max {
+        return Err(AppError::Other(format!(
+            "{field}: {value} fora da faixa aceita ({min}–{max})"
+        )));
+    }
+    Ok(())
 }
 
 /// Sync manual (botão da UI / menu da tray). Bidirecional.
@@ -997,27 +1017,35 @@ pub async fn set_triggers(state: State<'_, AppState>, triggers: TriggerSettings)
     state
         .db
         .with(move |conn| settings::set_triggers(conn, &triggers))
-        .await
+        .await?;
+    state.settings.bump();
+    Ok(())
 }
 
 /// Define a retenção dos backups locais em dias (0 = manter para sempre).
 /// A limpeza roda no próximo startup do app.
 #[tauri::command]
 pub async fn set_backup_retention_days(state: State<'_, AppState>, days: u32) -> AppResult<()> {
+    ensure_range(days, 0, 3650, "retenção de backups (dias)")?;
     state
         .db
         .with(move |conn| settings::set_backup_retention_days(conn, days))
-        .await
+        .await?;
+    state.settings.bump();
+    Ok(())
 }
 
 /// Define o máximo de versões arquivadas por arquivo no histórico
 /// pré-download (mínimo 1).
 #[tauri::command]
 pub async fn set_max_backup_versions(state: State<'_, AppState>, versions: u32) -> AppResult<()> {
+    ensure_range(versions, 1, 50, "versões guardadas por arquivo")?;
     state
         .db
         .with(move |conn| settings::set_max_backup_versions(conn, versions))
-        .await
+        .await?;
+    state.settings.bump();
+    Ok(())
 }
 
 /// Define os limites de banda das transferências em KB/s (0 = ilimitado).
@@ -1028,20 +1056,27 @@ pub async fn set_bandwidth_limits(
     upload_kbps: u32,
     download_kbps: u32,
 ) -> AppResult<()> {
+    ensure_range(upload_kbps, 0, 1_000_000, "limite de envio (kbps)")?;
+    ensure_range(download_kbps, 0, 1_000_000, "limite de download (kbps)")?;
     state
         .db
         .with(move |conn| settings::set_bandwidth_limits(conn, upload_kbps, download_kbps))
-        .await
+        .await?;
+    state.settings.bump();
+    Ok(())
 }
 
 /// Define o intervalo do scan periódico em minutos (0 = desativado). O timer
 /// relê o valor a cada ciclo — não precisa reiniciar o app.
 #[tauri::command]
 pub async fn set_scan_interval_minutes(state: State<'_, AppState>, minutes: u32) -> AppResult<()> {
+    ensure_range(minutes, 0, 1440, "intervalo do scan periódico (minutos)")?;
     state
         .db
         .with(move |conn| settings::set_scan_interval_minutes(conn, minutes))
-        .await
+        .await?;
+    state.settings.bump();
+    Ok(())
 }
 
 /// Define o nível de notificações nativas (all | errors_only | none).
@@ -1053,7 +1088,9 @@ pub async fn set_notification_level(
     state
         .db
         .with(move |conn| settings::set_notification_level(conn, level))
-        .await
+        .await?;
+    state.settings.bump();
+    Ok(())
 }
 
 /// Define o nome amigável deste dispositivo. Obrigatório no login; pode ser
@@ -1069,7 +1106,9 @@ pub async fn set_device_name(state: State<'_, AppState>, name: String) -> AppRes
     state
         .db
         .with(move |conn| settings::set_device_name(conn, &trimmed))
-        .await
+        .await?;
+    state.settings.bump();
+    Ok(())
 }
 
 /// Último sync concluído (para a UI exibir ao montar). `None` se ainda não
@@ -1378,6 +1417,7 @@ mod tests {
             secrets,
             shutdown,
             bus,
+            settings: crate::settings_signal::SettingsSignal::new(),
         });
 
         (app, tmp)
@@ -1776,5 +1816,63 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, AppError::Other(msg) if msg.contains("não configurado")));
+    }
+
+    #[tokio::test]
+    async fn setters_recusam_valores_fora_da_faixa_sem_gravar() {
+        let (app, _tmp) = build_app().await;
+        let state = app.state::<AppState>();
+
+        assert!(set_scan_interval_minutes(app.state(), 1441).await.is_err());
+        assert!(set_backup_retention_days(app.state(), 3651).await.is_err());
+        assert!(set_max_backup_versions(app.state(), 0).await.is_err());
+        assert!(set_bandwidth_limits(app.state(), 1_000_001, 0)
+            .await
+            .is_err());
+
+        let stored = state.db.with(settings::load).await.unwrap();
+        assert_eq!(
+            stored.scan_interval_minutes,
+            crate::constants::SCAN_INTERVAL_MINUTES_DEFAULT
+        );
+        assert_eq!(
+            stored.max_backup_versions,
+            crate::constants::MAX_BACKUP_VERSIONS_DEFAULT
+        );
+    }
+
+    #[tokio::test]
+    async fn setters_aceitam_os_extremos_da_faixa() {
+        let (app, _tmp) = build_app().await;
+
+        set_scan_interval_minutes(app.state(), 0).await.unwrap();
+        set_scan_interval_minutes(app.state(), 1440).await.unwrap();
+        set_max_backup_versions(app.state(), 1).await.unwrap();
+        set_max_backup_versions(app.state(), 50).await.unwrap();
+        set_backup_retention_days(app.state(), 3650).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn salvar_configuracao_acorda_quem_espera() {
+        let (app, _tmp) = build_app().await;
+        let mut watch = app.state::<AppState>().settings.subscribe();
+
+        set_scan_interval_minutes(app.state(), 30).await.unwrap();
+
+        watch.changed().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn configuracao_recusada_nao_acorda_ninguem() {
+        let (app, _tmp) = build_app().await;
+        let mut watch = app.state::<AppState>().settings.subscribe();
+
+        assert!(set_scan_interval_minutes(app.state(), 5000).await.is_err());
+
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), watch.changed())
+                .await
+                .is_err()
+        );
     }
 }
