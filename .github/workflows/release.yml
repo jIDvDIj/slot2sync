@@ -148,7 +148,7 @@ jobs:
       - name: Definir SOURCE_DATE_EPOCH
         run: echo "SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)" >> "$GITHUB_ENV"
 
-      - uses: actions/setup-java@v5.6.0
+      - uses: actions/setup-java@v6.0.1
         with:
           java-version: "17"
           distribution: temurin
@@ -385,7 +385,7 @@ jobs:
       # sem correspondência nesta matriz específica são ignorados, desde que
       # ao menos um arquivo bata em algum deles.
       - name: Assinar proveniência de build (SLSA)
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: |
             src-tauri/target/**/release/bundle/**/*.dmg
