@@ -11,7 +11,7 @@ export const auth: Localized<typeof AuthEn> = {
     comingSoon: "Em breve",
     folderPathLabel: "Pasta",
     folderPathPlaceholder: "ex.: D:\\Slot2Sync ou \\\\servidor\\compartilhamento",
-    chooseFolder: "Escolher pasta…",
+    chooseFolder: "Escolher pasta",
     folderPickerTitle: "Escolha onde o Slot2Sync guarda seus saves",
     deviceHint: "Aparece ao lado de cada save, para você saber qual dispositivo o alterou.",
     permissionNote:

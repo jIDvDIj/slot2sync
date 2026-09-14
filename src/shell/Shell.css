@@ -217,6 +217,7 @@
 }
 
 .sidebar-account-text {
+  flex: 1;
   display: grid;
   min-width: 0;
   font-size: var(--text-callout);

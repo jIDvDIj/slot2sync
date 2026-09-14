@@ -43,7 +43,7 @@ export const library = {
     folderHintMobile:
       "Grant access to the folder where the emulator keeps its saves (for example, PSP/ for PPSSPP).",
     noFolder: "No folder selected",
-    chooseFolder: "Choose Folder…",
+    chooseFolder: "Choose Folder",
     folderGranted: "Folder access granted",
     pickRootTitle: "Choose the emulator's root folder",
     pickSubTitle: "Choose a folder inside the root folder",
@@ -53,7 +53,7 @@ export const library = {
     nameLabel: "Name",
     namePlaceholder: "For example, Dolphin",
     foldersTitle: "Folders to Sync",
-    chooseSubfolder: "Choose Subfolder…",
+    chooseSubfolder: "Choose Subfolder",
     relativePathPlaceholder: "For example, PSP/SAVEDATA",
     subfolderError: "Choose a folder inside the root folder.",
     addManual: "Add Emulator",

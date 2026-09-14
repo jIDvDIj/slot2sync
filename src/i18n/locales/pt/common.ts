@@ -34,6 +34,13 @@ export const common: Localized<typeof CommonEn> = {
     issues_one: "{{count}} item precisa de atenção",
     issues_other: "{{count}} itens precisam de atenção",
   },
+  signOut: {
+    button: "Sair",
+    title: "Sair do Slot2Sync?",
+    message:
+      "A sincronização para até você entrar de novo. Nenhum arquivo é apagado neste dispositivo nem no armazenamento remoto.",
+    confirm: "Sair",
+  },
   status: {
     conflict: "Conflito",
     syncing: "Sincronizando",
@@ -45,7 +52,7 @@ export const common: Localized<typeof CommonEn> = {
   },
   syncBar: {
     syncNow: "Sincronizar agora",
-    syncing: "Sincronizando…",
+    syncing: "Sincronizando",
     syncingPercent: "Sincronizando {{percent}}%",
     synced: "Sincronizado",
     lastSynced: "Última sincronização {{when}}",
@@ -77,7 +84,7 @@ export const common: Localized<typeof CommonEn> = {
   update: {
     title: "Slot2Sync {{version}} disponível",
     install: "Atualizar e reiniciar",
-    installing: "Atualizando…",
+    installing: "Atualizando",
     later: "Agora não",
   },
   panic: {

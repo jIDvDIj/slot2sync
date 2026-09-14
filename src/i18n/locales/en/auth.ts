@@ -8,7 +8,7 @@ export const auth = {
     comingSoon: "Coming Soon",
     folderPathLabel: "Folder",
     folderPathPlaceholder: "e.g. D:\\Slot2Sync or \\\\server\\share",
-    chooseFolder: "Choose Folder…",
+    chooseFolder: "Choose Folder",
     folderPickerTitle: "Choose where Slot2Sync keeps your saves",
     deviceHint: "Shown next to every save, so you can tell which device changed it.",
     permissionNote:

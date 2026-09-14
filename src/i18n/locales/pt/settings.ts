@@ -75,7 +75,7 @@ export const settings: Localized<typeof SettingsEn> = {
       title: "Armazenamento remoto",
       label: "Provedor",
       none: "Não conectado",
-      change: "Trocar provedor…",
+      change: "Trocar provedor",
       confirmTitle: "Trocar o provedor de armazenamento?",
       confirmMessage:
         "Você volta para a tela de login para escolher outro provedor. Nenhum arquivo é apagado neste dispositivo nem no armazenamento remoto.",
@@ -96,7 +96,7 @@ export const settings: Localized<typeof SettingsEn> = {
       versionsRange: "Informe um número inteiro de 1 a 50.",
       historyLabel: "Histórico de backups",
       historyDescription: "Veja as versões arquivadas e restaure uma delas.",
-      history: "Histórico de backups…",
+      history: "Histórico de backups",
       showInFolder: "Mostrar na pasta",
     },
     diagnostics: {
@@ -104,12 +104,12 @@ export const settings: Localized<typeof SettingsEn> = {
       footer:
         "O arquivo de diagnóstico reúne configurações, estado da sincronização e o final do log de hoje para um relato de bug. Credenciais nunca saem deste dispositivo.",
       exportLabel: "Arquivo de diagnóstico",
-      export: "Exportar diagnóstico…",
-      exporting: "Exportando…",
+      export: "Exportar diagnóstico",
+      exporting: "Exportando",
       exported: "Salvo em {{path}}",
       logLabel: "Log da sessão",
       logDescription: "Linhas recentes do log, atualizadas ao vivo.",
-      showLog: "Mostrar log…",
+      showLog: "Mostrar log",
     },
   },
   activity: {
@@ -119,7 +119,7 @@ export const settings: Localized<typeof SettingsEn> = {
       title: "Precisa de atenção",
       conflicts_one: "{{count}} arquivo mudou neste dispositivo e no armazenamento remoto",
       conflicts_other: "{{count}} arquivos mudaram neste dispositivo e no armazenamento remoto",
-      resolve: "Resolver…",
+      resolve: "Resolver",
       failedDetail_one: "{{emulator}} · {{direction}} · parou após {{count}} tentativa",
       failedDetail_other: "{{emulator}} · {{direction}} · parou após {{count}} tentativas",
       retry: "Tentar novamente",

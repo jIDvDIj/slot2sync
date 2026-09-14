@@ -33,6 +33,7 @@ export function StorageSettings({
   const { t } = useTranslation();
   const errorMessage = useErrorMessage();
   const [confirmChange, setConfirmChange] = useState(false);
+  const [confirmSignOut, setConfirmSignOut] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [logOpen, setLogOpen] = useState(false);
   const [folderError, setFolderError] = useState<string | null>(null);
@@ -76,6 +77,15 @@ export function StorageSettings({
           }
           control={
             <Button onClick={() => setConfirmChange(true)}>{t("settings.provider.change")}</Button>
+          }
+        />
+        <FormRow
+          label={t("signOut.button")}
+          description={t("signOut.message")}
+          control={
+            <Button variant="destructive" icon="power" onClick={() => setConfirmSignOut(true)}>
+              {t("signOut.button")}
+            </Button>
           }
         />
       </FormSection>
@@ -172,6 +182,18 @@ export function StorageSettings({
         onCancel={() => setConfirmChange(false)}
         onConfirm={() => {
           setConfirmChange(false);
+          onDisconnectProvider();
+        }}
+      />
+      <ConfirmDialog
+        open={confirmSignOut}
+        title={t("signOut.title")}
+        message={t("signOut.message")}
+        confirmLabel={t("signOut.confirm")}
+        destructive
+        onCancel={() => setConfirmSignOut(false)}
+        onConfirm={() => {
+          setConfirmSignOut(false);
           onDisconnectProvider();
         }}
       />

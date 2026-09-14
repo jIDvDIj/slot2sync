@@ -31,6 +31,13 @@ export const common = {
     issues_one: "{{count}} item needs attention",
     issues_other: "{{count}} items need attention",
   },
+  signOut: {
+    button: "Sign Out",
+    title: "Sign out of Slot2Sync?",
+    message:
+      "Syncing stops until you sign in again. No files are deleted on this device or in remote storage.",
+    confirm: "Sign Out",
+  },
   status: {
     conflict: "Conflict",
     syncing: "Syncing",
@@ -42,7 +49,7 @@ export const common = {
   },
   syncBar: {
     syncNow: "Sync Now",
-    syncing: "Syncing…",
+    syncing: "Syncing",
     syncingPercent: "Syncing {{percent}}%",
     synced: "Synced",
     lastSynced: "Last synced {{when}}",
@@ -74,7 +81,7 @@ export const common = {
   update: {
     title: "Slot2Sync {{version}} is available",
     install: "Update and Restart",
-    installing: "Updating…",
+    installing: "Updating",
     later: "Not Now",
   },
   panic: {

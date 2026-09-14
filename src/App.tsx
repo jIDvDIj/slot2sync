@@ -235,6 +235,7 @@ function MainScreen({ auth, settings, reloadSettings, appearance, banners }: Mai
           provider={settings?.storageProvider ?? null}
           email={auth.status?.email ?? null}
           onAddEmulator={openAddEmulator}
+          onSignOut={() => void auth.disconnect()}
         />
       ) : null}
 

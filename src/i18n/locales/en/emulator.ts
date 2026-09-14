@@ -73,7 +73,7 @@ export const emulators = {
     heading: "Remove Emulator",
     description:
       "Stops syncing this emulator. Files on this device and in remote storage are kept.",
-    button: "Remove from Sync…",
+    button: "Remove from Sync",
     confirmTitle: "Remove {{emulator}} from sync?",
     confirmMessage:
       "Slot2Sync will stop syncing this emulator. No files are deleted on this device or in remote storage, and you can add it again at any time.",

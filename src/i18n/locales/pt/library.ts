@@ -46,7 +46,7 @@ export const library: Localized<typeof LibraryEn> = {
     folderHintMobile:
       "Conceda acesso à pasta onde o emulador guarda os saves (por exemplo, PSP/ para o PPSSPP).",
     noFolder: "Nenhuma pasta selecionada",
-    chooseFolder: "Escolher pasta…",
+    chooseFolder: "Escolher pasta",
     folderGranted: "Acesso à pasta concedido",
     pickRootTitle: "Escolha a pasta raiz do emulador",
     pickSubTitle: "Escolha uma pasta dentro da pasta raiz",
@@ -56,7 +56,7 @@ export const library: Localized<typeof LibraryEn> = {
     nameLabel: "Nome",
     namePlaceholder: "Por exemplo, Dolphin",
     foldersTitle: "Pastas a sincronizar",
-    chooseSubfolder: "Escolher subpasta…",
+    chooseSubfolder: "Escolher subpasta",
     relativePathPlaceholder: "Por exemplo, PSP/SAVEDATA",
     subfolderError: "Escolha uma pasta dentro da pasta raiz.",
     addManual: "Adicionar emulador",

@@ -1,8 +1,9 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
 import logo from "../assets/logo.png";
 import { Button } from "../components/ui/Button";
+import { ConfirmDialog } from "../components/ui/Dialog";
 import { Icon, type IconName } from "../components/ui/Icon";
 import { useEmulatorCategories } from "../hooks/useEmulatorCategories";
 import { ariaShortcut, shortcutLabel, type Shortcut } from "../hooks/useShortcut";
@@ -28,6 +29,7 @@ interface SidebarProps {
   provider: ProviderKind | null;
   email: string | null;
   onAddEmulator: () => void;
+  onSignOut: () => void;
 }
 
 export function Sidebar({
@@ -43,8 +45,10 @@ export function Sidebar({
   provider,
   email,
   onAddEmulator,
+  onSignOut,
 }: SidebarProps) {
   const { t } = useTranslation();
+  const [confirmSignOut, setConfirmSignOut] = useState(false);
 
   return (
     <aside className="sidebar" aria-label={t("nav.sidebar")} inert={hidden}>
@@ -139,8 +143,30 @@ export function Sidebar({
               </span>
             ) : null}
           </div>
+          <Button
+            variant="plain"
+            size="small"
+            icon="power"
+            aria-label={t("signOut.button")}
+            title={t("signOut.button")}
+            onClick={() => setConfirmSignOut(true)}
+            className="sidebar-sign-out"
+          />
         </div>
       </div>
+
+      <ConfirmDialog
+        open={confirmSignOut}
+        title={t("signOut.title")}
+        message={t("signOut.message")}
+        confirmLabel={t("signOut.confirm")}
+        destructive
+        onCancel={() => setConfirmSignOut(false)}
+        onConfirm={() => {
+          setConfirmSignOut(false);
+          onSignOut();
+        }}
+      />
     </aside>
   );
 }

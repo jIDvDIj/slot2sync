@@ -76,7 +76,7 @@ export const emulators: Localized<typeof EmulatorsEn> = {
     heading: "Remover emulador",
     description:
       "Para de sincronizar este emulador. Os arquivos neste dispositivo e no armazenamento remoto são mantidos.",
-    button: "Remover da sincronização…",
+    button: "Remover da sincronização",
     confirmTitle: "Remover {{emulator}} da sincronização?",
     confirmMessage:
       "O Slot2Sync vai parar de sincronizar este emulador. Nenhum arquivo é apagado neste dispositivo nem no armazenamento remoto, e você pode adicioná-lo de novo quando quiser.",

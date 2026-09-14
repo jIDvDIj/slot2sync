@@ -70,7 +70,7 @@ export const settings = {
       title: "Remote Storage",
       label: "Provider",
       none: "Not connected",
-      change: "Change Provider…",
+      change: "Change Provider",
       confirmTitle: "Change storage provider?",
       confirmMessage:
         "You'll go back to the sign-in screen to choose another provider. No files are deleted on this device or in remote storage.",
@@ -90,7 +90,7 @@ export const settings = {
       versionsRange: "Enter a whole number from 1 to 50.",
       historyLabel: "Backup history",
       historyDescription: "Browse archived versions and restore one.",
-      history: "Backup History…",
+      history: "Backup History",
       showInFolder: "Show in Folder",
     },
     diagnostics: {
@@ -98,12 +98,12 @@ export const settings = {
       footer:
         "The diagnostics file bundles settings, sync state and the end of today's log for a bug report. Credentials never leave this device.",
       exportLabel: "Diagnostics file",
-      export: "Export Diagnostics…",
-      exporting: "Exporting…",
+      export: "Export Diagnostics",
+      exporting: "Exporting",
       exported: "Saved to {{path}}",
       logLabel: "Session log",
       logDescription: "Recent log lines, updated live.",
-      showLog: "Show Log…",
+      showLog: "Show Log",
     },
   },
   activity: {
@@ -113,7 +113,7 @@ export const settings = {
       title: "Needs Attention",
       conflicts_one: "{{count}} file changed on this device and in remote storage",
       conflicts_other: "{{count}} files changed on this device and in remote storage",
-      resolve: "Resolve…",
+      resolve: "Resolve",
       failedDetail_one: "{{emulator}} · {{direction}} · stopped after {{count}} attempt",
       failedDetail_other: "{{emulator}} · {{direction}} · stopped after {{count}} attempts",
       retry: "Try Again",
