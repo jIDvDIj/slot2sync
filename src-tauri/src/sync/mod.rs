@@ -10,6 +10,7 @@ mod diff;
 mod engine;
 #[cfg(mobile)]
 pub mod mobile_storage;
+pub mod queue;
 // `not(windows)`: o MockRuntime do tauri quebra o exe de teste no Windows
 // (STATUS_ENTRYPOINT_NOT_FOUND); os cenários rodam no Linux/macOS, onde a
 // cobertura também é medida.

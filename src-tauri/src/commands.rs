@@ -1157,6 +1157,21 @@ pub fn get_sync_state(state: State<'_, AppState>) -> SyncStateSnapshot {
     }
 }
 
+/// Fila do sync em andamento: o que está em voo e o que ainda não começou.
+/// Vazia fora de um sync — ela existe só durante a rodada de uma categoria.
+#[tauri::command]
+pub fn get_sync_queue(state: State<'_, AppState>) -> crate::sync::queue::SyncQueueSnapshot {
+    state.engine.queue().snapshot()
+}
+
+/// Antecipa um arquivo da fila do sync em andamento. `false` = não está mais
+/// na fila (já transferido, ou já em voo, quando não há o que antecipar).
+/// Distinto de `bump_pending_op`, que prioriza na fila offline de pendências.
+#[tauri::command]
+pub fn bring_to_front(state: State<'_, AppState>, emulator: String, rel_path: String) -> bool {
+    state.engine.queue().bring_to_front(&emulator, &rel_path)
+}
+
 /// Ação "tentar novamente" da fila offline: zera as tentativas e o backoff de
 /// um arquivo (inclusive pendências mortas), liberando a retentativa no próximo
 /// sync.

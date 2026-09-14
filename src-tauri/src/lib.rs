@@ -361,6 +361,8 @@ pub fn run() {
             commands::list_conflicts,
             commands::resolve_conflict,
             commands::list_pending_ops,
+            commands::get_sync_queue,
+            commands::bring_to_front,
             commands::get_sync_state,
             commands::get_recent_errors,
             commands::clear_errors,
