@@ -24,6 +24,7 @@ pub fn setup(
     engine: Arc<SyncEngine>,
     shutdown: ShutdownHandle,
     bus: EventBus,
+    settings: &crate::settings_signal::SettingsSignal,
 ) -> Result<(), Box<dyn std::error::Error>> {
     setup_tray(app.handle())?;
     maybe_show_window(app.handle());
@@ -40,8 +41,9 @@ pub fn setup(
         engine.clone(),
         running.clone(),
         shutdown.clone(),
+        settings.subscribe(),
     );
-    crate::watcher::fs_watcher::start(db.clone(), engine, running, shutdown);
+    crate::watcher::fs_watcher::start(db.clone(), engine, running, shutdown, settings.subscribe());
     setup_default_autostart(app.handle().clone(), db);
     Ok(())
 }
@@ -182,6 +184,7 @@ fn start_scheduled_scan(
     engine: Arc<SyncEngine>,
     running: crate::watcher::RunningEmulators,
     shutdown: ShutdownHandle,
+    mut settings: crate::settings_signal::SettingsWatch,
 ) {
     use rand::Rng;
     let tracker = shutdown.tracker.clone();
@@ -199,16 +202,20 @@ fn start_scheduled_scan(
                 tokio::select! {
                     _ = tokio::time::sleep(std::time::Duration::from_secs(60)) => continue,
                     _ = shutdown.token.cancelled() => return,
+                    Ok(()) = settings.changed() => continue,
                 }
             }
 
             let jitter = rand::rng().random_range(0.75..1.25);
             let delay = std::time::Duration::from_secs_f64(f64::from(minutes) * 60.0 * jitter);
             // Esperas longas (dezenas de minutos) não podem segurar a saída do
-            // app: o cancelamento acorda o sleep imediatamente.
+            // app: o cancelamento acorda o sleep imediatamente. Uma troca de
+            // configuração também acorda — senão o intervalo novo só valeria
+            // depois de esgotado o antigo.
             tokio::select! {
                 _ = tokio::time::sleep(delay) => {}
                 _ = shutdown.token.cancelled() => return,
+                Ok(()) = settings.changed() => continue,
             }
 
             let busy = running.lock().map(|set| !set.is_empty()).unwrap_or(false);

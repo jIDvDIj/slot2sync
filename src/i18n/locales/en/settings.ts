@@ -92,9 +92,20 @@ export const settings = {
       heading: "Diagnostics",
       hint: "Bundles settings, sync state and the tail of today's log into a .zip you can attach to a bug report. Credentials never leave this device — only file paths and sync metadata are included.",
       export: "Export diagnostics",
+      viewLog: "View log",
       exporting: "Exporting…",
       exported: "Saved to {{path}}",
     },
+  },
+  logViewer: {
+    title: "Session log",
+    intro:
+      "The last lines of the log on disk, plus new ones as they happen. No credentials are ever logged here.",
+    levelLabel: "Minimum level",
+    copyAll: "Copy all",
+    copied: "Copied",
+    copyFailed: "Couldn't copy. The text is selected — use Ctrl+C.",
+    empty: "No log lines yet.",
   },
   backupHistory: {
     title: "Backup history",
@@ -105,6 +116,10 @@ export const settings = {
     restored: "Restored",
     filterLabel: "Filter",
     filterPlaceholder: "e.g. PPSSPP or SAVE.bin",
+    fromLabel: "From",
+    toLabel: "To",
+    versions_one: "{{count}} version",
+    versions_other: "{{count}} versions",
     empty: "No backups yet.",
   },
   addEmulator: {

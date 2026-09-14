@@ -76,6 +76,53 @@ export interface EmulatorStats {
   lastScanAtMs: number | null;
 }
 
+/** `updates::UpdateInfo` — versão nova encontrada por `check_for_updates` */
+export interface UpdateInfo {
+  version: string;
+  notes: string | null;
+  date: string | null;
+}
+
+/** `sync::queue::QueuedOp` — uma operação da fila do sync em andamento */
+export interface QueuedOp {
+  emulator: string;
+  category: "saves" | "savestates" | "config";
+  relPath: string;
+  action: "upload" | "download" | "download-with-backup" | "conflict" | "noop";
+  sizeBytes: number;
+}
+
+/** `sync::queue::SyncQueueSnapshot` — retorno de `get_sync_queue` */
+export interface SyncQueueSnapshot {
+  inProgress: QueuedOp[];
+  queued: QueuedOp[];
+}
+
+/** `logs::LogEntry` — uma linha de log para a janela de diagnóstico */
+export interface LogEntry {
+  timestamp: string;
+  /** `TRACE` | `DEBUG` | `INFO` | `WARN` | `ERROR`. */
+  level: string;
+  target: string;
+  message: string;
+}
+
+/** `commands::EmulatorSummary` — retrato do emulador para o card */
+export interface EmulatorSummary {
+  emulator: string;
+  /** Arquivos encontrados agora no disco, nas categorias ativas. */
+  localFiles: number;
+  localBytes: number;
+  /** O que o manifest sabe existir no provedor remoto (sem chamada de rede). */
+  remoteFiles: number;
+  remoteBytes: number;
+  /** Estimativa por mtime de quantos arquivos estão fora de dia. */
+  needSync: number;
+  state: SyncStateKind;
+  lastSyncAtMs: number | null;
+  pendingOps: number;
+}
+
 /** `versioning::FileVersion` — versão arquivada de um arquivo no histórico */
 export interface FileVersion {
   /** Carimbo `YYYYMMDD-HHMMSS` extraído do nome arquivado. */
@@ -165,6 +212,10 @@ export interface BackupEntry {
   run: string;
   category: string;
   relPath: string;
+  /** `relPath` sem o carimbo de versão; chave de agrupamento das versões. */
+  originalRelPath: string;
+  /** Carimbo `YYYYMMDD-HHMMSS`, quando o nome é versionado. */
+  stamp: string | null;
   sizeBytes: number;
   modifiedAtMs: number;
   absPath: string;
@@ -308,6 +359,8 @@ export const EVT = {
   AUTH_STATUS: "auth:status",
   EMULATOR_STATUS: "emulator:status",
   APP_PANIC: "app:panic",
+  LOG_ENTRY: "log:entry",
+  UPDATE_AVAILABLE: "update:available",
 } as const;
 
 export type EventName = (typeof EVT)[keyof typeof EVT];

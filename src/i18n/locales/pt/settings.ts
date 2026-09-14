@@ -96,9 +96,20 @@ export const settings: Localized<typeof SettingsEn> = {
       heading: "Diagnóstico",
       hint: "Empacota configurações, estado do sync e o final do log de hoje num .zip para anexar a um relato de bug. Credenciais nunca saem deste dispositivo — só caminhos de arquivo e metadados de sync entram.",
       export: "Exportar diagnóstico",
+      viewLog: "Ver log",
       exporting: "Exportando…",
       exported: "Salvo em {{path}}",
     },
+  },
+  logViewer: {
+    title: "Log da sessão",
+    intro:
+      "As últimas linhas do log em disco, e as novas conforme acontecem. Nenhuma credencial é registrada aqui.",
+    levelLabel: "Nível mínimo",
+    copyAll: "Copiar tudo",
+    copied: "Copiado",
+    copyFailed: "Não foi possível copiar. O texto está selecionado — use Ctrl+C.",
+    empty: "Nenhuma linha de log ainda.",
   },
   backupHistory: {
     title: "Histórico de backups",
@@ -109,6 +120,10 @@ export const settings: Localized<typeof SettingsEn> = {
     restored: "Restaurado",
     filterLabel: "Filtrar",
     filterPlaceholder: "ex.: PPSSPP ou SAVE.bin",
+    fromLabel: "De",
+    toLabel: "Até",
+    versions_one: "{{count}} versão",
+    versions_other: "{{count}} versões",
     empty: "Nenhum backup ainda.",
   },
   addEmulator: {

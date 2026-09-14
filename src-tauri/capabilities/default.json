@@ -4,5 +4,5 @@
   "description": "Capability for the main window (desktop)",
   "platforms": ["linux", "windows", "macOS"],
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:default", "notification:default"]
+  "permissions": ["core:default", "dialog:default", "notification:default", "updater:default"]
 }

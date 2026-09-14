@@ -9,8 +9,10 @@ import { EmulatorCard } from "./components/EmulatorCard";
 import { LoginScreen } from "./components/LoginScreen";
 import { SettingsModal } from "./components/SettingsModal";
 import { SyncStatus } from "./components/SyncStatus";
+import { UpdateBanner } from "./components/UpdateBanner";
 import { Button } from "./components/ui/Button";
 import { useAppPanic } from "./hooks/useAppPanic";
+import { useUpdate } from "./hooks/useUpdate";
 import { useAuth } from "./hooks/useAuth";
 import { useConflicts } from "./hooks/useConflicts";
 import { useEmulators } from "./hooks/useEmulators";
@@ -27,14 +29,20 @@ function App() {
   const { settings, reload: reloadSettings } = useSettings();
   const theme = useTheme();
   const { panic, dismiss: dismissPanic } = useAppPanic();
+  const { update, dismiss: dismissUpdate } = useUpdate();
 
-  const panicBanner = panic ? <PanicBanner panic={panic} onDismiss={dismissPanic} /> : null;
+  const banners = (
+    <>
+      {panic ? <PanicBanner panic={panic} onDismiss={dismissPanic} /> : null}
+      {update ? <UpdateBanner update={update} onDismiss={dismissUpdate} /> : null}
+    </>
+  );
 
   // Enquanto o status de auth não chega, não decide qual tela mostrar.
   if (auth.loading) {
     return (
       <main className="login-screen">
-        {panicBanner}
+        {banners}
         <p className="muted">{t("app.checkingConnection")}</p>
       </main>
     );
@@ -44,7 +52,7 @@ function App() {
   if (!auth.connected) {
     return (
       <>
-        {panicBanner}
+        {banners}
         <LoginScreen
           initialDeviceName={settings?.deviceName ?? null}
           onConnected={(status) => {
@@ -60,7 +68,7 @@ function App() {
 
   return (
     <>
-      {panicBanner}
+      {banners}
       <MainScreen auth={auth} settings={settings} reloadSettings={reloadSettings} theme={theme} />
     </>
   );

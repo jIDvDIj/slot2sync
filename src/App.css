@@ -792,6 +792,92 @@ progress.sync-bar::-moz-progress-bar {
   color: var(--rs-color-text-muted);
 }
 
+.backup-range {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--rs-space-3);
+}
+
+.backup-range .field {
+  flex: 1 1 var(--rs-space-14);
+}
+
+.backup-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rs-space-1);
+}
+
+.backup-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--rs-space-3);
+  width: 100%;
+  min-height: var(--rs-space-11);
+  border: 1px solid var(--rs-color-border);
+  border-radius: var(--rs-radius-md);
+  background-color: var(--rs-color-surface-alt);
+  padding: var(--rs-space-2) var(--rs-space-3);
+  font-size: var(--rs-font-sm);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color var(--rs-motion-fast) var(--rs-ease-state),
+    color var(--rs-motion-fast) var(--rs-ease-state);
+}
+
+.backup-group-head:hover {
+  border-color: var(--rs-color-brand);
+  color: var(--rs-color-text);
+}
+
+.backup-version {
+  margin-left: var(--rs-space-4);
+}
+
+/* Janela de log (diagnóstico) */
+.log-controls {
+  align-items: flex-end;
+  gap: var(--rs-space-3);
+}
+
+.log-area {
+  width: 100%;
+  min-height: var(--rs-space-14);
+  height: 50vh;
+  resize: vertical;
+  border: 1px solid var(--rs-color-border);
+  border-radius: var(--rs-radius-md);
+  background-color: var(--rs-color-surface-alt);
+  color: var(--rs-color-text);
+  padding: var(--rs-space-3);
+  font-family: var(--rs-font-mono);
+  font-size: var(--rs-font-xs);
+  white-space: pre;
+  overflow: auto;
+}
+
+/* Aviso de versão nova disponível */
+.update-banner {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--rs-space-4);
+  border: 1px solid var(--rs-color-brand);
+  border-radius: var(--rs-radius-md);
+  background-color: var(--rs-color-surface-alt);
+  padding: var(--rs-space-3) var(--rs-space-4);
+  margin-bottom: var(--rs-space-3);
+}
+
+.update-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--rs-space-2);
+}
+
 /* Aviso de panic do backend: fica no topo de qualquer tela, inclusive a de
    login, porque um panic pode ocorrer antes de o usuário se conectar. */
 .panic-banner {

@@ -11,7 +11,6 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use futures::stream::{self, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, Semaphore};
 use tokio_util::sync::CancellationToken;
@@ -156,7 +155,7 @@ pub type LastSyncStore = Arc<std::sync::Mutex<Option<LastSync>>>;
 
 enum OpOutcome {
     /// A entrada do manifest vem junto para ser gravada em lote depois do
-    /// `buffer_unordered` da categoria, em vez de um `upsert` por arquivo.
+    /// rodada da categoria, em vez de um `upsert` por arquivo.
     Uploaded(Option<ManifestEntry>),
     Downloaded(Option<ManifestEntry>),
     /// Download que também gerou um backup local (primeiro sync).
@@ -256,6 +255,9 @@ pub struct SyncEngine {
     /// `get_recent_errors`/`clear_errors`. Perdido a cada reinício do app —
     /// não é persistido, é só um retrato rápido pra diagnóstico.
     recent_errors: std::sync::Mutex<std::collections::VecDeque<ErrorEntry>>,
+    /// Fila da categoria em voo, exposta à UI por `get_sync_queue` e
+    /// reordenável por `bring_to_front`. Vazia fora de um sync.
+    queue: Arc<super::queue::SyncQueue>,
     /// Sinaliza que o app está encerrando. Consultado antes de cada operação
     /// do plano: cancelado, o restante do plano é abandonado em vez de ser
     /// interrompido no meio de uma transferência. Compartilhado com o watcher
@@ -291,6 +293,7 @@ impl SyncEngine {
             network_ops: Semaphore::new(MAX_NETWORK_OPS),
             disk_io: Semaphore::new(MAX_DISK_WRITES),
             current_state: std::sync::Mutex::new((SyncState::Idle, None)),
+            queue: Arc::new(super::queue::SyncQueue::default()),
             recent_errors: std::sync::Mutex::new(std::collections::VecDeque::new()),
             cancel: CancellationToken::new(),
         }
@@ -407,12 +410,16 @@ impl SyncEngine {
             .unwrap_or(false)
     }
 
-    /// Acesso ao armazenamento local — usado pela detecção automática mobile
-    /// (`commands::detect_emulator_mobile`), que precisa checar existência de
-    /// pastas via SAF fora do fluxo normal de sync.
-    #[cfg(mobile)]
+    /// Acesso ao armazenamento local para quem precisa varrer o disco fora do
+    /// fluxo normal de sync: a detecção automática mobile
+    /// (`commands::detect_emulator_mobile`) e o resumo por emulador
+    /// (`commands::get_emulator_summary`).
     pub fn storage(&self) -> &Arc<dyn LocalStorage> {
         &self.storage
+    }
+
+    pub fn queue(&self) -> &Arc<super::queue::SyncQueue> {
+        &self.queue
     }
 
     /// Sincroniza todos os emuladores configurados.
@@ -858,25 +865,43 @@ impl SyncEngine {
             // e o que o batch não conseguir seguem pelo caminho per-file abaixo.
             let plan = self.batch_new_uploads(&ctx, plan, &mut summary).await;
 
-            // Além do teto de contagem do `buffer_unordered` abaixo, um
-            // semáforo ponderado por bytes evita que poucos arquivos grandes
+            // Além do teto de workers abaixo, um semáforo ponderado por bytes
+            // evita que poucos arquivos grandes
             // (savestates) monopolizem as vagas de um jeito que um monte de
             // saves pequenos jamais faria — cada op só roda depois de
             // reservar seu peso em bytes (até o teto do semáforo inteiro).
             let bytes_semaphore = Semaphore::new(MAX_BYTES_IN_FLIGHT as usize);
-            let transfers = stream::iter(plan.into_iter().map(|op| {
-                let (bytes_semaphore, ctx) = (&bytes_semaphore, &ctx);
-                async move {
-                    let weight = op_bytes(&op).max(1).min(MAX_BYTES_IN_FLIGHT as u64) as u32;
-                    let _permit = bytes_semaphore
-                        .acquire_many(weight)
-                        .await
-                        .expect("semáforo de bytes em trânsito nunca é fechado");
-                    self.execute_op(ctx, op).await
-                }
-            }))
-            .buffer_unordered(DRIVE_MAX_CONCURRENT_TRANSFERS)
-            .collect::<Vec<_>>();
+            // A fila é drenada por um número fixo de workers em vez de um
+            // `buffer_unordered` sobre o plano. O paralelismo é o mesmo; o que
+            // muda é a fila existir como objeto, inspecionável e reordenável
+            // pela UI enquanto o sync corre (ver `sync::queue`).
+            self.queue.load(&target.label, *category, plan);
+            let transfers = async {
+                let workers = (0..DRIVE_MAX_CONCURRENT_TRANSFERS).map(|_| {
+                    let (bytes_semaphore, ctx) = (&bytes_semaphore, &ctx);
+                    async move {
+                        let mut outcomes = Vec::new();
+                        while let Some(op) = self.queue.take_next() {
+                            let rel_path = op.rel_path.clone();
+                            let weight =
+                                op_bytes(&op).max(1).min(MAX_BYTES_IN_FLIGHT as u64) as u32;
+                            let permit = bytes_semaphore
+                                .acquire_many(weight)
+                                .await
+                                .expect("semáforo de bytes em trânsito nunca é fechado");
+                            outcomes.push(self.execute_op(ctx, op).await);
+                            drop(permit);
+                            self.queue.finish(&rel_path);
+                        }
+                        outcomes
+                    }
+                });
+                futures::future::join_all(workers)
+                    .await
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+            };
 
             // Retrato consolidado a cada 500ms em vez de um evento por
             // arquivo — um sync de 200 arquivos não devia inundar o frontend
@@ -899,6 +924,7 @@ impl SyncEngine {
                 outcomes = transfers => outcomes,
                 _ = ticker => unreachable!("o ticker nunca termina sozinho"),
             };
+            self.queue.clear();
             // Retrato final garantido (completed == total) mesmo que o
             // último arquivo tenha terminado entre dois ticks do timer.
             self.emit_progress_snapshot(&ctx);
@@ -2199,7 +2225,7 @@ struct PreparedBatchOp {
 
 /// Bytes que a op vai transferir — tamanho local para uploads, tamanho
 /// remoto para downloads; conflitos/no-ops não transferem nada.
-fn op_bytes(op: &PlannedOp) -> u64 {
+pub(super) fn op_bytes(op: &PlannedOp) -> u64 {
     match op.action {
         SyncAction::Upload => op
             .local

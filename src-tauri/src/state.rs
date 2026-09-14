@@ -7,6 +7,7 @@ use std::sync::{Arc, RwLock};
 use crate::auth::AuthManager;
 use crate::events::bus::EventBus;
 use crate::secrets::SecretStore;
+use crate::settings_signal::SettingsSignal;
 use crate::shutdown::ShutdownHandle;
 use crate::storage::db::Db;
 use crate::sync::{LastSyncStore, LocalStorage, SyncEngine};
@@ -31,4 +32,7 @@ pub struct AppState {
     /// Barramento de saída, compartilhado com o engine. Os comandos publicam
     /// aqui em vez de chamar `app.emit` direto.
     pub bus: EventBus,
+    /// Todo comando que persiste configuração dá um `bump` aqui; as tasks de
+    /// espera longa acordam e releem do banco.
+    pub settings: SettingsSignal,
 }

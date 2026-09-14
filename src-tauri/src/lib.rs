@@ -13,14 +13,17 @@ mod events;
 mod folder;
 mod games;
 mod locations;
+mod logs;
 mod onedrive;
 mod platform;
 mod remote;
 mod secrets;
+mod settings_signal;
 mod shutdown;
 mod state;
 mod storage;
 mod sync;
+mod updates;
 mod versioning;
 // O process watcher depende de inspecionar processos do SO (`sysinfo`), o que
 // não existe/aplica no mobile — gatilhos automáticos são exclusivos do desktop.
@@ -76,7 +79,10 @@ pub fn run() {
 
     builder
         .setup(|app| {
-            init_logging(app.handle())?;
+            // O barramento nasce antes do subscriber porque o layer de log
+            // publica nele; o resto do wiring o recebe clonado mais abaixo.
+            let bus = events::bus::EventBus::new();
+            init_logging(app.handle(), bus.clone())?;
             // Depois do subscriber: o hook loga via `tracing` e precisa que o
             // appender de arquivo já esteja instalado para persistir o panic.
             install_panic_hook(app.handle().clone());
@@ -182,10 +188,8 @@ pub fn run() {
             #[cfg(mobile)]
             let storage: Arc<dyn sync::LocalStorage> = sync::mobile_storage::storage(app.handle())?;
 
-            // Barramento de saída: o engine e os comandos publicam aqui, e a
-            // ponte abaixo traduz para `emit`/notificação nativa. É o que
-            // permite ao engine não conhecer o `AppHandle`.
-            let bus = events::bus::EventBus::new();
+            // A ponte traduz cada `AppEvent` em `emit`/notificação nativa. É o
+            // que permite ao engine não conhecer o `AppHandle`.
             spawn_event_bridge(app.handle().clone(), bus.subscribe());
 
             let engine = Arc::new(sync::SyncEngine::new(
@@ -201,6 +205,7 @@ pub fn run() {
             // O token vem do engine: cancelar o desligamento interrompe o
             // sync em andamento pelo mesmo sinal que para o watcher.
             let shutdown = shutdown::ShutdownHandle::new(engine.cancel_token());
+            let settings = settings_signal::SettingsSignal::new();
 
             app.manage(AppState {
                 auth: std::sync::RwLock::new(auth),
@@ -212,13 +217,25 @@ pub fn run() {
                 secrets: secret_store,
                 shutdown: shutdown.clone(),
                 bus: bus.clone(),
+                settings: settings.clone(),
             });
+
+            #[cfg(desktop)]
+            app.handle()
+                .plugin(tauri_plugin_updater::Builder::new().build())?;
 
             // Bandeja, janela escondível, autostart e process watcher são
             // exclusivos do desktop. No mobile o webview único já é exibido pelo
             // sistema e os gatilhos automáticos por processo não existem.
             #[cfg(desktop)]
-            platform::desktop::setup(app, db.clone(), engine.clone(), shutdown, bus.clone())?;
+            platform::desktop::setup(
+                app,
+                db.clone(),
+                engine.clone(),
+                shutdown,
+                bus.clone(),
+                &settings,
+            )?;
             #[cfg(mobile)]
             platform::mobile::setup(app)?;
 
@@ -330,6 +347,8 @@ pub fn run() {
             commands::list_synced_games,
             commands::get_emulator_stats,
             commands::list_emulator_stats,
+            commands::get_emulator_summary,
+            commands::list_emulator_summaries,
             commands::remove_emulator,
             commands::sync_now,
             commands::get_last_sync,
@@ -347,6 +366,8 @@ pub fn run() {
             commands::list_conflicts,
             commands::resolve_conflict,
             commands::list_pending_ops,
+            commands::get_sync_queue,
+            commands::bring_to_front,
             commands::get_sync_state,
             commands::get_recent_errors,
             commands::clear_errors,
@@ -355,6 +376,10 @@ pub fn run() {
             commands::list_dismissed_notices,
             commands::dismiss_notice,
             commands::list_backups,
+            commands::check_for_updates,
+            commands::install_update,
+            commands::get_logs,
+            commands::set_log_streaming,
             commands::list_file_versions,
             commands::restore_version,
             commands::pick_emulator_folder,
@@ -397,7 +422,10 @@ fn lower_process_priority() {
     }
 }
 
-fn init_logging(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+fn init_logging(
+    app: &tauri::AppHandle,
+    bus: events::bus::EventBus,
+) -> Result<(), Box<dyn std::error::Error>> {
     let log_dir = locations::AppPath::LogDir.resolve(app)?;
     std::fs::create_dir_all(&log_dir)?;
     prune_old_logs(&log_dir, LOG_RETENTION_DAYS);
@@ -407,6 +435,7 @@ fn init_logging(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>
         .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
         .with(fmt::layer())
         .with(fmt::layer().with_ansi(false).with_writer(file_appender))
+        .with(logs::LogBusLayer::new(bus))
         .init();
 
     Ok(())
@@ -465,7 +494,11 @@ fn spawn_event_bridge(
             let event = match rx.recv().await {
                 Ok(event) => event,
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
-                    tracing::warn!(perdidos = missed, "ponte de eventos ficou para trás");
+                    tracing::warn!(
+                        target: logs::EVENT_BRIDGE_TARGET,
+                        perdidos = missed,
+                        "ponte de eventos ficou para trás"
+                    );
                     continue;
                 }
                 // Todos os produtores foram derrubados: o app está encerrando.
@@ -486,6 +519,8 @@ fn spawn_event_bridge(
                     events::EVT_EMULATOR_STATUS,
                     &serde_json::json!({ "emulator": emulator, "running": running }),
                 ),
+                AppEvent::LogEntry(p) => emit(&app, events::EVT_LOG_ENTRY, &p),
+                AppEvent::UpdateAvailable(p) => emit(&app, events::EVT_UPDATE_AVAILABLE, &p),
                 AppEvent::Notify(n) => show_native_notification(&app, &n),
             }
         }

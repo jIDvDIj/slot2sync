@@ -3,6 +3,9 @@ import { useTranslation } from "react-i18next";
 
 import { currentLocale } from "../i18n";
 import { useEmulatorStats } from "../hooks/useEmulatorStats";
+import { useEmulatorCategories } from "../hooks/useEmulatorCategories";
+import { useEmulatorSummary } from "../hooks/useEmulatorSummary";
+import { emulatorStatus } from "../lib/emulatorStatus";
 import { useErrorMessage } from "../lib/errors";
 import { formatBytes } from "../lib/format";
 import type { Conflict, EmulatorProfile, PendingOp, SyncedGame, SyncProgress } from "../types/ipc";
@@ -32,11 +35,7 @@ interface Props {
   onConflictResolved: () => void;
 }
 
-/**
- * Card de um emulador configurado: nome, pasta, estado (conflito /
- * sincronizando / rodando / parado + pendências), progresso do sync em curso,
- * jogos e remoção.
- */
+/** Card de um emulador configurado: estado, volume, progresso, jogos e remoção. */
 export function EmulatorCard({
   profile,
   running,
@@ -56,6 +55,8 @@ export function EmulatorCard({
   const [showPending, setShowPending] = useState(false);
   const [showGames, setShowGames] = useState(false);
   const stats = useEmulatorStats(profile.name);
+  const summary = useEmulatorSummary(profile.name);
+  const categories = useEmulatorCategories(profile.name);
 
   const handleRemove = async () => {
     setBusy(true);
@@ -70,6 +71,13 @@ export function EmulatorCard({
 
   const hasConflict = conflicts.length > 0;
   const cardProgress = progress?.emulator === profile.name ? progress : null;
+  const status = emulatorStatus({
+    running,
+    syncing: cardProgress !== null,
+    conflicts: conflicts.length,
+    pendingOps,
+    categories,
+  });
   const syncingTitleKey = autoTriggerLabelKey(trigger);
   const hasBytes = (cardProgress?.bytesTotal ?? 0) > 0;
   const pct = cardProgress
@@ -92,14 +100,22 @@ export function EmulatorCard({
       <div className="emulator-head">
         <span className="emulator-name">{profile.name}</span>
         <span className="emulator-badges">
-          {pendingOps.length > 0 ? (
-            <Badge tone="warning" as="button" onClick={() => setShowPending(true)}>
-              {t("emulator.pendingBadge", { count: pendingOps.length })}
-            </Badge>
+          {summary && summary.needSync > 0 ? (
+            <Badge tone="warning">{t("emulator.needSyncBadge", { count: summary.needSync })}</Badge>
           ) : null}
-          {hasConflict ? (
+          {status.kind === "failed" || status.kind === "pending" ? (
+            <Badge
+              tone={status.kind === "failed" ? "danger" : "warning"}
+              as="button"
+              onClick={() => setShowPending(true)}
+            >
+              {status.kind === "failed"
+                ? t("emulator.failedBadge", { count: status.count })
+                : t("emulator.pendingBadge", { count: status.count })}
+            </Badge>
+          ) : status.kind === "conflict" ? (
             <Badge tone="danger">{t("emulator.conflictBadge")}</Badge>
-          ) : cardProgress ? (
+          ) : status.kind === "syncing" ? (
             <Badge
               tone="info"
               className="rs-badge-pulse"
@@ -107,9 +123,13 @@ export function EmulatorCard({
             >
               {t("emulator.syncing")}
             </Badge>
+          ) : status.kind === "paused" ? (
+            <Badge tone="neutral" title={t("emulator.pausedHint")}>
+              {t("emulator.paused")}
+            </Badge>
           ) : (
-            <Badge tone={running ? "success" : "neutral"}>
-              {running ? t("emulator.running") : t("emulator.idle")}
+            <Badge tone={status.kind === "running" ? "success" : "neutral"}>
+              {status.kind === "running" ? t("emulator.running") : t("emulator.idle")}
             </Badge>
           )}
         </span>
@@ -117,6 +137,17 @@ export function EmulatorCard({
       <p className="emulator-path" title={profile.rootPath}>
         {profile.rootPath}
       </p>
+
+      {summary ? (
+        <p className="muted emulator-summary">
+          {t("emulator.summaryLine", {
+            local: summary.localFiles,
+            localSize: formatBytes(summary.localBytes),
+            remote: summary.remoteFiles,
+            remoteSize: formatBytes(summary.remoteBytes),
+          })}
+        </p>
+      ) : null}
 
       {stats?.lastSyncAtMs ? (
         <p className="muted emulator-stats" title={stats.lastFile ?? undefined}>

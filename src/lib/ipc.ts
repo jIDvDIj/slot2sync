@@ -13,14 +13,18 @@ import type {
   DiscoveredEmulator,
   EmulatorProfile,
   EmulatorStats,
+  EmulatorSummary,
   ErrorEntry,
   FileVersion,
   HealthStatus,
   LastSync,
+  LogEntry,
   NotificationLevel,
   PendingOp,
   Settings,
   SyncCategories,
+  SyncQueueSnapshot,
+  UpdateInfo,
   SyncedGame,
   SyncStateSnapshot,
   SyncSummary,
@@ -120,6 +124,46 @@ export function getEmulatorStats(name: string): Promise<EmulatorStats | null> {
 /** Estatísticas acumuladas de todos os emuladores com atividade. */
 export function listEmulatorStats(): Promise<EmulatorStats[]> {
   return invoke<EmulatorStats[]>("list_emulator_stats");
+}
+
+/** Procura uma versão nova; `null` = já está na mais recente. */
+export function checkForUpdates(): Promise<UpdateInfo | null> {
+  return invoke<UpdateInfo | null>("check_for_updates");
+}
+
+/** Baixa, instala e reinicia o app na versão nova. */
+export function installUpdate(): Promise<void> {
+  return invoke<void>("install_update");
+}
+
+/** Fila do sync em andamento; vazia fora de um sync. */
+export function getSyncQueue(): Promise<SyncQueueSnapshot> {
+  return invoke<SyncQueueSnapshot>("get_sync_queue");
+}
+
+/** Antecipa um arquivo da fila do sync em andamento; `false` = não está mais nela. */
+export function bringToFront(emulator: string, relPath: string): Promise<boolean> {
+  return invoke<boolean>("bring_to_front", { emulator, relPath });
+}
+
+/** Últimas linhas do log em disco, mais antigas primeiro. */
+export function getLogs(limit: number): Promise<LogEntry[]> {
+  return invoke<LogEntry[]>("get_logs", { limit });
+}
+
+/** Liga/desliga o evento `log:entry` (janela de diagnóstico aberta/fechada). */
+export function setLogStreaming(enabled: boolean): Promise<void> {
+  return invoke<void>("set_log_streaming", { enabled });
+}
+
+/** Retrato do emulador para o card: volume local, remoto conhecido e pendências. */
+export function getEmulatorSummary(name: string): Promise<EmulatorSummary> {
+  return invoke<EmulatorSummary>("get_emulator_summary", { name });
+}
+
+/** Resumo de todos os emuladores configurados, numa chamada só. */
+export function listEmulatorSummaries(): Promise<EmulatorSummary[]> {
+  return invoke<EmulatorSummary[]>("list_emulator_summaries");
 }
 
 /** Remove da sincronização; nada é apagado no Drive nem no disco. */

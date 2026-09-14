@@ -470,6 +470,7 @@ async fn persist_detected(
         .db
         .with(move |conn| emulators::upsert_resetting_on_path_change(conn, &to_store))
         .await?;
+    state.settings.bump();
     if path_reset {
         tracing::info!(
             emulador = %profile.name,
@@ -535,6 +536,7 @@ pub async fn add_emulator_manual(
         .db
         .with(move |conn| emulators::upsert(conn, &to_store))
         .await?;
+    state.settings.bump();
     tracing::info!(emulador = %profile.name, raiz = %profile.root_path.display(), "emulador manual adicionado");
     Ok(profile)
 }
@@ -578,7 +580,9 @@ pub async fn remove_emulator(state: State<'_, AppState>, name: String) -> AppRes
             crate::storage::stats::remove_for_emulator(conn, &name)?;
             queue::remove_for_emulator(conn, &name)
         })
-        .await
+        .await?;
+    state.settings.bump();
+    Ok(())
 }
 
 /// Estatísticas acumuladas de um emulador (uploads, downloads, bytes,
@@ -601,6 +605,182 @@ pub async fn list_emulator_stats(
     state: State<'_, AppState>,
 ) -> AppResult<Vec<crate::storage::stats::EmulatorStats>> {
     state.db.with(crate::storage::stats::list_all).await
+}
+
+/// Retrato do emulador para o card: volume local, volume conhecido no provedor
+/// remoto, quantos arquivos estão fora de sincronia e o estado corrente.
+/// (→ ipc.ts)
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EmulatorSummary {
+    pub emulator: String,
+    /// Arquivos encontrados agora no disco, nas categorias ativas.
+    pub local_files: u32,
+    pub local_bytes: u64,
+    /// O que o manifest sabe existir no provedor remoto — estado do último
+    /// sync, sem nenhuma chamada de rede.
+    pub remote_files: u32,
+    pub remote_bytes: u64,
+    /// Arquivos que divergem da âncora do manifest: novos no disco, tocados
+    /// desde o último sync, ou presentes no remoto e ausentes aqui. É uma
+    /// estimativa por mtime (mesmo pré-filtro do diff, sem hash), então um
+    /// arquivo reescrito com conteúdo idêntico conta como pendente até o
+    /// próximo sync desmentir.
+    pub need_sync: u32,
+    /// `idle` | `scanning` | `syncing` | `conflict` | `error` — mesmos valores
+    /// de [`SyncStateSnapshot::state`].
+    pub state: &'static str,
+    pub last_sync_at_ms: Option<i64>,
+    pub pending_ops: u32,
+}
+
+/// Resumo de um emulador configurado. Custo: uma leitura do manifest mais uma
+/// varredura local só de mtime (sem hash e sem rede).
+#[tauri::command]
+pub async fn get_emulator_summary(
+    state: State<'_, AppState>,
+    name: String,
+) -> AppResult<EmulatorSummary> {
+    let profile = {
+        let wanted = name.clone();
+        state
+            .db
+            .with(move |conn| {
+                Ok(emulators::list(conn)?
+                    .into_iter()
+                    .find(|p| p.name == wanted))
+            })
+            .await?
+            .ok_or_else(|| AppError::Other(format!("emulador não configurado: {name}")))?
+    };
+    emulator_summary(&state, &profile).await
+}
+
+/// Resumo de todos os emuladores configurados — a UI carrega uma vez e
+/// distribui pelos cards, como em `list_emulator_stats`.
+#[tauri::command]
+pub async fn list_emulator_summaries(
+    state: State<'_, AppState>,
+) -> AppResult<Vec<EmulatorSummary>> {
+    let profiles = state.db.with(emulators::list).await?;
+    let mut out = Vec::with_capacity(profiles.len());
+    for profile in &profiles {
+        out.push(emulator_summary(&state, profile).await?);
+    }
+    Ok(out)
+}
+
+async fn emulator_summary(
+    state: &State<'_, AppState>,
+    profile: &EmulatorProfile,
+) -> AppResult<EmulatorSummary> {
+    let name = profile.name.clone();
+    let (categories, entries, pending_ops, has_conflict, stats) = state
+        .db
+        .with(move |conn| {
+            Ok((
+                emulators::get_categories(conn, &name)?,
+                manifest::list_for_emulator(conn, &name)?,
+                queue::count_for_emulator(conn, &name)? as u32,
+                conflicts::has_for_emulator(conn, &name)?,
+                crate::storage::stats::get(conn, &name)?,
+            ))
+        })
+        .await?;
+
+    // Mesma montagem do engine: o target só enxerga as categorias que o
+    // usuário deixou ativas, e os números do resumo acompanham essa escolha.
+    let mut target = crate::sync::SyncTarget::from_profile(profile);
+    target.categories.retain(|(category, _)| match category {
+        SyncCategory::Saves => categories.saves,
+        SyncCategory::Savestates => categories.savestates,
+        SyncCategory::Config => categories.config,
+    });
+    let active: std::collections::HashSet<SyncCategory> =
+        target.categories.iter().map(|(c, _)| *c).collect();
+    let exclude = crate::sync::build_exclude_set(&profile.exclude_patterns);
+
+    // Âncora do último sync, indexada como o diff indexa: (categoria, caminho).
+    let mut anchors: std::collections::HashMap<(SyncCategory, &str), &manifest::ManifestEntry> =
+        std::collections::HashMap::new();
+    let mut remote_files = 0u32;
+    let mut remote_bytes = 0u64;
+    for entry in &entries {
+        if !active.contains(&entry.category)
+            || exclude
+                .as_ref()
+                .is_some_and(|set| set.is_match(&entry.rel_path))
+        {
+            continue;
+        }
+        anchors.insert((entry.category, entry.rel_path.as_str()), entry);
+        if entry.remote_file_id.is_some() {
+            remote_files += 1;
+            remote_bytes += entry.size_bytes.unwrap_or(0).max(0) as u64;
+        }
+    }
+
+    let storage = state.engine.storage().clone();
+    let mut local_files = 0u32;
+    let mut local_bytes = 0u64;
+    let mut need_sync = 0u32;
+    let mut seen: std::collections::HashSet<(SyncCategory, String)> =
+        std::collections::HashSet::new();
+    for (category, bases) in &target.categories {
+        if bases.is_empty() {
+            continue;
+        }
+        for file in storage.scan(&target.root, bases).await? {
+            if exclude
+                .as_ref()
+                .is_some_and(|set| set.is_match(&file.rel_path))
+            {
+                continue;
+            }
+            local_files += 1;
+            local_bytes += file.size_bytes.max(0) as u64;
+            let touched = match anchors.get(&(*category, file.rel_path.as_str())) {
+                None => true,
+                Some(anchor) => anchor.local_mtime_ms.is_none_or(|anchored| {
+                    !crate::sync::eq_within_tolerance(anchored, file.mtime_ms)
+                }),
+            };
+            if touched {
+                need_sync += 1;
+            }
+            seen.insert((*category, file.rel_path.clone()));
+        }
+    }
+
+    // O que existe no remoto e ainda não chegou aqui também está fora de dia.
+    need_sync += anchors
+        .values()
+        .filter(|entry| {
+            entry.remote_file_id.is_some()
+                && !seen.contains(&(entry.category, entry.rel_path.clone()))
+        })
+        .count() as u32;
+
+    let (sync_state, syncing_emulator) = state.engine.current_sync_state();
+    let state_str = if has_conflict {
+        crate::sync::SyncState::Conflict.as_str()
+    } else if syncing_emulator.as_deref() == Some(profile.name.as_str()) {
+        sync_state.as_str()
+    } else {
+        crate::sync::SyncState::Idle.as_str()
+    };
+
+    Ok(EmulatorSummary {
+        emulator: profile.name.clone(),
+        local_files,
+        local_bytes,
+        remote_files,
+        remote_bytes,
+        need_sync,
+        state: state_str,
+        last_sync_at_ms: stats.and_then(|s| s.last_sync_at_ms),
+        pending_ops,
+    })
 }
 
 /// Conflitos pendentes (ambos os lados mudaram). A UI exibe o botão de resolver
@@ -650,7 +830,9 @@ pub async fn set_emulator_categories(
     state
         .db
         .with(move |conn| emulators::set_categories(conn, &name, &categories))
-        .await
+        .await?;
+    state.settings.bump();
+    Ok(())
 }
 
 /// Define os padrões glob de exclusão de um emulador (arquivos que casam ficam
@@ -673,7 +855,21 @@ pub async fn set_exclude_patterns(
     state
         .db
         .with(move |conn| emulators::set_exclude_patterns(conn, &name, &patterns))
-        .await
+        .await?;
+    state.settings.bump();
+    Ok(())
+}
+
+/// Rejeita valor fora da faixa que a UI oferece. Um comando pode ser chamado
+/// de fora dela, e um valor absurdo persistido só apareceria como
+/// comportamento estranho muito depois.
+fn ensure_range(value: u32, min: u32, max: u32, field: &str) -> AppResult<()> {
+    if value < min || value > max {
+        return Err(AppError::Other(format!(
+            "{field}: {value} fora da faixa aceita ({min}–{max})"
+        )));
+    }
+    Ok(())
 }
 
 /// Sync manual (botão da UI / menu da tray). Bidirecional.
@@ -821,27 +1017,35 @@ pub async fn set_triggers(state: State<'_, AppState>, triggers: TriggerSettings)
     state
         .db
         .with(move |conn| settings::set_triggers(conn, &triggers))
-        .await
+        .await?;
+    state.settings.bump();
+    Ok(())
 }
 
 /// Define a retenção dos backups locais em dias (0 = manter para sempre).
 /// A limpeza roda no próximo startup do app.
 #[tauri::command]
 pub async fn set_backup_retention_days(state: State<'_, AppState>, days: u32) -> AppResult<()> {
+    ensure_range(days, 0, 3650, "retenção de backups (dias)")?;
     state
         .db
         .with(move |conn| settings::set_backup_retention_days(conn, days))
-        .await
+        .await?;
+    state.settings.bump();
+    Ok(())
 }
 
 /// Define o máximo de versões arquivadas por arquivo no histórico
 /// pré-download (mínimo 1).
 #[tauri::command]
 pub async fn set_max_backup_versions(state: State<'_, AppState>, versions: u32) -> AppResult<()> {
+    ensure_range(versions, 1, 50, "versões guardadas por arquivo")?;
     state
         .db
         .with(move |conn| settings::set_max_backup_versions(conn, versions))
-        .await
+        .await?;
+    state.settings.bump();
+    Ok(())
 }
 
 /// Define os limites de banda das transferências em KB/s (0 = ilimitado).
@@ -852,20 +1056,27 @@ pub async fn set_bandwidth_limits(
     upload_kbps: u32,
     download_kbps: u32,
 ) -> AppResult<()> {
+    ensure_range(upload_kbps, 0, 1_000_000, "limite de envio (kbps)")?;
+    ensure_range(download_kbps, 0, 1_000_000, "limite de download (kbps)")?;
     state
         .db
         .with(move |conn| settings::set_bandwidth_limits(conn, upload_kbps, download_kbps))
-        .await
+        .await?;
+    state.settings.bump();
+    Ok(())
 }
 
 /// Define o intervalo do scan periódico em minutos (0 = desativado). O timer
 /// relê o valor a cada ciclo — não precisa reiniciar o app.
 #[tauri::command]
 pub async fn set_scan_interval_minutes(state: State<'_, AppState>, minutes: u32) -> AppResult<()> {
+    ensure_range(minutes, 0, 1440, "intervalo do scan periódico (minutos)")?;
     state
         .db
         .with(move |conn| settings::set_scan_interval_minutes(conn, minutes))
-        .await
+        .await?;
+    state.settings.bump();
+    Ok(())
 }
 
 /// Define o nível de notificações nativas (all | errors_only | none).
@@ -877,7 +1088,9 @@ pub async fn set_notification_level(
     state
         .db
         .with(move |conn| settings::set_notification_level(conn, level))
-        .await
+        .await?;
+    state.settings.bump();
+    Ok(())
 }
 
 /// Define o nome amigável deste dispositivo. Obrigatório no login; pode ser
@@ -893,7 +1106,9 @@ pub async fn set_device_name(state: State<'_, AppState>, name: String) -> AppRes
     state
         .db
         .with(move |conn| settings::set_device_name(conn, &trimmed))
-        .await
+        .await?;
+    state.settings.bump();
+    Ok(())
 }
 
 /// Último sync concluído (para a UI exibir ao montar). `None` se ainda não
@@ -940,6 +1155,21 @@ pub fn get_sync_state(state: State<'_, AppState>) -> SyncStateSnapshot {
         emulator,
         error_message,
     }
+}
+
+/// Fila do sync em andamento: o que está em voo e o que ainda não começou.
+/// Vazia fora de um sync — ela existe só durante a rodada de uma categoria.
+#[tauri::command]
+pub fn get_sync_queue(state: State<'_, AppState>) -> crate::sync::queue::SyncQueueSnapshot {
+    state.engine.queue().snapshot()
+}
+
+/// Antecipa um arquivo da fila do sync em andamento. `false` = não está mais
+/// na fila (já transferido, ou já em voo, quando não há o que antecipar).
+/// Distinto de `bump_pending_op`, que prioriza na fila offline de pendências.
+#[tauri::command]
+pub fn bring_to_front(state: State<'_, AppState>, emulator: String, rel_path: String) -> bool {
+    state.engine.queue().bring_to_front(&emulator, &rel_path)
 }
 
 /// Ação "tentar novamente" da fila offline: zera as tentativas e o backoff de
@@ -1131,6 +1361,103 @@ pub async fn list_backups(app: AppHandle) -> AppResult<Vec<crate::backups::Backu
         .map_err(|e| AppError::Other(format!("tarefa bloqueante abortada: {e}")))?
 }
 
+/// Procura uma versão nova. `None` = já está na mais recente. Publica
+/// `update:available` quando encontra, para a UI reagir sem esperar o retorno.
+///
+/// Sem chave pública configurada em `tauri.conf.json`, a checagem falha e o
+/// erro vira `None` com um warning: não poder atualizar não é motivo para
+/// mostrar erro a quem só abriu o app.
+#[tauri::command]
+#[cfg(desktop)]
+pub async fn check_for_updates(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> AppResult<Option<crate::updates::UpdateInfo>> {
+    use tauri_plugin_updater::UpdaterExt;
+
+    let found = match app.updater() {
+        Ok(updater) => updater.check().await,
+        Err(err) => Err(err),
+    };
+    let update = match found {
+        Ok(update) => update,
+        Err(err) => {
+            tracing::warn!(error = %err, "checagem de atualização falhou");
+            return Ok(None);
+        }
+    };
+
+    let Some(update) = update else {
+        return Ok(None);
+    };
+    let info = crate::updates::UpdateInfo {
+        version: update.version.clone(),
+        notes: update.body.clone(),
+        date: update.date.map(|d| d.to_string()),
+    };
+    tracing::info!(versao = %info.version, "atualização disponível");
+    state.bus.publish(AppEvent::UpdateAvailable(info.clone()));
+    Ok(Some(info))
+}
+
+#[tauri::command]
+#[cfg(not(desktop))]
+pub async fn check_for_updates(
+    _app: AppHandle,
+    _state: State<'_, AppState>,
+) -> AppResult<Option<crate::updates::UpdateInfo>> {
+    Ok(None)
+}
+
+/// Baixa e instala a atualização, e reinicia o app. No Windows o instalador
+/// assume a partir daqui, então o processo atual encerra de qualquer forma.
+#[tauri::command]
+#[cfg(desktop)]
+pub async fn install_update(app: AppHandle) -> AppResult<()> {
+    use tauri_plugin_updater::UpdaterExt;
+
+    let update = app
+        .updater()
+        .map_err(|e| AppError::Other(format!("checagem de atualização falhou: {e}")))?
+        .check()
+        .await
+        .map_err(|e| AppError::Other(format!("checagem de atualização falhou: {e}")))?
+        .ok_or_else(|| AppError::Other("nenhuma atualização disponível".into()))?;
+
+    tracing::info!(versao = %update.version, "instalando atualização");
+    update
+        .download_and_install(|_, _| {}, || {})
+        .await
+        .map_err(|e| AppError::Other(format!("instalação da atualização falhou: {e}")))?;
+
+    app.restart();
+}
+
+#[tauri::command]
+#[cfg(not(desktop))]
+pub async fn install_update(_app: AppHandle) -> AppResult<()> {
+    Err(AppError::Other(
+        "atualização automática não se aplica no mobile".into(),
+    ))
+}
+
+/// Últimas linhas do log em disco, mais antigas primeiro. Teto de
+/// [`crate::logs::MAX_TAIL_LINES`] linhas.
+#[tauri::command]
+pub async fn get_logs(app: AppHandle, limit: u32) -> AppResult<Vec<crate::logs::LogEntry>> {
+    let dir = crate::locations::AppPath::LogDir.resolve(&app)?;
+    tokio::task::spawn_blocking(move || crate::logs::tail(&dir, limit as usize))
+        .await
+        .map_err(|e| AppError::Other(format!("tarefa bloqueante abortada: {e}")))?
+}
+
+/// Liga o evento `log:entry`. A janela de diagnóstico liga ao abrir e desliga
+/// ao fechar — fora dela, cada linha de log viraria um broadcast sem ouvinte.
+#[tauri::command]
+pub fn set_log_streaming(enabled: bool) {
+    crate::logs::set_streaming(enabled);
+}
+
 /// Cobre a lógica de troca/consulta de provedor extraída dos comandos acima
 /// (`activate_provider`, `*_impl`, `build_oauth_remote`) — a parte
 /// unitariamente testável sem uma janela real. O fluxo interativo completo
@@ -1185,6 +1512,7 @@ mod tests {
             secrets,
             shutdown,
             bus,
+            settings: crate::settings_signal::SettingsSignal::new(),
         });
 
         (app, tmp)
@@ -1416,5 +1744,230 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, AppError::Other(_)));
+    }
+
+    /// Cria um emulador com uma pasta de saves real e o registra no banco.
+    /// Devolve o perfil e o `TempDir` (precisa sobreviver ao teste).
+    fn emulador_com_save(db: &Db, conteudo: &[u8]) -> (EmulatorProfile, tempfile::TempDir) {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("saves")).unwrap();
+        std::fs::write(root.path().join("saves/jogo.sav"), conteudo).unwrap();
+        let profile = EmulatorProfile {
+            name: "PPSSPP".into(),
+            root_path: root.path().to_path_buf(),
+            saves_paths: vec![PathBuf::from("saves")],
+            config_paths: vec![],
+            state_paths: vec![],
+            exclude_patterns: vec![],
+        };
+        let p = profile.clone();
+        db.with_sync(move |conn| emulators::upsert(conn, &p));
+        (profile, root)
+    }
+
+    fn mtime_ms(path: &Path) -> i64 {
+        std::fs::metadata(path)
+            .unwrap()
+            .modified()
+            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64
+    }
+
+    #[tokio::test]
+    async fn emulator_summary_conta_o_disco_e_marca_tudo_pendente_sem_manifest() {
+        let (app, _tmp) = build_app().await;
+        let state = app.state::<AppState>();
+        let (profile, _root) = emulador_com_save(&state.db, b"conteudo");
+
+        let summary = emulator_summary(&state, &profile).await.unwrap();
+
+        assert_eq!(summary.emulator, "PPSSPP");
+        assert_eq!(summary.local_files, 1);
+        assert_eq!(summary.local_bytes, 8);
+        // Nada sincronizado ainda: o remoto é desconhecido e o arquivo local
+        // não tem âncora, então conta como pendente.
+        assert_eq!(summary.remote_files, 0);
+        assert_eq!(summary.remote_bytes, 0);
+        assert_eq!(summary.need_sync, 1);
+        assert_eq!(summary.pending_ops, 0);
+        assert_eq!(summary.state, "idle");
+        assert!(summary.last_sync_at_ms.is_none());
+    }
+
+    #[tokio::test]
+    async fn emulator_summary_zera_o_pendente_quando_o_mtime_bate_com_a_ancora() {
+        let (app, _tmp) = build_app().await;
+        let state = app.state::<AppState>();
+        let (profile, root) = emulador_com_save(&state.db, b"conteudo");
+        let anchored = mtime_ms(&root.path().join("saves/jogo.sav"));
+
+        let entry = manifest::ManifestEntry {
+            emulator: "PPSSPP".into(),
+            category: SyncCategory::Saves,
+            rel_path: "jogo.sav".into(),
+            remote_file_id: Some("id-remoto".into()),
+            local_mtime_ms: Some(anchored),
+            remote_mtime_ms: Some(anchored),
+            size_bytes: Some(8),
+            last_synced_at_ms: anchored,
+            file_hash: None,
+            flags: 0,
+            inaccessible: false,
+            mtime_ns: 0,
+        };
+        state
+            .db
+            .with(move |conn| manifest::upsert(conn, &entry))
+            .await
+            .unwrap();
+
+        let summary = emulator_summary(&state, &profile).await.unwrap();
+
+        assert_eq!(summary.local_files, 1);
+        assert_eq!(summary.remote_files, 1);
+        assert_eq!(summary.remote_bytes, 8);
+        assert_eq!(summary.need_sync, 0);
+    }
+
+    #[tokio::test]
+    async fn emulator_summary_conta_o_que_existe_no_remoto_e_falta_no_disco() {
+        let (app, _tmp) = build_app().await;
+        let state = app.state::<AppState>();
+        let (profile, root) = emulador_com_save(&state.db, b"conteudo");
+        let anchored = mtime_ms(&root.path().join("saves/jogo.sav"));
+
+        // Âncora do arquivo que existe + uma entrada só remota (outro
+        // dispositivo enviou e este ainda não baixou).
+        for (rel, local_mtime) in [("jogo.sav", Some(anchored)), ("outro.sav", None)] {
+            let entry = manifest::ManifestEntry {
+                emulator: "PPSSPP".into(),
+                category: SyncCategory::Saves,
+                rel_path: rel.into(),
+                remote_file_id: Some(format!("id-{rel}")),
+                local_mtime_ms: local_mtime,
+                remote_mtime_ms: Some(anchored),
+                size_bytes: Some(8),
+                last_synced_at_ms: anchored,
+                file_hash: None,
+                flags: 0,
+                inaccessible: false,
+                mtime_ns: 0,
+            };
+            state
+                .db
+                .with(move |conn| manifest::upsert(conn, &entry))
+                .await
+                .unwrap();
+        }
+
+        let summary = emulator_summary(&state, &profile).await.unwrap();
+
+        assert_eq!(summary.local_files, 1);
+        assert_eq!(summary.remote_files, 2);
+        assert_eq!(summary.need_sync, 1);
+    }
+
+    #[tokio::test]
+    async fn emulator_summary_ignora_categoria_desativada_e_padrao_de_exclusao() {
+        let (app, _tmp) = build_app().await;
+        let state = app.state::<AppState>();
+        let (mut profile, root) = emulador_com_save(&state.db, b"conteudo");
+        std::fs::write(root.path().join("saves/cache.tmp2"), b"lixo").unwrap();
+        profile.exclude_patterns = vec!["*.tmp2".into()];
+
+        let com_exclusao = emulator_summary(&state, &profile).await.unwrap();
+        assert_eq!(com_exclusao.local_files, 1);
+
+        // Saves desativada nas configurações: não sobra nada a contar.
+        state
+            .db
+            .with(|conn| {
+                emulators::set_categories(
+                    conn,
+                    "PPSSPP",
+                    &SyncCategories {
+                        saves: false,
+                        savestates: true,
+                        config: true,
+                    },
+                )
+            })
+            .await
+            .unwrap();
+
+        let sem_saves = emulator_summary(&state, &profile).await.unwrap();
+        assert_eq!(sem_saves.local_files, 0);
+        assert_eq!(sem_saves.need_sync, 0);
+    }
+
+    #[tokio::test]
+    async fn get_emulator_summary_recusa_emulador_nao_configurado() {
+        let (app, _tmp) = build_app().await;
+        let state = app.state::<AppState>();
+
+        let err = get_emulator_summary(state, "Inexistente".into())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AppError::Other(msg) if msg.contains("não configurado")));
+    }
+
+    #[tokio::test]
+    async fn setters_recusam_valores_fora_da_faixa_sem_gravar() {
+        let (app, _tmp) = build_app().await;
+        let state = app.state::<AppState>();
+
+        assert!(set_scan_interval_minutes(app.state(), 1441).await.is_err());
+        assert!(set_backup_retention_days(app.state(), 3651).await.is_err());
+        assert!(set_max_backup_versions(app.state(), 0).await.is_err());
+        assert!(set_bandwidth_limits(app.state(), 1_000_001, 0)
+            .await
+            .is_err());
+
+        let stored = state.db.with(settings::load).await.unwrap();
+        assert_eq!(
+            stored.scan_interval_minutes,
+            crate::constants::SCAN_INTERVAL_MINUTES_DEFAULT
+        );
+        assert_eq!(
+            stored.max_backup_versions,
+            crate::constants::MAX_BACKUP_VERSIONS_DEFAULT
+        );
+    }
+
+    #[tokio::test]
+    async fn setters_aceitam_os_extremos_da_faixa() {
+        let (app, _tmp) = build_app().await;
+
+        set_scan_interval_minutes(app.state(), 0).await.unwrap();
+        set_scan_interval_minutes(app.state(), 1440).await.unwrap();
+        set_max_backup_versions(app.state(), 1).await.unwrap();
+        set_max_backup_versions(app.state(), 50).await.unwrap();
+        set_backup_retention_days(app.state(), 3650).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn salvar_configuracao_acorda_quem_espera() {
+        let (app, _tmp) = build_app().await;
+        let mut watch = app.state::<AppState>().settings.subscribe();
+
+        set_scan_interval_minutes(app.state(), 30).await.unwrap();
+
+        watch.changed().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn configuracao_recusada_nao_acorda_ninguem() {
+        let (app, _tmp) = build_app().await;
+        let mut watch = app.state::<AppState>().settings.subscribe();
+
+        assert!(set_scan_interval_minutes(app.state(), 5000).await.is_err());
+
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), watch.changed())
+                .await
+                .is_err()
+        );
     }
 }
