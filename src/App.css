@@ -837,6 +837,28 @@ progress.sync-bar::-moz-progress-bar {
   margin-left: var(--rs-space-4);
 }
 
+/* Janela de log (diagnóstico) */
+.log-controls {
+  align-items: flex-end;
+  gap: var(--rs-space-3);
+}
+
+.log-area {
+  width: 100%;
+  min-height: var(--rs-space-14);
+  height: 50vh;
+  resize: vertical;
+  border: 1px solid var(--rs-color-border);
+  border-radius: var(--rs-radius-md);
+  background-color: var(--rs-color-surface-alt);
+  color: var(--rs-color-text);
+  padding: var(--rs-space-3);
+  font-family: var(--rs-font-mono);
+  font-size: var(--rs-font-xs);
+  white-space: pre;
+  overflow: auto;
+}
+
 /* Aviso de panic do backend: fica no topo de qualquer tela, inclusive a de
    login, porque um panic pode ocorrer antes de o usuário se conectar. */
 .panic-banner {

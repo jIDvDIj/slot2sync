@@ -18,6 +18,7 @@ import { providerLabel } from "../lib/providerLabels";
 import type { EmulatorProfile, NotificationLevel, Settings } from "../types/ipc";
 import { usePlatform } from "../hooks/usePlatform";
 import { BackupHistoryModal } from "./BackupHistoryModal";
+import { LogViewerModal } from "./LogViewerModal";
 import { CategorySettings } from "./CategorySettings";
 import { TriggerSettingsSection } from "./TriggerSettings";
 import { Modal } from "./ui/Modal";
@@ -74,6 +75,7 @@ export function SettingsModal({
   const [autostartError, setAutostartError] = useState<string | null>(null);
   const [backupError, setBackupError] = useState<string | null>(null);
   const [showBackupHistory, setShowBackupHistory] = useState(false);
+  const [showLogs, setShowLogs] = useState(false);
   const [retentionDays, setRetentionDays] = useState(String(settings.backupRetentionDays));
   const [retentionSaved, setRetentionSaved] = useState(false);
 
@@ -486,20 +488,25 @@ export function SettingsModal({
         </section>
       ) : null}
 
-      {tab === "backups" && !isMobile ? (
+      {tab === "backups" ? (
         <section className="settings-section">
           <h3>{t("settings.diagnostics.heading")}</h3>
           <p className="muted">{t("settings.diagnostics.hint")}</p>
           <div className="settings-row">
-            <button
-              className="secondary"
-              onClick={exportDiagnosticsFile}
-              disabled={diagnosticsBusy}
-            >
-              {diagnosticsBusy
-                ? t("settings.diagnostics.exporting")
-                : t("settings.diagnostics.export")}
+            <button className="secondary" onClick={() => setShowLogs(true)}>
+              {t("settings.diagnostics.viewLog")}
             </button>
+            {!isMobile ? (
+              <button
+                className="secondary"
+                onClick={exportDiagnosticsFile}
+                disabled={diagnosticsBusy}
+              >
+                {diagnosticsBusy
+                  ? t("settings.diagnostics.exporting")
+                  : t("settings.diagnostics.export")}
+              </button>
+            ) : null}
           </div>
           {diagnosticsResult ? (
             <span className="saved-hint">
@@ -513,6 +520,8 @@ export function SettingsModal({
       {showBackupHistory ? (
         <BackupHistoryModal onClose={() => setShowBackupHistory(false)} />
       ) : null}
+
+      {showLogs ? <LogViewerModal onClose={() => setShowLogs(false)} /> : null}
     </Modal>
   );
 }

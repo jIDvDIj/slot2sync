@@ -76,6 +76,15 @@ export interface EmulatorStats {
   lastScanAtMs: number | null;
 }
 
+/** `logs::LogEntry` — uma linha de log para a janela de diagnóstico */
+export interface LogEntry {
+  timestamp: string;
+  /** `TRACE` | `DEBUG` | `INFO` | `WARN` | `ERROR`. */
+  level: string;
+  target: string;
+  message: string;
+}
+
 /** `commands::EmulatorSummary` — retrato do emulador para o card */
 export interface EmulatorSummary {
   emulator: string;
@@ -328,6 +337,7 @@ export const EVT = {
   AUTH_STATUS: "auth:status",
   EMULATOR_STATUS: "emulator:status",
   APP_PANIC: "app:panic",
+  LOG_ENTRY: "log:entry",
 } as const;
 
 export type EventName = (typeof EVT)[keyof typeof EVT];

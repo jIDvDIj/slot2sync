@@ -18,6 +18,7 @@ import type {
   FileVersion,
   HealthStatus,
   LastSync,
+  LogEntry,
   NotificationLevel,
   PendingOp,
   Settings,
@@ -121,6 +122,16 @@ export function getEmulatorStats(name: string): Promise<EmulatorStats | null> {
 /** Estatísticas acumuladas de todos os emuladores com atividade. */
 export function listEmulatorStats(): Promise<EmulatorStats[]> {
   return invoke<EmulatorStats[]>("list_emulator_stats");
+}
+
+/** Últimas linhas do log em disco, mais antigas primeiro. */
+export function getLogs(limit: number): Promise<LogEntry[]> {
+  return invoke<LogEntry[]>("get_logs", { limit });
+}
+
+/** Liga/desliga o evento `log:entry` (janela de diagnóstico aberta/fechada). */
+export function setLogStreaming(enabled: boolean): Promise<void> {
+  return invoke<void>("set_log_streaming", { enabled });
 }
 
 /** Retrato do emulador para o card: volume local, remoto conhecido e pendências. */
