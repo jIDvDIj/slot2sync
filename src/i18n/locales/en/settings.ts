@@ -105,6 +105,10 @@ export const settings = {
     restored: "Restored",
     filterLabel: "Filter",
     filterPlaceholder: "e.g. PPSSPP or SAVE.bin",
+    fromLabel: "From",
+    toLabel: "To",
+    versions_one: "{{count}} version",
+    versions_other: "{{count}} versions",
     empty: "No backups yet.",
   },
   addEmulator: {

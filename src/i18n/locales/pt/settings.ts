@@ -109,6 +109,10 @@ export const settings: Localized<typeof SettingsEn> = {
     restored: "Restaurado",
     filterLabel: "Filtrar",
     filterPlaceholder: "ex.: PPSSPP ou SAVE.bin",
+    fromLabel: "De",
+    toLabel: "Até",
+    versions_one: "{{count}} versão",
+    versions_other: "{{count}} versões",
     empty: "Nenhum backup ainda.",
   },
   addEmulator: {

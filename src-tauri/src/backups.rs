@@ -24,6 +24,11 @@ pub struct BackupEntry {
     /// Categoria como aparece na pasta (`saves` | `savestates` | `config`).
     pub category: String,
     pub rel_path: String,
+    /// `rel_path` sem o carimbo de versão; igual a `rel_path` quando o nome não
+    /// é versionado. Chave de agrupamento das versões de um mesmo arquivo.
+    pub original_rel_path: String,
+    /// Carimbo `YYYYMMDD-HHMMSS`, quando o nome é versionado.
+    pub stamp: Option<String>,
     pub size_bytes: i64,
     pub modified_at_ms: i64,
     pub abs_path: String,
@@ -41,11 +46,14 @@ pub fn list(dir: &Path) -> AppResult<Vec<BackupEntry>> {
                 let mut files = Vec::new();
                 collect_files(&base, &base, &mut files)?;
                 for (rel_path, size_bytes, modified_at_ms, abs_path) in files {
+                    let (original_rel_path, stamp) = split_versioned(&rel_path);
                     out.push(BackupEntry {
                         emulator: emulator.clone(),
                         run: run.clone(),
                         category: category.clone(),
                         rel_path,
+                        original_rel_path,
+                        stamp,
                         size_bytes,
                         modified_at_ms,
                         abs_path,
@@ -92,6 +100,25 @@ pub fn prune_old(dir: &Path, retention_days: u32) -> AppResult<u32> {
         }
     }
     Ok(removed)
+}
+
+/// Separa o carimbo de versão do último segmento de um `rel_path`. Nome fora do
+/// formato versionado volta inalterado, sem carimbo.
+fn split_versioned(rel_path: &str) -> (String, Option<String>) {
+    let (dir, name) = match rel_path.rsplit_once('/') {
+        Some((dir, name)) => (Some(dir), name),
+        None => (None, rel_path),
+    };
+    match crate::versioning::split_archived(name) {
+        Some((original, stamp)) => {
+            let rel = match dir {
+                Some(dir) => format!("{dir}/{original}"),
+                None => original,
+            };
+            (rel, Some(stamp))
+        }
+        None => (rel_path.to_string(), None),
+    }
 }
 
 /// mtime (ms) do arquivo mais recente sob `dir`, recursivo. `None` sem arquivos.
@@ -201,6 +228,31 @@ mod tests {
         assert_eq!(ini.category, "config");
     }
 
+    #[test]
+    fn separa_o_carimbo_das_versoes_do_historico() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().join("PPSSPP/history/saves/GAME01");
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::write(base.join("SAVE~20250717-103000.bin"), b"v1").unwrap();
+        std::fs::write(base.join("SEM-CARIMBO.bin"), b"v2").unwrap();
+
+        let entries = list(tmp.path()).unwrap();
+
+        let versionado = entries
+            .iter()
+            .find(|e| e.rel_path == "GAME01/SAVE~20250717-103000.bin")
+            .unwrap();
+        assert_eq!(versionado.original_rel_path, "GAME01/SAVE.bin");
+        assert_eq!(versionado.stamp.as_deref(), Some("20250717-103000"));
+
+        let simples = entries
+            .iter()
+            .find(|e| e.rel_path == "GAME01/SEM-CARIMBO.bin")
+            .unwrap();
+        assert_eq!(simples.original_rel_path, "GAME01/SEM-CARIMBO.bin");
+        assert!(simples.stamp.is_none());
+    }
+
     /// Grava um arquivo de backup com mtime `days_ago` dias atrás.
     fn seed_run(root: &Path, emulator: &str, run: &str, days_ago: i64) {
         let base = root.join(emulator).join(run).join("saves");
@@ -246,7 +298,9 @@ mod tests {
             emulator: "PPSSPP".into(),
             run: "2025-07-01_10-30-00".into(),
             category: "saves".into(),
-            rel_path: "GAME01/SAVE.bin".into(),
+            rel_path: "GAME01/SAVE~20250717-103000.bin".into(),
+            original_rel_path: "GAME01/SAVE.bin".into(),
+            stamp: Some("20250717-103000".into()),
             size_bytes: 8,
             modified_at_ms: 1_700_000_000_000,
             abs_path: "C:/backups/...".into(),
@@ -254,7 +308,9 @@ mod tests {
         let json = serde_json::to_value(&entry).unwrap();
         assert_eq!(json["emulator"], "PPSSPP");
         assert_eq!(json["run"], "2025-07-01_10-30-00");
-        assert_eq!(json["relPath"], "GAME01/SAVE.bin");
+        assert_eq!(json["relPath"], "GAME01/SAVE~20250717-103000.bin");
+        assert_eq!(json["originalRelPath"], "GAME01/SAVE.bin");
+        assert_eq!(json["stamp"], "20250717-103000");
         assert_eq!(json["sizeBytes"], 8);
         assert_eq!(json["modifiedAtMs"], 1_700_000_000_000i64);
         assert_eq!(json["absPath"], "C:/backups/...");

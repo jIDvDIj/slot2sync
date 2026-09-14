@@ -193,10 +193,10 @@ impl Versioner for FsVersioner {
     }
 }
 
-/// Inverte [`versioned_name`]: recupera o nome original de um arquivo
-/// arquivado (`"SAVE~20250717-103000.bin"` → `"SAVE.bin"`). `None` quando o
-/// nome não segue o formato de versão.
-pub fn original_name(archived: &str) -> Option<String> {
+/// Inverte [`versioned_name`]: `"SAVE~20250717-103000.bin"` →
+/// `("SAVE.bin", "20250717-103000")`. `None` quando o nome não segue o
+/// formato de versão.
+pub fn split_archived(archived: &str) -> Option<(String, String)> {
     let (stem_and_stamp, ext) = match archived.rsplit_once('.') {
         Some((rest, ext)) => (rest, Some(ext)),
         None => (archived, None),
@@ -205,10 +205,15 @@ pub fn original_name(archived: &str) -> Option<String> {
     if stamp.len() != 15 || !stamp.chars().all(|c| c.is_ascii_digit() || c == '-') {
         return None;
     }
-    Some(match ext {
+    let original = match ext {
         Some(ext) => format!("{stem}.{ext}"),
         None => stem.to_string(),
-    })
+    };
+    Some((original, stamp.to_string()))
+}
+
+pub fn original_name(archived: &str) -> Option<String> {
+    split_archived(archived).map(|(original, _)| original)
 }
 
 /// Resolve uma restauração do histórico: valida `versioned_rel_path`
