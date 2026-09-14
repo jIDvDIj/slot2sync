@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 
 import { currentLocale } from "../i18n";
 import { useEmulatorStats } from "../hooks/useEmulatorStats";
+import { useEmulatorSummary } from "../hooks/useEmulatorSummary";
 import { useErrorMessage } from "../lib/errors";
 import { formatBytes } from "../lib/format";
 import type { Conflict, EmulatorProfile, PendingOp, SyncedGame, SyncProgress } from "../types/ipc";
@@ -56,6 +57,7 @@ export function EmulatorCard({
   const [showPending, setShowPending] = useState(false);
   const [showGames, setShowGames] = useState(false);
   const stats = useEmulatorStats(profile.name);
+  const summary = useEmulatorSummary(profile.name);
 
   const handleRemove = async () => {
     setBusy(true);
@@ -92,6 +94,9 @@ export function EmulatorCard({
       <div className="emulator-head">
         <span className="emulator-name">{profile.name}</span>
         <span className="emulator-badges">
+          {summary && summary.needSync > 0 ? (
+            <Badge tone="warning">{t("emulator.needSyncBadge", { count: summary.needSync })}</Badge>
+          ) : null}
           {pendingOps.length > 0 ? (
             <Badge tone="warning" as="button" onClick={() => setShowPending(true)}>
               {t("emulator.pendingBadge", { count: pendingOps.length })}
@@ -117,6 +122,17 @@ export function EmulatorCard({
       <p className="emulator-path" title={profile.rootPath}>
         {profile.rootPath}
       </p>
+
+      {summary ? (
+        <p className="muted emulator-summary">
+          {t("emulator.summaryLine", {
+            local: summary.localFiles,
+            localSize: formatBytes(summary.localBytes),
+            remote: summary.remoteFiles,
+            remoteSize: formatBytes(summary.remoteBytes),
+          })}
+        </p>
+      ) : null}
 
       {stats?.lastSyncAtMs ? (
         <p className="muted emulator-stats" title={stats.lastFile ?? undefined}>

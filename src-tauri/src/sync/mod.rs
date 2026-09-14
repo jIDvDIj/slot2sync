@@ -21,6 +21,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+pub(crate) use conflict::eq_within_tolerance;
 #[cfg(desktop)]
 pub(crate) use diff::{is_temp_name, tmp_name};
 pub use engine::{

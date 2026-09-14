@@ -35,6 +35,9 @@ export const sync = {
     hideGames: "▾ Hide games",
     noGames: "No synced games yet",
     statsLine: "Last sync {{when}} · ↑{{up}} · ↓{{down}}",
+    summaryLine: "{{local}} here ({{localSize}}) · {{remote}} remote ({{remoteSize}})",
+    needSyncBadge_one: "{{count}} out of date",
+    needSyncBadge_other: "{{count}} out of date",
   },
   pending: {
     title: "Pending files — {{emulator}}",

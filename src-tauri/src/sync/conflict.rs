@@ -89,7 +89,7 @@ fn published_by_other_device(drive_device: Option<&str>, this_device: Option<&st
     matches!((drive_device, this_device), (Some(drive), Some(this)) if drive != this)
 }
 
-fn eq_within_tolerance(a: i64, b: i64) -> bool {
+pub(crate) fn eq_within_tolerance(a: i64, b: i64) -> bool {
     (a - b).abs() <= TIMESTAMP_TOLERANCE_MS
 }
 

@@ -38,6 +38,9 @@ export const sync: Localized<typeof SyncEn> = {
     hideGames: "▾ Ocultar jogos",
     noGames: "nenhum jogo sincronizado ainda",
     statsLine: "Último sync {{when}} · ↑{{up}} · ↓{{down}}",
+    summaryLine: "{{local}} aqui ({{localSize}}) · {{remote}} no remoto ({{remoteSize}})",
+    needSyncBadge_one: "{{count}} fora de dia",
+    needSyncBadge_other: "{{count}} fora de dia",
   },
   pending: {
     title: "Arquivos pendentes — {{emulator}}",
