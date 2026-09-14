@@ -181,6 +181,10 @@ export interface BackupEntry {
   run: string;
   category: string;
   relPath: string;
+  /** `relPath` sem o carimbo de versão; chave de agrupamento das versões. */
+  originalRelPath: string;
+  /** Carimbo `YYYYMMDD-HHMMSS`, quando o nome é versionado. */
+  stamp: string | null;
   sizeBytes: number;
   modifiedAtMs: number;
   absPath: string;

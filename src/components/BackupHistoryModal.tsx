@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { currentLocale } from "../i18n";
+import { filterBackups, groupBackups, type BackupGroup } from "../lib/backupGroups";
 import { useErrorMessage } from "../lib/errors";
 import { formatBytes } from "../lib/format";
 import { listBackups, openBackupFolder, restoreVersion } from "../lib/ipc";
@@ -14,8 +15,8 @@ interface Props {
 }
 
 /**
- * Histórico dos backups locais: lista as cópias que o Slot2Sync guardou antes de sobrescrever
- * arquivos, com filtro por texto. Restauração continua manual, pela pasta.
+ * Histórico dos backups locais, agrupado por arquivo, com filtro por texto e
+ * por faixa de datas.
  */
 export function BackupHistoryModal({ onClose }: Props) {
   const { t } = useTranslation();
@@ -25,6 +26,9 @@ export function BackupHistoryModal({ onClose }: Props) {
   const [entries, setEntries] = useState<BackupEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [busyPath, setBusyPath] = useState<string | null>(null);
   const [restoredPath, setRestoredPath] = useState<string | null>(null);
 
@@ -60,14 +64,17 @@ export function BackupHistoryModal({ onClose }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const filtered = useMemo(() => {
+  const groups = useMemo(() => {
     if (!entries) return null;
-    const needle = filter.trim().toLowerCase();
-    if (!needle) return entries;
-    return entries.filter((e) =>
-      `${e.emulator}/${e.category}/${e.relPath}`.toLowerCase().includes(needle),
-    );
-  }, [entries, filter]);
+    return groupBackups(filterBackups(entries, { text: filter, from, to }));
+  }, [entries, filter, from, to]);
+
+  const toggle = (key: string) =>
+    setExpanded((current) => {
+      const next = new Set(current);
+      if (!next.delete(key)) next.add(key);
+      return next;
+    });
 
   const openFolder = async () => {
     setError(null);
@@ -76,6 +83,49 @@ export function BackupHistoryModal({ onClose }: Props) {
     } catch (err) {
       setError(errorMessage(err));
     }
+  };
+
+  const renderVersion = (entry: BackupEntry) => (
+    <div className="backup-row backup-version" key={entry.absPath} title={entry.absPath}>
+      <div className="backup-info">
+        <span className="backup-meta">
+          {entry.run} · {new Date(entry.modifiedAtMs).toLocaleString(currentLocale())}
+        </span>
+      </div>
+      <span className="backup-size">{formatBytes(entry.sizeBytes)}</span>
+      {isRestorable(entry) ? (
+        <button className="secondary" disabled={busyPath !== null} onClick={() => restore(entry)}>
+          {busyPath === entry.absPath
+            ? t("backupHistory.restoring")
+            : restoredPath === entry.absPath
+              ? t("backupHistory.restored")
+              : t("backupHistory.restore")}
+        </button>
+      ) : null}
+    </div>
+  );
+
+  const renderGroup = (group: BackupGroup) => {
+    const open = expanded.has(group.key);
+    return (
+      <div className="backup-group" key={group.key}>
+        <button
+          className="backup-group-head"
+          aria-expanded={open}
+          onClick={() => toggle(group.key)}
+        >
+          <span className="backup-path">
+            {open ? "▾" : "▸"} {group.emulator} · {group.category} · {group.relPath}
+          </span>
+          <span className="backup-meta">
+            {t("backupHistory.versions", { count: group.entries.length })} ·{" "}
+            {new Date(group.newestAtMs).toLocaleString(currentLocale())}
+          </span>
+          <span className="backup-size">{formatBytes(group.totalBytes)}</span>
+        </button>
+        {open ? group.entries.map(renderVersion) : null}
+      </div>
+    );
   };
 
   return (
@@ -92,39 +142,33 @@ export function BackupHistoryModal({ onClose }: Props) {
         />
       </label>
 
-      {filtered === null && !error ? (
+      <div className="backup-range">
+        <label className="field">
+          <span>{t("backupHistory.fromLabel")}</span>
+          <input
+            type="date"
+            value={from}
+            max={to || undefined}
+            onChange={(e) => setFrom(e.target.value)}
+          />
+        </label>
+        <label className="field">
+          <span>{t("backupHistory.toLabel")}</span>
+          <input
+            type="date"
+            value={to}
+            min={from || undefined}
+            onChange={(e) => setTo(e.target.value)}
+          />
+        </label>
+      </div>
+
+      {groups === null && !error ? (
         <p className="muted">{t("app.loading")}</p>
-      ) : filtered && filtered.length === 0 ? (
+      ) : groups && groups.length === 0 ? (
         <p className="muted">{t("backupHistory.empty")}</p>
-      ) : filtered ? (
-        <div className="backup-list">
-          {filtered.map((entry) => (
-            <div className="backup-row" key={entry.absPath} title={entry.absPath}>
-              <div className="backup-info">
-                <span className="backup-path">
-                  {entry.emulator} · {entry.category} · {entry.relPath}
-                </span>
-                <span className="backup-meta">
-                  {entry.run} · {new Date(entry.modifiedAtMs).toLocaleString(currentLocale())}
-                </span>
-              </div>
-              <span className="backup-size">{formatBytes(entry.sizeBytes)}</span>
-              {isRestorable(entry) ? (
-                <button
-                  className="secondary"
-                  disabled={busyPath !== null}
-                  onClick={() => restore(entry)}
-                >
-                  {busyPath === entry.absPath
-                    ? t("backupHistory.restoring")
-                    : restoredPath === entry.absPath
-                      ? t("backupHistory.restored")
-                      : t("backupHistory.restore")}
-                </button>
-              ) : null}
-            </div>
-          ))}
-        </div>
+      ) : groups ? (
+        <div className="backup-list">{groups.map(renderGroup)}</div>
       ) : null}
 
       {!isMobile ? (
