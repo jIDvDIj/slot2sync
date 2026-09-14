@@ -13,6 +13,7 @@ mod events;
 mod folder;
 mod games;
 mod locations;
+mod logs;
 mod onedrive;
 mod platform;
 mod remote;
@@ -76,7 +77,10 @@ pub fn run() {
 
     builder
         .setup(|app| {
-            init_logging(app.handle())?;
+            // O barramento nasce antes do subscriber porque o layer de log
+            // publica nele; o resto do wiring o recebe clonado mais abaixo.
+            let bus = events::bus::EventBus::new();
+            init_logging(app.handle(), bus.clone())?;
             // Depois do subscriber: o hook loga via `tracing` e precisa que o
             // appender de arquivo já esteja instalado para persistir o panic.
             install_panic_hook(app.handle().clone());
@@ -182,10 +186,8 @@ pub fn run() {
             #[cfg(mobile)]
             let storage: Arc<dyn sync::LocalStorage> = sync::mobile_storage::storage(app.handle())?;
 
-            // Barramento de saída: o engine e os comandos publicam aqui, e a
-            // ponte abaixo traduz para `emit`/notificação nativa. É o que
-            // permite ao engine não conhecer o `AppHandle`.
-            let bus = events::bus::EventBus::new();
+            // A ponte traduz cada `AppEvent` em `emit`/notificação nativa. É o
+            // que permite ao engine não conhecer o `AppHandle`.
             spawn_event_bridge(app.handle().clone(), bus.subscribe());
 
             let engine = Arc::new(sync::SyncEngine::new(
@@ -357,6 +359,8 @@ pub fn run() {
             commands::list_dismissed_notices,
             commands::dismiss_notice,
             commands::list_backups,
+            commands::get_logs,
+            commands::set_log_streaming,
             commands::list_file_versions,
             commands::restore_version,
             commands::pick_emulator_folder,
@@ -399,7 +403,10 @@ fn lower_process_priority() {
     }
 }
 
-fn init_logging(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+fn init_logging(
+    app: &tauri::AppHandle,
+    bus: events::bus::EventBus,
+) -> Result<(), Box<dyn std::error::Error>> {
     let log_dir = locations::AppPath::LogDir.resolve(app)?;
     std::fs::create_dir_all(&log_dir)?;
     prune_old_logs(&log_dir, LOG_RETENTION_DAYS);
@@ -409,6 +416,7 @@ fn init_logging(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>
         .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
         .with(fmt::layer())
         .with(fmt::layer().with_ansi(false).with_writer(file_appender))
+        .with(logs::LogBusLayer::new(bus))
         .init();
 
     Ok(())
@@ -467,7 +475,11 @@ fn spawn_event_bridge(
             let event = match rx.recv().await {
                 Ok(event) => event,
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
-                    tracing::warn!(perdidos = missed, "ponte de eventos ficou para trás");
+                    tracing::warn!(
+                        target: logs::EVENT_BRIDGE_TARGET,
+                        perdidos = missed,
+                        "ponte de eventos ficou para trás"
+                    );
                     continue;
                 }
                 // Todos os produtores foram derrubados: o app está encerrando.
@@ -488,6 +500,7 @@ fn spawn_event_bridge(
                     events::EVT_EMULATOR_STATUS,
                     &serde_json::json!({ "emulator": emulator, "running": running }),
                 ),
+                AppEvent::LogEntry(p) => emit(&app, events::EVT_LOG_ENTRY, &p),
                 AppEvent::Notify(n) => show_native_notification(&app, &n),
             }
         }

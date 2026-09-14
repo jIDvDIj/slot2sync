@@ -41,6 +41,7 @@
 
   /* Tipografia */
   --rs-font-family: "Segoe UI", Inter, system-ui, sans-serif;
+  --rs-font-mono: "Cascadia Mono", Consolas, "SF Mono", ui-monospace, monospace;
   --rs-font-xs: 10.5px;
   --rs-font-sm: 12px;
   --rs-font-md: 13.5px;

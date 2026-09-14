@@ -1307,6 +1307,23 @@ pub async fn list_backups(app: AppHandle) -> AppResult<Vec<crate::backups::Backu
         .map_err(|e| AppError::Other(format!("tarefa bloqueante abortada: {e}")))?
 }
 
+/// Últimas linhas do log em disco, mais antigas primeiro. Teto de
+/// [`crate::logs::MAX_TAIL_LINES`] linhas.
+#[tauri::command]
+pub async fn get_logs(app: AppHandle, limit: u32) -> AppResult<Vec<crate::logs::LogEntry>> {
+    let dir = crate::locations::AppPath::LogDir.resolve(&app)?;
+    tokio::task::spawn_blocking(move || crate::logs::tail(&dir, limit as usize))
+        .await
+        .map_err(|e| AppError::Other(format!("tarefa bloqueante abortada: {e}")))?
+}
+
+/// Liga o evento `log:entry`. A janela de diagnóstico liga ao abrir e desliga
+/// ao fechar — fora dela, cada linha de log viraria um broadcast sem ouvinte.
+#[tauri::command]
+pub fn set_log_streaming(enabled: bool) {
+    crate::logs::set_streaming(enabled);
+}
+
 /// Cobre a lógica de troca/consulta de provedor extraída dos comandos acima
 /// (`activate_provider`, `*_impl`, `build_oauth_remote`) — a parte
 /// unitariamente testável sem uma janela real. O fluxo interativo completo
