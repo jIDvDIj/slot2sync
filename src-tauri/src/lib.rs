@@ -23,6 +23,7 @@ mod shutdown;
 mod state;
 mod storage;
 mod sync;
+mod updates;
 mod versioning;
 // O process watcher depende de inspecionar processos do SO (`sysinfo`), o que
 // não existe/aplica no mobile — gatilhos automáticos são exclusivos do desktop.
@@ -219,6 +220,10 @@ pub fn run() {
                 settings: settings.clone(),
             });
 
+            #[cfg(desktop)]
+            app.handle()
+                .plugin(tauri_plugin_updater::Builder::new().build())?;
+
             // Bandeja, janela escondível, autostart e process watcher são
             // exclusivos do desktop. No mobile o webview único já é exibido pelo
             // sistema e os gatilhos automáticos por processo não existem.
@@ -371,6 +376,8 @@ pub fn run() {
             commands::list_dismissed_notices,
             commands::dismiss_notice,
             commands::list_backups,
+            commands::check_for_updates,
+            commands::install_update,
             commands::get_logs,
             commands::set_log_streaming,
             commands::list_file_versions,
@@ -513,6 +520,7 @@ fn spawn_event_bridge(
                     &serde_json::json!({ "emulator": emulator, "running": running }),
                 ),
                 AppEvent::LogEntry(p) => emit(&app, events::EVT_LOG_ENTRY, &p),
+                AppEvent::UpdateAvailable(p) => emit(&app, events::EVT_UPDATE_AVAILABLE, &p),
                 AppEvent::Notify(n) => show_native_notification(&app, &n),
             }
         }

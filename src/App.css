@@ -859,6 +859,25 @@ progress.sync-bar::-moz-progress-bar {
   overflow: auto;
 }
 
+/* Aviso de versão nova disponível */
+.update-banner {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--rs-space-4);
+  border: 1px solid var(--rs-color-brand);
+  border-radius: var(--rs-radius-md);
+  background-color: var(--rs-color-surface-alt);
+  padding: var(--rs-space-3) var(--rs-space-4);
+  margin-bottom: var(--rs-space-3);
+}
+
+.update-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--rs-space-2);
+}
+
 /* Aviso de panic do backend: fica no topo de qualquer tela, inclusive a de
    login, porque um panic pode ocorrer antes de o usuário se conectar. */
 .panic-banner {

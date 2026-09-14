@@ -57,6 +57,7 @@ pub enum AppEvent {
     /// Linha de log em tempo real; só publicada enquanto a janela de
     /// diagnóstico estiver aberta (ver `logs::set_streaming`).
     LogEntry(crate::logs::LogEntry),
+    UpdateAvailable(crate::updates::UpdateInfo),
     /// Pedido de notificação nativa, independente do evento de UI que a
     /// acompanha — nem toda notificação tem um evento correspondente na tela.
     Notify(NativeNotification),

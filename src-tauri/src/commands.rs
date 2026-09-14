@@ -1361,6 +1361,86 @@ pub async fn list_backups(app: AppHandle) -> AppResult<Vec<crate::backups::Backu
         .map_err(|e| AppError::Other(format!("tarefa bloqueante abortada: {e}")))?
 }
 
+/// Procura uma versão nova. `None` = já está na mais recente. Publica
+/// `update:available` quando encontra, para a UI reagir sem esperar o retorno.
+///
+/// Sem chave pública configurada em `tauri.conf.json`, a checagem falha e o
+/// erro vira `None` com um warning: não poder atualizar não é motivo para
+/// mostrar erro a quem só abriu o app.
+#[tauri::command]
+#[cfg(desktop)]
+pub async fn check_for_updates(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> AppResult<Option<crate::updates::UpdateInfo>> {
+    use tauri_plugin_updater::UpdaterExt;
+
+    let found = match app.updater() {
+        Ok(updater) => updater.check().await,
+        Err(err) => Err(err),
+    };
+    let update = match found {
+        Ok(update) => update,
+        Err(err) => {
+            tracing::warn!(error = %err, "checagem de atualização falhou");
+            return Ok(None);
+        }
+    };
+
+    let Some(update) = update else {
+        return Ok(None);
+    };
+    let info = crate::updates::UpdateInfo {
+        version: update.version.clone(),
+        notes: update.body.clone(),
+        date: update.date.map(|d| d.to_string()),
+    };
+    tracing::info!(versao = %info.version, "atualização disponível");
+    state.bus.publish(AppEvent::UpdateAvailable(info.clone()));
+    Ok(Some(info))
+}
+
+#[tauri::command]
+#[cfg(not(desktop))]
+pub async fn check_for_updates(
+    _app: AppHandle,
+    _state: State<'_, AppState>,
+) -> AppResult<Option<crate::updates::UpdateInfo>> {
+    Ok(None)
+}
+
+/// Baixa e instala a atualização, e reinicia o app. No Windows o instalador
+/// assume a partir daqui, então o processo atual encerra de qualquer forma.
+#[tauri::command]
+#[cfg(desktop)]
+pub async fn install_update(app: AppHandle) -> AppResult<()> {
+    use tauri_plugin_updater::UpdaterExt;
+
+    let update = app
+        .updater()
+        .map_err(|e| AppError::Other(format!("checagem de atualização falhou: {e}")))?
+        .check()
+        .await
+        .map_err(|e| AppError::Other(format!("checagem de atualização falhou: {e}")))?
+        .ok_or_else(|| AppError::Other("nenhuma atualização disponível".into()))?;
+
+    tracing::info!(versao = %update.version, "instalando atualização");
+    update
+        .download_and_install(|_, _| {}, || {})
+        .await
+        .map_err(|e| AppError::Other(format!("instalação da atualização falhou: {e}")))?;
+
+    app.restart();
+}
+
+#[tauri::command]
+#[cfg(not(desktop))]
+pub async fn install_update(_app: AppHandle) -> AppResult<()> {
+    Err(AppError::Other(
+        "atualização automática não se aplica no mobile".into(),
+    ))
+}
+
 /// Últimas linhas do log em disco, mais antigas primeiro. Teto de
 /// [`crate::logs::MAX_TAIL_LINES`] linhas.
 #[tauri::command]

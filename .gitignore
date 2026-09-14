@@ -33,6 +33,12 @@ src-tauri/gen/android/**/keystore.properties
 *.jks
 *.keystore
 
+# Chave privada de assinatura do updater — mora fora do repositório, mas a
+# regra evita o acidente de gerá-la aqui dentro. A .pub é pública e fica no
+# tauri.conf.json.
+*.key
+!*.key.pub
+
 # Ferramentas locais
 .agents/
 skills-lock.json

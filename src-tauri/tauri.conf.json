@@ -26,12 +26,18 @@
     }
   },
   "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDJBMzEyMkVCMEM0RTIwOEYKUldTUElFNE02eUl4S3JKbTVFRDYrYkQvNVREOHhUK0crNVhWRTd1aFpOK2ZXbzJiVXpqM0R3eEMK",
+      "endpoints": ["https://github.com/jIDvDIj/slot2sync/releases/latest/download/latest.json"],
+      "windows": { "installMode": "passive" }
+    },
     "deep-link": {
       "mobile": [{ "scheme": ["com.slot2sync.app"], "path_prefix": ["/oauth2redirect"] }]
     }
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": false,
     "targets": "all",
     "icon": [
       "icons/32x32.png",

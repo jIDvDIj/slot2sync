@@ -23,6 +23,8 @@ pub const EVT_AUTH_STATUS: &str = "auth:status";
 pub const EVT_EMULATOR_STATUS: &str = "emulator:status";
 /// Linha de log em tempo real para a janela de diagnóstico.
 pub const EVT_LOG_ENTRY: &str = "log:entry";
+/// Versão nova disponível, encontrada por `check_for_updates`.
+pub const EVT_UPDATE_AVAILABLE: &str = "update:available";
 /// Panic capturado pelo hook global: o app segue vivo (outras threads não são
 /// derrubadas), mas a UI avisa que algo falhou de forma inesperada.
 pub const EVT_APP_PANIC: &str = "app:panic";
