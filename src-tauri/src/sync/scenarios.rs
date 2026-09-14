@@ -21,6 +21,7 @@ use crate::secrets::{MemSecrets, SecretStore};
 use crate::storage::db::Db;
 use crate::storage::settings::NotificationLevel;
 use crate::storage::{conflicts, emulators, manifest, settings};
+use crate::sync::queue::SyncQueueSnapshot;
 use crate::sync::FileLoc;
 
 const EMU: &str = "PPSSPP";
@@ -407,6 +408,23 @@ async fn mtime_igual_com_conteudo_diferente_passa_despercebido() {
         "conteúdos seguem divergentes"
     );
     assert_eq!(h.remote_content("save.bin").unwrap(), b"conteudo-B");
+}
+
+#[tokio::test]
+async fn a_fila_do_sync_esvazia_ao_fim_da_rodada() {
+    let h = Harness::new().await;
+    h.write_local("a.sav", b"a", T);
+    h.write_local("b.sav", b"b", T);
+
+    assert_eq!(h.engine.queue().snapshot(), SyncQueueSnapshot::default());
+    h.sync().await;
+
+    assert_eq!(
+        h.engine.queue().snapshot(),
+        SyncQueueSnapshot::default(),
+        "a fila não pode sobreviver à rodada"
+    );
+    assert!(!h.engine.queue().bring_to_front(EMU, "a.sav"));
 }
 
 /// Coleção grande de arquivos novos sobe em UM batch; o caminho

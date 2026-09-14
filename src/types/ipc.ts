@@ -76,6 +76,21 @@ export interface EmulatorStats {
   lastScanAtMs: number | null;
 }
 
+/** `sync::queue::QueuedOp` — uma operação da fila do sync em andamento */
+export interface QueuedOp {
+  emulator: string;
+  category: "saves" | "savestates" | "config";
+  relPath: string;
+  action: "upload" | "download" | "download-with-backup" | "conflict" | "noop";
+  sizeBytes: number;
+}
+
+/** `sync::queue::SyncQueueSnapshot` — retorno de `get_sync_queue` */
+export interface SyncQueueSnapshot {
+  inProgress: QueuedOp[];
+  queued: QueuedOp[];
+}
+
 /** `logs::LogEntry` — uma linha de log para a janela de diagnóstico */
 export interface LogEntry {
   timestamp: string;

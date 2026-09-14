@@ -23,6 +23,7 @@ import type {
   PendingOp,
   Settings,
   SyncCategories,
+  SyncQueueSnapshot,
   SyncedGame,
   SyncStateSnapshot,
   SyncSummary,
@@ -122,6 +123,16 @@ export function getEmulatorStats(name: string): Promise<EmulatorStats | null> {
 /** Estatísticas acumuladas de todos os emuladores com atividade. */
 export function listEmulatorStats(): Promise<EmulatorStats[]> {
   return invoke<EmulatorStats[]>("list_emulator_stats");
+}
+
+/** Fila do sync em andamento; vazia fora de um sync. */
+export function getSyncQueue(): Promise<SyncQueueSnapshot> {
+  return invoke<SyncQueueSnapshot>("get_sync_queue");
+}
+
+/** Antecipa um arquivo da fila do sync em andamento; `false` = não está mais nela. */
+export function bringToFront(emulator: string, relPath: string): Promise<boolean> {
+  return invoke<boolean>("bring_to_front", { emulator, relPath });
 }
 
 /** Últimas linhas do log em disco, mais antigas primeiro. */
