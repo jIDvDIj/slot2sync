@@ -3,8 +3,9 @@ import { useTranslation } from "react-i18next";
 import { Button } from "../components/ui/Button";
 import { useNow } from "../hooks/useNow";
 import { formatRelativeTime } from "../lib/time";
-import type { LastSync, SyncProgress } from "../types/ipc";
+import type { LastSync, SyncProgress, UpdateInfo } from "../types/ipc";
 import { SyncButton } from "./SyncButton";
+import { UpdateNotice } from "./UpdateNotice";
 
 interface ToolbarProps {
   title: string;
@@ -17,6 +18,7 @@ interface ToolbarProps {
   progress: SyncProgress | null;
   lastSync: LastSync | null;
   onSync: () => void;
+  update: UpdateInfo | null;
 }
 
 export function Toolbar({
@@ -30,6 +32,7 @@ export function Toolbar({
   progress,
   lastSync,
   onSync,
+  update,
 }: ToolbarProps) {
   const { t } = useTranslation();
   const now = useNow();
@@ -58,6 +61,8 @@ export function Toolbar({
       </span>
 
       <span className="toolbar-spacer" />
+
+      {update ? <UpdateNotice update={update} compact={compact} /> : null}
 
       {!compact && !syncing ? (
         <span className="toolbar-meta">

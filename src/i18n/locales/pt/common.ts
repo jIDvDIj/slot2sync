@@ -83,6 +83,10 @@ export const common: Localized<typeof CommonEn> = {
   },
   update: {
     title: "Slot2Sync {{version}} disponível",
+    available: "Atualização disponível: Slot2Sync {{version}}",
+    availableShort: "Atualização disponível",
+    released: "Lançada em {{date}}",
+    noNotes: "Esta versão não tem notas de atualização.",
     install: "Atualizar e reiniciar",
     installing: "Atualizando",
     later: "Agora não",
