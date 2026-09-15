@@ -770,16 +770,35 @@ impl SyncEngine {
                 ops: mut plan,
                 skipped,
                 mtime_refreshes,
+                noop_anchors,
             } = diff::build_plan(local, remote, manifest_entries, direction, device_id);
             summary.skipped += skipped;
 
-            // Arquivos com mtime tocado mas conteúdo intacto: reancora o mtime
-            // no manifest para o pré-filtro não redisparar a cada sync. Uma
-            // transação para a categoria inteira, não uma por arquivo.
-            if !mtime_refreshes.is_empty() {
+            // Duas reancoragens sem transferência, numa transação só para a
+            // categoria: arquivos com mtime tocado mas conteúdo intacto (senão
+            // o pré-filtro de hash redispara a cada sync) e arquivos já
+            // idênticos nos dois lados que o manifest ainda não conhece (senão
+            // nunca ganham âncora e seguem contados como fora de dia).
+            let now_ms = chrono::Utc::now().timestamp_millis();
+            let mut anchors = mtime_refreshes;
+            anchors.extend(noop_anchors.into_iter().map(|anchor| ManifestEntry {
+                emulator: target.label.clone(),
+                category: *category,
+                rel_path: anchor.rel_path,
+                remote_file_id: Some(anchor.remote_file_id),
+                local_mtime_ms: Some(anchor.local_mtime_ms),
+                remote_mtime_ms: anchor.remote_mtime_ms,
+                size_bytes: anchor.size_bytes,
+                last_synced_at_ms: now_ms,
+                file_hash: anchor.file_hash,
+                flags: 0,
+                inaccessible: false,
+                mtime_ns: anchor.mtime_ns,
+            }));
+            if !anchors.is_empty() {
                 let _ = self
                     .db
-                    .with(move |conn| manifest::upsert_batch(conn, &mtime_refreshes))
+                    .with(move |conn| manifest::upsert_batch(conn, &anchors))
                     .await;
             }
 

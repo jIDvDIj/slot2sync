@@ -1236,6 +1236,33 @@ async fn sync_com_transferencia_publica_notificacao_de_conclusao() {
     );
 }
 
+/// Arquivo já idêntico nos dois lados no primeiro sync: nada a transferir, mas
+/// o manifest precisa ganhar a âncora mesmo assim — sem ela o resumo do
+/// emulador conta o arquivo como fora de dia para sempre.
+#[tokio::test]
+async fn sync_sem_transferencia_ancora_arquivos_ja_identicos() {
+    let h = Harness::new().await;
+    h.write_local("save.bin", b"igual", T);
+    h.seed_remote("save.bin", b"igual", T, None);
+
+    let summary = h.sync().await;
+
+    assert_eq!(summary.uploaded, 0);
+    assert_eq!(summary.downloaded, 0);
+    assert_eq!(summary.skipped, 1);
+    assert_eq!(h.manifest_len().await, 1);
+
+    let entry =
+        h.db.with(|conn| manifest::list_for_emulator(conn, EMU))
+            .await
+            .unwrap()
+            .remove(0);
+    assert_eq!(entry.rel_path, "save.bin");
+    assert_eq!(entry.local_mtime_ms, Some(T));
+    assert_eq!(entry.remote_mtime_ms, Some(T));
+    assert!(entry.remote_file_id.is_some());
+}
+
 /// Sync que não transferiu nada não notifica — senão todo gatilho automático
 /// ocioso viraria um "sync concluído" na bandeja.
 #[tokio::test]

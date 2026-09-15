@@ -6,7 +6,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::conflict::{decide, SyncAction};
+use super::conflict::{decide, eq_within_tolerance, SyncAction};
 use super::storage::FileLoc;
 use super::SyncDirection;
 use crate::constants::{TMP_PREFIX_UNIX, TMP_PREFIX_WINDOWS};
@@ -61,7 +61,6 @@ pub struct LocalFile {
     /// então ele distingue "conteúdo idêntico" de "escrita rápida sucessiva
     /// que a tolerância de 2s teria mascarado".
     pub mtime_ns: i64,
-    #[allow(dead_code)]
     pub size_bytes: i64,
     /// SHA-256 (hex) do conteúdo atual. Calculado pelo engine SOMENTE quando o
     /// mtime diverge da âncora do manifest (pré-filtro) — `None` nos demais.
@@ -211,6 +210,22 @@ pub struct CategoryPlan {
     /// último sync): nada a transferir, mas o manifest precisa reancorar o
     /// mtime — senão o pré-filtro dispara de novo em todo sync seguinte.
     pub mtime_refreshes: Vec<ManifestEntry>,
+    /// Arquivos já idênticos nos dois lados que o manifest ainda não conhece.
+    pub noop_anchors: Vec<NoOpAnchor>,
+}
+
+/// Arquivo que o sync não precisou transferir e que o manifest desconhece (ou
+/// conhece com dados vencidos). Sem essa âncora, o par de mtimes nunca é
+/// registrado: o resumo do emulador continua contando o arquivo como fora de
+/// dia e o diff segue tratando todo sync como se fosse o primeiro.
+pub struct NoOpAnchor {
+    pub rel_path: String,
+    pub local_mtime_ms: i64,
+    pub mtime_ns: i64,
+    pub remote_file_id: String,
+    pub remote_mtime_ms: Option<i64>,
+    pub size_bytes: Option<i64>,
+    pub file_hash: Option<String>,
 }
 
 /// Monta o plano da categoria. Retorna as operações ativas, a contagem de
@@ -238,6 +253,7 @@ pub fn build_plan(
     let mut ops = Vec::new();
     let mut skipped: u32 = 0;
     let mut mtime_refreshes = Vec::new();
+    let mut noop_anchors = Vec::new();
 
     for rel_path in all_paths {
         let local_file = local_map.get(&rel_path);
@@ -270,6 +286,37 @@ pub fn build_plan(
             }
         }
 
+        if action == SyncAction::NoOp {
+            if let (Some(file), Some(remote)) = (local_file, remote_file) {
+                let anchor = manifest_map.get(&rel_path);
+                let anchored = anchor.is_some_and(|entry| {
+                    entry.remote_file_id.as_deref() == Some(remote.id.as_str())
+                        && entry
+                            .local_mtime_ms
+                            .is_some_and(|ms| eq_within_tolerance(ms, file.mtime_ms))
+                        && match (entry.remote_mtime_ms, remote.modified_ms) {
+                            (Some(known), Some(current)) => eq_within_tolerance(known, current),
+                            (None, None) => true,
+                            _ => false,
+                        }
+                });
+                if !anchored {
+                    noop_anchors.push(NoOpAnchor {
+                        rel_path: rel_path.clone(),
+                        local_mtime_ms: file.mtime_ms,
+                        mtime_ns: file.mtime_ns,
+                        remote_file_id: remote.id.clone(),
+                        remote_mtime_ms: remote.modified_ms,
+                        size_bytes: remote.size_bytes.or(Some(file.size_bytes)),
+                        file_hash: file
+                            .hash
+                            .clone()
+                            .or_else(|| anchor.and_then(|entry| entry.file_hash.clone())),
+                    });
+                }
+            }
+        }
+
         let allowed = match action {
             SyncAction::NoOp => false,
             SyncAction::Upload => direction != SyncDirection::DriveToLocal,
@@ -297,6 +344,7 @@ pub fn build_plan(
         ops,
         skipped,
         mtime_refreshes,
+        noop_anchors,
     }
 }
 
@@ -397,6 +445,60 @@ mod tests {
         assert!(!is_temp_name("save.bin"));
     }
 
+    #[test]
+    fn arquivo_ja_identico_nos_dois_lados_sem_manifest_gera_ancora() {
+        let CategoryPlan {
+            ops,
+            skipped,
+            noop_anchors,
+            ..
+        } = build_plan(
+            vec![local_file("save.bin", T)],
+            vec![remote_file("save.bin", T)],
+            vec![],
+            SyncDirection::Bidirectional,
+            None,
+        );
+
+        assert!(ops.is_empty());
+        assert_eq!(skipped, 1);
+        assert_eq!(noop_anchors.len(), 1);
+        assert_eq!(noop_anchors[0].rel_path, "save.bin");
+        assert_eq!(noop_anchors[0].local_mtime_ms, T);
+        assert_eq!(noop_anchors[0].remote_mtime_ms, Some(T));
+        assert_eq!(noop_anchors[0].remote_file_id, "id-save.bin");
+    }
+
+    #[test]
+    fn arquivo_ja_ancorado_no_manifest_nao_reancora() {
+        let CategoryPlan { noop_anchors, .. } = build_plan(
+            vec![local_file("save.bin", T)],
+            vec![remote_file("save.bin", T)],
+            vec![manifest_entry("save.bin", T, T)],
+            SyncDirection::Bidirectional,
+            None,
+        );
+
+        assert!(noop_anchors.is_empty());
+    }
+
+    #[test]
+    fn ancora_com_id_remoto_vencido_e_reescrita() {
+        let mut entry = manifest_entry("save.bin", T, T);
+        entry.remote_file_id = Some("id-antigo".into());
+
+        let CategoryPlan { noop_anchors, .. } = build_plan(
+            vec![local_file("save.bin", T)],
+            vec![remote_file("save.bin", T)],
+            vec![entry],
+            SyncDirection::Bidirectional,
+            None,
+        );
+
+        assert_eq!(noop_anchors.len(), 1);
+        assert_eq!(noop_anchors[0].remote_file_id, "id-save.bin");
+    }
+
     fn local_file(rel: &str, mtime: i64) -> LocalFile {
         LocalFile {
             rel_path: rel.to_string(),
@@ -485,6 +587,7 @@ mod tests {
             ops,
             skipped,
             mtime_refreshes,
+            ..
         } = build_plan(
             vec![file],
             vec![remote_file("save.bin", T)],
