@@ -730,6 +730,16 @@ async fn emulator_summary(
         if bases.is_empty() {
             continue;
         }
+        // Mesma camada de mtime virtual que o engine aplica antes do diff: sem
+        // ela, num filesystem que arredonda o mtime (FAT32) o resumo contaria
+        // como fora de dia exatamente os arquivos que o sync considera iguais.
+        let (emu, cat) = (profile.name.clone(), *category);
+        let overrides = state
+            .db
+            .with(move |conn| crate::storage::mtime_overrides::list_for_category(conn, &emu, cat))
+            .await
+            .unwrap_or_default();
+
         for file in storage.scan(&target.root, bases).await? {
             if exclude
                 .as_ref()
@@ -739,11 +749,15 @@ async fn emulator_summary(
             }
             local_files += 1;
             local_bytes += file.size_bytes.max(0) as u64;
+            let mtime_ms = match overrides.get(&file.rel_path) {
+                Some(entry) if entry.ondisk_ms == file.mtime_ms => entry.virtual_ms,
+                _ => file.mtime_ms,
+            };
             let touched = match anchors.get(&(*category, file.rel_path.as_str())) {
                 None => true,
-                Some(anchor) => anchor.local_mtime_ms.is_none_or(|anchored| {
-                    !crate::sync::eq_within_tolerance(anchored, file.mtime_ms)
-                }),
+                Some(anchor) => anchor
+                    .local_mtime_ms
+                    .is_none_or(|anchored| !crate::sync::eq_within_tolerance(anchored, mtime_ms)),
             };
             if touched {
                 need_sync += 1;
