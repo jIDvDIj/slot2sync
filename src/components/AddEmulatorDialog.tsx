@@ -85,6 +85,9 @@ function defaultPaths(name: string): { saves: string; states: string } {
   if (n.includes("pcsx2")) {
     return { saves: "memcards", states: "sstates" };
   }
+  if (n.includes("retroarch")) {
+    return { saves: "saves", states: "states" };
+  }
   return { saves: "", states: "" };
 }
 
