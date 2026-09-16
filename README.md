@@ -127,4 +127,6 @@ Rust↔TypeScript — mora no site, na aba
 [Para desenvolvedores](https://jidvdij.github.io/slot2sync-site/docs/dev/). Antes de abrir um
 PR, leia o [`CONTRIBUTING.md`](./CONTRIBUTING.md) e o [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md).
 
-Todo o código é licenciado sob a [GPL-3.0](./LICENSE).
+Todo o código é licenciado sob a [GPL-3.0](./LICENSE). A tabela de nomes de jogos
+embutida no app vem do [libretro-database](https://github.com/libretro/libretro-database)
+e mantém a licença CC BY-SA 4.0 — veja o [`NOTICE.md`](./NOTICE.md).
