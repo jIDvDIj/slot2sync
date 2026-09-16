@@ -77,15 +77,15 @@ function relativeUnder(root: string, child: string): string | null {
 }
 
 /** Known relative layouts, used to prefill the mobile form. */
-function defaultPaths(name: string): { saves: string; states: string; config: string } {
+function defaultPaths(name: string): { saves: string; states: string } {
   const n = name.toLowerCase();
   if (n.includes("ppsspp")) {
-    return { saves: "PSP/SAVEDATA", states: "PSP/PPSSPP_STATE", config: "PSP/SYSTEM" };
+    return { saves: "PSP/SAVEDATA", states: "PSP/PPSSPP_STATE" };
   }
   if (n.includes("pcsx2")) {
-    return { saves: "memcards", states: "sstates", config: "inis" };
+    return { saves: "memcards", states: "sstates" };
   }
-  return { saves: "", states: "", config: "" };
+  return { saves: "", states: "" };
 }
 
 type Section = "found" | "folder";
@@ -110,7 +110,7 @@ function AddEmulatorContent({
   const [manualName, setManualName] = useState("");
   const [savesRel, setSavesRel] = useState("");
   const [statesRel, setStatesRel] = useState("");
-  const [configRel, setConfigRel] = useState("");
+  const [excludeText, setExcludeText] = useState("");
 
   const resetFolder = () => {
     setRoot(null);
@@ -120,7 +120,7 @@ function AddEmulatorContent({
     setManualName("");
     setSavesRel("");
     setStatesRel("");
-    setConfigRel("");
+    setExcludeText("");
   };
 
   const wrap = useCallback(
@@ -217,7 +217,13 @@ function AddEmulatorContent({
         root,
         savesRel ? [savesRel] : [],
         statesRel ? [statesRel] : [],
-        configRel ? [configRel] : [],
+        // A categoria config está desligada no backend: um emulador fora do
+        // catálogo não ganha pasta de configuração.
+        [],
+        excludeText
+          .split(",")
+          .map((pattern) => pattern.trim())
+          .filter((pattern) => pattern.length > 0),
       );
       onAdded();
       resetFolder();
@@ -226,20 +232,18 @@ function AddEmulatorContent({
 
   const onNameChange = (name: string) => {
     setManualName(name);
-    if (isMobile && !savesRel && !statesRel && !configRel) {
+    if (isMobile && !savesRel && !statesRel) {
       const defaults = defaultPaths(name);
       setSavesRel(defaults.saves);
       setStatesRel(defaults.states);
-      setConfigRel(defaults.config);
     }
   };
 
-  const manualIncomplete = manualName.trim() === "" || (!savesRel && !statesRel && !configRel);
+  const manualIncomplete = manualName.trim() === "" || (!savesRel && !statesRel);
 
   const pathRows = [
     { key: "saves", label: t("categories.saves"), value: savesRel, set: setSavesRel },
     { key: "savestates", label: t("categories.savestates"), value: statesRel, set: setStatesRel },
-    { key: "config", label: t("categories.config"), value: configRel, set: setConfigRel },
   ] as const;
 
   return (
@@ -392,6 +396,20 @@ function AddEmulatorContent({
               />
             ))}
           </FormSection>
+          <Field
+            label={t("addEmulator.ignoreLabel")}
+            htmlFor={`${nameId}-exclude`}
+            hint={t("addEmulator.ignoreHint")}
+          >
+            <TextField
+              id={`${nameId}-exclude`}
+              value={excludeText}
+              onChange={(e) => setExcludeText(e.target.value)}
+              placeholder={t("addEmulator.ignorePlaceholder")}
+              autoComplete="off"
+              spellCheck={false}
+            />
+          </Field>
           <div className="add-emulator-actions">
             {manualIncomplete ? (
               <span className="add-emulator-hint">{t("addEmulator.manualIncomplete")}</span>

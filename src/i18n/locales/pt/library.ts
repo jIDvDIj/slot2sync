@@ -55,6 +55,10 @@ export const library: Localized<typeof LibraryEn> = {
       "Nenhum emulador foi reconhecido nesta pasta. Informe os dados dele; todas as pastas devem estar dentro da pasta raiz.",
     nameLabel: "Nome",
     namePlaceholder: "Por exemplo, Dolphin",
+    ignoreLabel: "Padrões a ignorar",
+    ignoreHint:
+      "Opcional. Padrões separados por vírgula, como *.tmp ou cache/**. Arquivos que casam nunca sincronizam, em nenhuma direção, e você pode mudar isso depois.",
+    ignorePlaceholder: "*.tmp, cache/**",
     foldersTitle: "Pastas a sincronizar",
     chooseSubfolder: "Escolher subpasta",
     relativePathPlaceholder: "Por exemplo, PSP/SAVEDATA",

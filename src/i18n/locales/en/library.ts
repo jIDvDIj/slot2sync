@@ -52,6 +52,10 @@ export const library = {
       "No emulator was recognized in this folder. Enter its details; every folder must be inside the root folder.",
     nameLabel: "Name",
     namePlaceholder: "For example, Dolphin",
+    ignoreLabel: "Ignore Patterns",
+    ignoreHint:
+      "Optional. Comma-separated patterns such as *.tmp or cache/**. Matching files never sync in either direction, and you can change this later.",
+    ignorePlaceholder: "*.tmp, cache/**",
     foldersTitle: "Folders to Sync",
     chooseSubfolder: "Choose Subfolder",
     relativePathPlaceholder: "For example, PSP/SAVEDATA",

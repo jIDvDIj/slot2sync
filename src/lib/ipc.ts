@@ -92,6 +92,7 @@ export function addEmulatorManual(
   savesPaths: string[],
   statePaths: string[],
   configPaths: string[],
+  excludePatterns: string[],
 ): Promise<EmulatorProfile> {
   return invoke<EmulatorProfile>("add_emulator_manual", {
     name,
@@ -99,6 +100,7 @@ export function addEmulatorManual(
     savesPaths,
     statePaths,
     configPaths,
+    excludePatterns,
   });
 }
 
