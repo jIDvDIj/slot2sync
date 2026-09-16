@@ -8,9 +8,8 @@
 //! 2. agrega as entradas do manifest por `(emulador, serial)` ([`aggregate`]);
 //! 3. traduz o serial para um nome legível quando conhecido ([`resolve_name`]).
 //!
-//! A tradução usa uma tabela embutida pequena (semente verificada). A cobertura
-//! ampla e offline virá do empacotamento do OpenVGDB (asset SQLite). Sem
-//! correspondência, a UI exibe o próprio serial.
+//! A tradução consulta o asset embutido de [`titles`]. Sem correspondência, a UI
+//! exibe o próprio serial.
 
 use std::collections::BTreeMap;
 
@@ -18,6 +17,8 @@ use serde::Serialize;
 
 use crate::storage::manifest::ManifestEntry;
 use crate::sync::SyncCategory;
+
+pub mod titles;
 
 /// Um jogo cujos arquivos foram sincronizados, agregado a partir do manifest. (→ ipc.ts)
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -88,7 +89,7 @@ pub fn serial_from_rel_path(rel_path: &str) -> Option<String> {
     }
     if let Some((first, _)) = rel_path.split_once('/') {
         let first = first.trim();
-        return (!first.is_empty()).then(|| first.to_string());
+        return game_id(first);
     }
     let token = rel_path
         .split(['.', '_', ' '])
@@ -96,10 +97,31 @@ pub fn serial_from_rel_path(rel_path: &str) -> Option<String> {
         .unwrap_or(rel_path)
         .trim();
     if looks_like_serial(token) {
-        Some(token.to_string())
+        game_id(token)
     } else {
-        Some(rel_path.to_string())
+        game_id(rel_path)
     }
+}
+
+/// Identificador de jogo de um componente de caminho, ou `None` quando ele não
+/// representa um jogo.
+///
+/// Arquivos ocultos (`.nomedia`, `.DS_Store`) acompanham os saves mas não são
+/// jogos. Já o PPSSPP nomeia cada pasta de save como `<serial><id do save>`
+/// (`ULUS101360001`), então sem o corte o mesmo jogo apareceria várias vezes —
+/// uma por save e outra pelos savestates, que usam só o serial.
+fn game_id(candidate: &str) -> Option<String> {
+    if candidate.is_empty() || candidate.starts_with('.') {
+        return None;
+    }
+    let bytes = candidate.as_bytes();
+    let has_serial_prefix = bytes.len() > 9
+        && bytes[..4].iter().all(u8::is_ascii_alphabetic)
+        && bytes[4..9].iter().all(u8::is_ascii_digit);
+    if has_serial_prefix {
+        return Some(candidate[..9].to_string());
+    }
+    Some(candidate.to_string())
 }
 
 /// `true` se `s` tem a forma de um serial de console: 4 letras, hífen opcional e
@@ -118,10 +140,9 @@ fn looks_like_serial(s: &str) -> bool {
 }
 
 /// Nome legível de um serial, se conhecido. Normaliza (só alfanumérico,
-/// maiúsculas) antes de consultar a tabela embutida.
+/// maiúsculas) antes de consultar o asset.
 pub fn resolve_name(serial: &str) -> Option<&'static str> {
-    let key = normalize(serial);
-    NAMES.iter().find(|(k, _)| *k == key).map(|(_, name)| *name)
+    titles::lookup(&normalize(serial))
 }
 
 fn normalize(serial: &str) -> String {
@@ -131,22 +152,6 @@ fn normalize(serial: &str) -> String {
         .map(|c| c.to_ascii_uppercase())
         .collect()
 }
-
-/// Semente pequena e verificada de `serial → nome` (chaves já normalizadas, sem
-/// hífen). Substituível/ampliável pelo OpenVGDB no futuro.
-static NAMES: &[(&str, &str)] = &[
-    // PSP
-    ("ULUS10041", "Grand Theft Auto: Liberty City Stories"),
-    ("ULUS10160", "Grand Theft Auto: Vice City Stories"),
-    ("UCUS98653", "God of War: Chains of Olympus"),
-    ("UCUS98737", "God of War: Ghost of Sparta"),
-    ("ULUS10336", "Crisis Core: Final Fantasy VII"),
-    ("ULUS10391", "Monster Hunter Freedom Unite"),
-    // PS2
-    ("SCUS97472", "Shadow of the Colossus"),
-    ("SCUS97399", "God of War"),
-    ("SLUS20370", "Kingdom Hearts"),
-];
 
 #[cfg(test)]
 mod tests {
@@ -176,6 +181,26 @@ mod tests {
             serial_from_rel_path("SLUS-12345.00.p2s").as_deref(),
             Some("SLUS-12345")
         );
+    }
+
+    #[test]
+    fn pasta_de_save_do_ppsspp_perde_o_sufixo_do_save() {
+        // Saves e savestates do mesmo jogo precisam cair no mesmo identificador.
+        assert_eq!(
+            serial_from_rel_path("ULUS101360001/DATA.BIN").as_deref(),
+            Some("ULUS10136")
+        );
+        assert_eq!(
+            serial_from_rel_path("ULUS10136_1.00_0.ppst").as_deref(),
+            Some("ULUS10136")
+        );
+    }
+
+    #[test]
+    fn arquivo_oculto_nao_vira_jogo() {
+        assert_eq!(serial_from_rel_path(".nomedia"), None);
+        assert_eq!(serial_from_rel_path(".DS_Store"), None);
+        assert_eq!(serial_from_rel_path(".thumbnails/x.jpg"), None);
     }
 
     #[test]
@@ -231,12 +256,12 @@ mod tests {
     #[test]
     fn aggregate_agrupa_por_jogo_soma_tamanho_e_une_categorias() {
         let entries = vec![
-            entry("PPSSPP", SyncCategory::Saves, "ULUS12345/DATA.BIN", 100, 10),
-            entry("PPSSPP", SyncCategory::Saves, "ULUS12345/ICON.PNG", 50, 20),
+            entry("PPSSPP", SyncCategory::Saves, "ULUS99999/DATA.BIN", 100, 10),
+            entry("PPSSPP", SyncCategory::Saves, "ULUS99999/ICON.PNG", 50, 20),
             entry(
                 "PPSSPP",
                 SyncCategory::Savestates,
-                "ULUS12345_1.00_0.ppst",
+                "ULUS99999_1.00_0.ppst",
                 200,
                 30,
             ),
@@ -245,15 +270,15 @@ mod tests {
         let games = aggregate(entries);
 
         assert_eq!(games.len(), 2);
-        // Ordem estável: UCUS98653 antes de ULUS12345.
+        // Ordem estável: UCUS98653 antes de ULUS99999.
         assert_eq!(games[0].serial, "UCUS98653");
         assert_eq!(
             games[0].name.as_deref(),
-            Some("God of War: Chains of Olympus")
+            Some("God of War - Chains of Olympus")
         );
 
         let g = &games[1];
-        assert_eq!(g.serial, "ULUS12345");
+        assert_eq!(g.serial, "ULUS99999");
         assert_eq!(g.name, None);
         assert_eq!(g.size_bytes, 350);
         assert_eq!(g.last_synced_at_ms, 30);

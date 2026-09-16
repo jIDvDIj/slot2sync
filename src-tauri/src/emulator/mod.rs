@@ -255,6 +255,19 @@ mod tests {
     }
 
     #[test]
+    fn detecta_duckstation_em_pasta_de_dados() {
+        let tmp = tempfile::tempdir().unwrap();
+        mkdirs(tmp.path(), &["memcards", "savestates"]);
+
+        let profile = detect_emulator(tmp.path()).expect("deveria detectar DuckStation");
+
+        assert_eq!(profile.name, "DuckStation");
+        assert_eq!(profile.saves_paths, vec![PathBuf::from("memcards")]);
+        assert_eq!(profile.state_paths, vec![PathBuf::from("savestates")]);
+        assert!(profile.config_paths.is_empty());
+    }
+
+    #[test]
     fn nao_detecta_em_pasta_vazia() {
         let tmp = tempfile::tempdir().unwrap();
 
