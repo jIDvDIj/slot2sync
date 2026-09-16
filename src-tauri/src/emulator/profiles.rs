@@ -588,6 +588,10 @@ mod tests {
             names.contains(&"RetroArch"),
             "esperava RetroArch no catálogo"
         );
+        assert!(
+            names.contains(&"DuckStation"),
+            "esperava DuckStation no catálogo"
+        );
     }
 
     #[test]

@@ -88,6 +88,9 @@ function defaultPaths(name: string): { saves: string; states: string } {
   if (n.includes("retroarch")) {
     return { saves: "saves", states: "states" };
   }
+  if (n.includes("duckstation")) {
+    return { saves: "memcards", states: "savestates" };
+  }
   return { saves: "", states: "" };
 }
 
