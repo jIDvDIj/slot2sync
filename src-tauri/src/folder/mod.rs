@@ -16,9 +16,11 @@
 //! relativo a essa raiz (independente de emulador/categoria).
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
 use tokio::fs;
+use tokio::sync::Mutex;
 
 use crate::constants::{
     DRIVE_CONFIG_FOLDER, DRIVE_ROOT_FOLDER, DRIVE_SAVES_FOLDER, DRIVE_STATES_FOLDER,
@@ -30,6 +32,11 @@ use crate::sync::{is_temp_name, sha256_hex, tmp_name, SyncCategory};
 
 pub struct FolderProvider {
     root: PathBuf,
+    /// O índice é um arquivo só para a pasta inteira, e o engine transfere
+    /// vários arquivos em paralelo: sem serializar o ciclo ler-alterar-gravar,
+    /// uma gravação sobrescreveria a outra e as atribuições de dispositivo se
+    /// perderiam.
+    index_lock: Mutex<()>,
 }
 
 impl FolderProvider {
@@ -37,7 +44,10 @@ impl FolderProvider {
     /// gravável; a validação acontece no comando `connect_local_folder`, não
     /// aqui (construtor infalível, como os demais clientes).
     pub fn new(root: PathBuf) -> Self {
-        Self { root }
+        Self {
+            root,
+            index_lock: Mutex::new(()),
+        }
     }
 
     fn index_path(&self) -> PathBuf {
@@ -70,6 +80,7 @@ impl FolderProvider {
             return;
         }
         let key = self.index_key(abs_path);
+        let _guard = self.index_lock.lock().await;
         let mut index = self.load_index().await;
         index.set(
             &key,
@@ -107,12 +118,20 @@ async fn write_atomic(dest: &Path, content: &[u8]) -> AppResult<()> {
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent).await?;
     }
-    let tmp = dest.with_file_name(tmp_name(
-        &dest.file_name().unwrap_or_default().to_string_lossy(),
-    ));
+    let tmp = dest.with_file_name(unique_tmp_name(dest));
     fs::write(&tmp, content).await?;
     fs::rename(&tmp, dest).await?;
     Ok(())
+}
+
+/// Sufixo único por escrita: a pasta pode ser um compartilhamento de rede com
+/// outra máquina gravando o mesmo arquivo ao mesmo tempo, e dois temporários
+/// homônimos fariam um rename encontrar o arquivo do outro já movido.
+fn unique_tmp_name(dest: &Path) -> String {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let name = dest.file_name().unwrap_or_default().to_string_lossy();
+    let serial = COUNTER.fetch_add(1, Ordering::Relaxed);
+    tmp_name(&format!("{name}.{}-{serial}", std::process::id()))
 }
 
 fn category_dir_name(category: SyncCategory) -> &'static str {
@@ -263,6 +282,7 @@ impl RemoteProvider for FolderProvider {
         let new_path = new_dir.join(new_name);
         fs::rename(&old_path, &new_path).await?;
 
+        let _guard = self.index_lock.lock().await;
         let mut index = self.load_index().await;
         index.rename(&self.index_key(&old_path), &self.index_key(&new_path));
         if let Err(err) = self.save_index(&index).await {
@@ -350,6 +370,49 @@ mod tests {
         assert_eq!(tree[0].rel_path, "save.bin");
         // O índice de dispositivo não aparece como um arquivo sincronizável.
         assert!(!tree.iter().any(|f| f.rel_path.contains("slot2sync-index")));
+    }
+
+    #[tokio::test]
+    async fn uploads_simultaneos_preservam_todas_as_entradas_do_indice() {
+        let tmp = tempfile::tempdir().unwrap();
+        let provider = FolderProvider::new(tmp.path().to_path_buf());
+        let cat = provider
+            .ensure_category_folder("PPSSPP", SyncCategory::Saves)
+            .await
+            .unwrap();
+
+        let uploads = (0..16).map(|i| {
+            let (provider, cat) = (&provider, &cat);
+            async move {
+                provider
+                    .upload_new(
+                        cat,
+                        &format!("save-{i}.bin"),
+                        b"dados".to_vec(),
+                        1_700_000_000_000,
+                        tag(),
+                    )
+                    .await
+                    .unwrap()
+            }
+        });
+        futures::future::join_all(uploads).await;
+
+        let index = provider.load_index().await;
+        for i in 0..16 {
+            let key = format!("Slot2Sync/PPSSPP/saves/save-{i}.bin");
+            assert!(
+                index.get(&key).is_some(),
+                "entrada perdida no índice: {key}"
+            );
+        }
+        // Nenhum temporário sobrou na raiz depois das gravações concorrentes.
+        let leftovers: Vec<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| is_temp_name(&e.file_name().to_string_lossy()))
+            .collect();
+        assert!(leftovers.is_empty(), "temporários órfãos: {leftovers:?}");
     }
 
     #[tokio::test]

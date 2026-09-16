@@ -40,6 +40,10 @@ pub struct DropboxClient {
     api_base: String,
     content_base: String,
     limiter: RateLimiter,
+    /// O índice é um arquivo só para a conta inteira e o engine transfere
+    /// vários arquivos em paralelo: sem serializar o ciclo ler-alterar-gravar,
+    /// uma gravação sobrescreve a outra e atribuições de dispositivo somem.
+    index_lock: tokio::sync::Mutex<()>,
 }
 
 impl DropboxClient {
@@ -50,6 +54,7 @@ impl DropboxClient {
             api_base: API_BASE.to_string(),
             content_base: CONTENT_BASE.to_string(),
             limiter: RateLimiter::default(),
+            index_lock: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -127,6 +132,7 @@ impl DropboxClient {
         if device.name.is_none() && device.id.is_none() {
             return;
         }
+        let _guard = self.index_lock.lock().await;
         let mut index = self.load_index().await;
         index.set(
             path,
@@ -438,6 +444,7 @@ impl RemoteProvider for DropboxClient {
         }
         let result: MoveResult = response.json().await?;
 
+        let _guard = self.index_lock.lock().await;
         let mut index = self.load_index().await;
         index.rename(file_id, &to_path);
         self.save_index(&index).await;
