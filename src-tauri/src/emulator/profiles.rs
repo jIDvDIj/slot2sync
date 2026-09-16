@@ -584,6 +584,10 @@ mod tests {
         let names: Vec<&str> = specs().iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"PPSSPP"), "esperava PPSSPP no catálogo");
         assert!(names.contains(&"PCSX2"), "esperava PCSX2 no catálogo");
+        assert!(
+            names.contains(&"RetroArch"),
+            "esperava RetroArch no catálogo"
+        );
     }
 
     #[test]
@@ -629,8 +633,14 @@ mod tests {
     #[test]
     fn data_dirs_do_so_atual_nao_sao_vazios_no_catalogo() {
         // Cada perfil deve ter ao menos um data_dir para o SO de teste, senão a
-        // descoberta automática nunca o encontraria nesta plataforma.
+        // descoberta automática nunca o encontraria nesta plataforma. Exceção:
+        // RetroArch no Windows roda de forma portátil (zip, Steam ou instalador
+        // em qualquer pasta) — não existe pasta de dados fixa lá, só o registro
+        // (Sinal B) ajuda a descobrir.
         for spec in specs() {
+            if cfg!(target_os = "windows") && spec.name == "RetroArch" {
+                continue;
+            }
             assert!(
                 !data_dirs_for_os(spec).is_empty(),
                 "{} sem data_dirs para este SO",
