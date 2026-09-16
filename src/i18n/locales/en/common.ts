@@ -80,6 +80,10 @@ export const common = {
   },
   update: {
     title: "Slot2Sync {{version}} is available",
+    available: "Update available: Slot2Sync {{version}}",
+    availableShort: "Update Available",
+    released: "Released {{date}}",
+    noNotes: "This version has no release notes.",
     install: "Update and Restart",
     installing: "Updating",
     later: "Not Now",

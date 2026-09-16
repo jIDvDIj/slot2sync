@@ -494,6 +494,7 @@ pub async fn add_emulator_manual(
     saves_paths: Vec<String>,
     state_paths: Vec<String>,
     config_paths: Vec<String>,
+    exclude_patterns: Vec<String>,
 ) -> AppResult<EmulatorProfile> {
     let root = PathBuf::from(&path);
     let root_loc = FileLoc::from_path(root.clone());
@@ -501,9 +502,13 @@ pub async fn add_emulator_manual(
     // passa pelo plugin nativo via LocalStorage, não por std::fs.
     ensure_valid_root(&state, &path).await?;
 
-    let profile =
+    let mut profile =
         emulator::build_manual_profile(&root, name, saves_paths, state_paths, config_paths)
             .map_err(AppError::Other)?;
+    // Um emulador fora do catálogo não traz padrões de exclusão prontos, então
+    // eles entram no próprio cadastro — gravados junto com o perfil, não numa
+    // segunda chamada que poderia falhar sozinha.
+    profile.exclude_patterns = clean_patterns(exclude_patterns)?;
 
     // Cada pasta informada precisa existir sob a raiz. A checagem sai do
     // `build_manual_profile` (puro) e passa pelo `LocalStorage`, que sabe tratar
@@ -730,6 +735,16 @@ async fn emulator_summary(
         if bases.is_empty() {
             continue;
         }
+        // Mesma camada de mtime virtual que o engine aplica antes do diff: sem
+        // ela, num filesystem que arredonda o mtime (FAT32) o resumo contaria
+        // como fora de dia exatamente os arquivos que o sync considera iguais.
+        let (emu, cat) = (profile.name.clone(), *category);
+        let overrides = state
+            .db
+            .with(move |conn| crate::storage::mtime_overrides::list_for_category(conn, &emu, cat))
+            .await
+            .unwrap_or_default();
+
         for file in storage.scan(&target.root, bases).await? {
             if exclude
                 .as_ref()
@@ -739,11 +754,15 @@ async fn emulator_summary(
             }
             local_files += 1;
             local_bytes += file.size_bytes.max(0) as u64;
+            let mtime_ms = match overrides.get(&file.rel_path) {
+                Some(entry) if entry.ondisk_ms == file.mtime_ms => entry.virtual_ms,
+                _ => file.mtime_ms,
+            };
             let touched = match anchors.get(&(*category, file.rel_path.as_str())) {
                 None => true,
-                Some(anchor) => anchor.local_mtime_ms.is_none_or(|anchored| {
-                    !crate::sync::eq_within_tolerance(anchored, file.mtime_ms)
-                }),
+                Some(anchor) => anchor
+                    .local_mtime_ms
+                    .is_none_or(|anchored| !crate::sync::eq_within_tolerance(anchored, mtime_ms)),
             };
             if touched {
                 need_sync += 1;
@@ -843,6 +862,18 @@ pub async fn set_exclude_patterns(
     name: String,
     patterns: Vec<String>,
 ) -> AppResult<()> {
+    let patterns = clean_patterns(patterns)?;
+    state
+        .db
+        .with(move |conn| emulators::set_exclude_patterns(conn, &name, &patterns))
+        .await?;
+    state.settings.bump();
+    Ok(())
+}
+
+/// Apara espaços, descarta entradas vazias e rejeita glob inválido — um padrão
+/// quebrado gravado no perfil seria ignorado em silêncio pelo engine.
+fn clean_patterns(patterns: Vec<String>) -> AppResult<Vec<String>> {
     let patterns: Vec<String> = patterns
         .into_iter()
         .map(|p| p.trim().to_string())
@@ -852,12 +883,7 @@ pub async fn set_exclude_patterns(
         globset::Glob::new(pattern)
             .map_err(|e| AppError::Other(format!("padrão inválido \"{pattern}\": {e}")))?;
     }
-    state
-        .db
-        .with(move |conn| emulators::set_exclude_patterns(conn, &name, &patterns))
-        .await?;
-    state.settings.bump();
-    Ok(())
+    Ok(patterns)
 }
 
 /// Rejeita valor fora da faixa que a UI oferece. Um comando pode ser chamado
@@ -1773,6 +1799,62 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis() as i64
+    }
+
+    #[tokio::test]
+    async fn add_emulator_manual_grava_os_padroes_de_exclusao() {
+        let (app, _tmp) = build_app().await;
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("saves")).unwrap();
+
+        let profile = add_emulator_manual(
+            app.state::<AppState>(),
+            "Dolphin".into(),
+            root.path().to_string_lossy().into_owned(),
+            vec!["saves".into()],
+            vec![],
+            vec![],
+            vec![" *.tmp ".into(), String::new(), "cache/**".into()],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(profile.exclude_patterns, vec!["*.tmp", "cache/**"]);
+
+        let stored = app
+            .state::<AppState>()
+            .db
+            .with(emulators::list)
+            .await
+            .unwrap();
+        assert_eq!(stored[0].exclude_patterns, vec!["*.tmp", "cache/**"]);
+    }
+
+    #[tokio::test]
+    async fn add_emulator_manual_rejeita_padrao_de_exclusao_invalido() {
+        let (app, _tmp) = build_app().await;
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("saves")).unwrap();
+
+        let result = add_emulator_manual(
+            app.state::<AppState>(),
+            "Dolphin".into(),
+            root.path().to_string_lossy().into_owned(),
+            vec!["saves".into()],
+            vec![],
+            vec![],
+            vec!["saves/[".into()],
+        )
+        .await;
+
+        assert!(result.is_err(), "glob inválido deveria falhar o cadastro");
+        let stored = app
+            .state::<AppState>()
+            .db
+            .with(emulators::list)
+            .await
+            .unwrap();
+        assert!(stored.is_empty(), "nada deveria ter sido gravado");
     }
 
     #[tokio::test]

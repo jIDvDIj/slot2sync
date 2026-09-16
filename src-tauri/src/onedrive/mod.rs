@@ -40,6 +40,10 @@ pub struct OneDriveClient {
     auth: Arc<AuthManager>,
     base: String,
     limiter: RateLimiter,
+    /// O índice é um arquivo só para a conta inteira e o engine transfere
+    /// vários arquivos em paralelo: sem serializar o ciclo ler-alterar-gravar,
+    /// uma gravação sobrescreve a outra e atribuições de dispositivo somem.
+    index_lock: tokio::sync::Mutex<()>,
 }
 
 impl OneDriveClient {
@@ -49,6 +53,7 @@ impl OneDriveClient {
             auth,
             base: GRAPH_BASE.to_string(),
             limiter: RateLimiter::default(),
+            index_lock: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -132,6 +137,7 @@ impl OneDriveClient {
         if device.name.is_none() && device.id.is_none() {
             return;
         }
+        let _guard = self.index_lock.lock().await;
         let mut index = self.load_index().await;
         index.set(
             rel_path,
@@ -459,6 +465,7 @@ impl RemoteProvider for OneDriveClient {
             .await?;
         let item: GraphItem = response.json().await?;
 
+        let _guard = self.index_lock.lock().await;
         let mut index = self.load_index().await;
         index.rename(file_id, &new_rel_path);
         self.save_index(&index).await;

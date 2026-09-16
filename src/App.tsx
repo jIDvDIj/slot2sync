@@ -30,7 +30,9 @@ import { SyncActivity } from "./shell/SyncActivity";
 import { TabBar } from "./shell/TabBar";
 import { Toolbar } from "./shell/Toolbar";
 import { usePersistentFlag } from "./shell/usePersistentFlag";
+import { UpdateNotice } from "./shell/UpdateNotice";
 import { useSyncAction } from "./shell/useSyncAction";
+import type { UpdateInfo } from "./types/ipc";
 
 import "./shell/Shell.css";
 
@@ -40,16 +42,9 @@ function App() {
   const { settings, reload: reloadSettings } = useSettings();
   const appearance = useAppearance();
   const { panic, dismiss: dismissPanic } = useAppPanic();
-  const { update, dismiss: dismissUpdate } = useUpdate();
+  const { update } = useUpdate();
 
-  const banners = (
-    <GlobalBanners
-      panic={panic}
-      onDismissPanic={dismissPanic}
-      update={update}
-      onDismissUpdate={dismissUpdate}
-    />
-  );
+  const banners = <GlobalBanners panic={panic} onDismissPanic={dismissPanic} />;
 
   if (auth.loading) {
     return (
@@ -66,7 +61,14 @@ function App() {
   if (!auth.connected) {
     return (
       <>
-        <div className="floating-banners">{banners}</div>
+        <div className="floating-banners">
+          {banners}
+          {update ? (
+            <div className="floating-update">
+              <UpdateNotice update={update} />
+            </div>
+          ) : null}
+        </div>
         <LoginScreen
           initialDeviceName={settings?.deviceName ?? null}
           onConnected={(status) => {
@@ -85,6 +87,7 @@ function App() {
       reloadSettings={reloadSettings}
       appearance={appearance}
       banners={banners}
+      update={update}
     />
   );
 }
@@ -95,10 +98,18 @@ interface MainScreenProps {
   reloadSettings: () => Promise<void>;
   appearance: ReturnType<typeof useAppearance>;
   banners: ReactNode;
+  update: UpdateInfo | null;
 }
 
 /** Mounted only once connected, so sync and emulator hooks never run on the sign-in screen. */
-function MainScreen({ auth, settings, reloadSettings, appearance, banners }: MainScreenProps) {
+function MainScreen({
+  auth,
+  settings,
+  reloadSettings,
+  appearance,
+  banners,
+  update,
+}: MainScreenProps) {
   const { t } = useTranslation();
   const sync = useSyncEvents();
   const { emulators, loading, error, refresh, remove } = useEmulators();
@@ -260,6 +271,7 @@ function MainScreen({ auth, settings, reloadSettings, appearance, banners }: Mai
             progress={sync.progress}
             lastSync={sync.lastSync}
             onSync={() => void syncAction.run()}
+            update={update}
           />
 
           <main className="content">
