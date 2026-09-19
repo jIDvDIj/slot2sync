@@ -46,7 +46,7 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 chrono = { version = "0.4", features = ["serde"] }
 url = "2"
 open = "5"
-dirs = "6"
+dirs = "7"
 futures = "0.3"
 filetime = "0.2"
 sha2 = "0.11"
